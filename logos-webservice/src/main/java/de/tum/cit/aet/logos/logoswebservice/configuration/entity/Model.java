@@ -29,6 +29,8 @@ public class Model {
     private Integer weightQuality = 0;
     private String tags;
     private String description;
+    @Column(nullable = false)
+    private boolean deprecated;
 
     @JdbcTypeCode(SqlTypes.JSON)
     @Column(name = "profile_ratings", columnDefinition = "jsonb", nullable = false)
@@ -42,6 +44,7 @@ public class Model {
     public Integer getWeightQuality() { return weightQuality; }
     public String getTags() { return tags; }
     public String getDescription() { return description; }
+    public boolean isDeprecated() { return deprecated; }
     public Map<String, Integer> getProfileRatings() { return profileRatings; }
 
     public void setName(String name) { this.name = name; }
@@ -51,6 +54,7 @@ public class Model {
     public void setWeightQuality(Integer w) { this.weightQuality = w; }
     public void setTags(String tags) { this.tags = tags; }
     public void setDescription(String description) { this.description = description; }
+    public void setDeprecated(boolean deprecated) { this.deprecated = deprecated; }
     public void setProfileRatings(Map<String, Integer> profileRatings) {
         this.profileRatings = profileRatings != null ? profileRatings : Map.of();
     }

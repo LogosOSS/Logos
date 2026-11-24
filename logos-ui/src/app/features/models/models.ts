@@ -170,6 +170,7 @@ export class Models implements OnInit, OnDestroy {
   editName = signal('');
   editDesc = signal('');
   editTags = signal('');
+  editDeprecated = signal(false);
   editAliases = signal('');
   editWtLatency = signal('');
   editWtAccuracy = signal('');
@@ -446,6 +447,7 @@ export class Models implements OnInit, OnDestroy {
     this.editName.set(model.name ?? '');
     this.editDesc.set(model.description ?? '');
     this.editTags.set(model.tags ?? '');
+    this.editDeprecated.set(model.deprecated === true);
     this.editAliases.set(model.aliases ?? '');
     this.editWtLatency.set(model.weight_latency != null ? String(model.weight_latency) : '');
     this.editWtAccuracy.set(model.weight_accuracy != null ? String(model.weight_accuracy) : '');
@@ -466,9 +468,11 @@ export class Models implements OnInit, OnDestroy {
     this.editLoading.set(true);
     this.editError.set('');
     const profile = this.editProfile();
+    const editedName = this.editName().trim();
     const payload: UpdateModelPayload = {
       model_id: target.id,
-      name: this.editName().trim() || undefined,
+      deprecated: this.editDeprecated() === (target.deprecated === true) ? undefined : this.editDeprecated(),
+      name: editedName && editedName !== target.name ? editedName : undefined,
       description: this.editDesc().trim() || undefined,
       tags: this.editTags().trim() || undefined,
       aliases: this.parseAliases(this.editAliases()),
@@ -488,6 +492,7 @@ export class Models implements OnInit, OnDestroy {
                 name: payload.name ?? m.name,
                 description: payload.description ?? m.description,
                 tags: payload.tags ?? m.tags,
+                deprecated: payload.deprecated ?? m.deprecated,
                 aliases: payload.aliases ? payload.aliases.join(', ') : m.aliases,
                 weight_latency: payload.weight_latency ?? m.weight_latency,
                 weight_accuracy: payload.weight_accuracy ?? m.weight_accuracy,

@@ -150,6 +150,7 @@ public class ModelService {
             .orElseThrow(() -> new IllegalArgumentException("Model not found: " + req.modelId()));
         if (req.name() != null) model.setName(req.name());
         if (req.description() != null) model.setDescription(req.description());
+        if (req.deprecated() != null) model.setDeprecated(req.deprecated());
         if (req.tags() != null) model.setTags(req.tags());
         if (req.weightLatency() != null) model.setWeightLatency(req.weightLatency());
         if (req.weightAccuracy() != null) model.setWeightAccuracy(req.weightAccuracy());
@@ -196,6 +197,7 @@ public class ModelService {
             map.put("tags", m.getTags());
             map.put("aliases", listAliases(m.getId()));
             map.put("description", m.getDescription());
+            map.put("deprecated", m.isDeprecated());
             return map;
         });
     }
@@ -366,6 +368,7 @@ public class ModelService {
         m.put("weight_cost", p.getWeightCost());
         m.put("weight_quality", p.getWeightQuality());
         m.put("profile_ratings", parseProfileRatings(p.getProfileRatingsJson()));
+        m.put("deprecated", Boolean.TRUE.equals(p.getDeprecated()));
         m.put("tags", p.getTags());
         m.put("aliases", p.getAliases());
         m.put("description", p.getDescription());

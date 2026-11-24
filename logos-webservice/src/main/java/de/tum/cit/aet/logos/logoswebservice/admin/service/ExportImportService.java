@@ -192,7 +192,7 @@ public class ExportImportService {
     }
 
     /**
-     * Backfill NOT NULL JSONB columns added after older exports were taken.
+     * Backfill NOT NULL columns added after older exports were taken.
      * {@code jsonb_populate_recordset} turns omitted keys into explicit NULL,
      * which rejects the column default — so pre-044 dumps must be normalized.
      */
@@ -212,8 +212,9 @@ public class ExportImportService {
                 }
                 copy.put(String.valueOf(entry.getKey()), entry.getValue());
             }
-            if ("models".equals(table) && copy.get("profile_ratings") == null) {
-                copy.put("profile_ratings", Map.of());
+            if ("models".equals(table)) {
+                if (copy.get("profile_ratings") == null) copy.put("profile_ratings", Map.of());
+                if (copy.get("deprecated") == null) copy.put("deprecated", false);
             }
             if ("team_repositories".equals(table)) {
                 copy.putIfAbsent("automatic_workflow_analysis", true);

@@ -55,6 +55,16 @@ import de.tum.cit.aet.logos.logoswebservice.operations.repository.TeamActivityPr
 @Service
 public class TeamActivityService {
 
+    public record DeprecatedModelWarning(Integer modelId, String modelName, Instant lastUsedAt) {}
+
+    public List<DeprecatedModelWarning> getDeprecatedModelWarnings(Integer teamId) {
+        var since = Instant.now().minus(Duration.ofDays(30));
+        return logEntryRepository.findDeprecatedModelUsage(teamId, since).stream()
+            .map(row -> new DeprecatedModelWarning(row.getModelId(), row.getModelName(), row.getLastUsedAt()))
+            .toList();
+    }
+
+
     private static final Logger log = LoggerFactory.getLogger(TeamActivityService.class);
 
     /**

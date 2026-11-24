@@ -54,6 +54,12 @@ key or a member has no individual limit.
 
 ![Team detail — Overview](/img/roles/team-detail-overview.png)
 
+If the team uses a deprecated model, a warning shows its name and last successful use.
+The warning includes only requests from the past 30 days. It does not block requests.
+To select a replacement, check the models available to your team.
+
+![Team overview with a warning about recent deprecated model use](/img/roles/team-detail-deprecated-models.png)
+
 ### Members
 
 When you open your own developer key, Logos can ask you to [choose a logging level](app-developer.md#choose-a-logging-level).

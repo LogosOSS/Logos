@@ -559,6 +559,14 @@
       />
     </div>
     <div class="form-field">
+      <label>
+        <input type="checkbox" [checked]="editDeprecated()" [disabled]="editLoading()"
+          (change)="editDeprecated.set($any($event.target).checked)" />
+        Deprecated
+      </label>
+      <small>Warn teams that recently used this model. This does not disable it.</small>
+    </div>
+    <div class="form-field">
       <label class="field-label" for="edit-aliases">Aliases</label>
       <input
         id="edit-aliases"

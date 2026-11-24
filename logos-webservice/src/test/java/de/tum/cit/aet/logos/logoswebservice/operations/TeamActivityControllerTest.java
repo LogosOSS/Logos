@@ -5,12 +5,14 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.annotation.Import;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.context.jdbc.Sql;
 import org.springframework.test.context.jdbc.SqlMergeMode;
 import org.springframework.test.web.servlet.MockMvc;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -43,6 +45,7 @@ import de.tum.cit.aet.logos.logoswebservice.TestJwt;
 class TeamActivityControllerTest {
 
     @Autowired MockMvc mvc;
+    @Autowired JdbcTemplate jdbc;
     @MockitoBean JwtDecoder jwtDecoder;
 
     // ── Access ───────────────────────────────────────────────────────────────
@@ -94,6 +97,50 @@ class TeamActivityControllerTest {
                 .contentType("application/json")
                 .content("{}"))
            .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void deprecationWarningsFollowSuccessfulCanonicalUsageAndTeamOwnership() throws Exception {
+        String own = "/logosdb/teams/2001/activity/deprecated-models";
+        String other = "/logosdb/teams/2002/activity/deprecated-models";
+        jdbc.update("""
+            INSERT INTO log_entry (id, request_id, model_id, model_name, result_status, timestamp_request, team_id)
+            VALUES
+                (9040, 'deprecated-alias', 5001, 'direct-model-alias', 'success', now() - interval '8 minutes', 2001),
+                (9041, 'failed-model', 5002, 'gpt-3.5', 'error', now() - interval '7 minutes', 2001),
+                (9042, 'stale-model', 5002, 'gpt-3.5', 'success', now() - interval '31 days', 2001),
+                (9043, 'other-team', 5002, 'gpt-3.5', 'success', now() - interval '2 minutes', 2002),
+                (9044, 'unresolved-alias', NULL, 'gpt-3.5', 'success', now() - interval '3 minutes', 2001)
+            """);
+
+        mvc.perform(get(own).with(TestJwt.adminUser()))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.length()").value(0));
+
+        mvc.perform(post("/logosdb/update_model_info").with(TestJwt.adminUser())
+                .contentType("application/json").content("{\"model_id\":5001,\"deprecated\":true}"))
+            .andExpect(status().isForbidden());
+        for (int id : new int[]{5001, 5002}) {
+            mvc.perform(post("/logosdb/update_model_info").with(TestJwt.logosAdmin())
+                    .contentType("application/json").content("{\"model_id\":" + id + ",\"deprecated\":true}"))
+                .andExpect(status().isOk());
+        }
+
+        mvc.perform(get(own).with(TestJwt.adminUser()))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.length()").value(1))
+            .andExpect(jsonPath("$[0].model_id").value(5001))
+            .andExpect(jsonPath("$[0].model_name").value("gpt-4"))
+            .andExpect(jsonPath("$[0].last_used_at").isString());
+        mvc.perform(get(other).with(TestJwt.adminUser())).andExpect(status().isForbidden());
+        mvc.perform(get(own).with(TestJwt.testUser())).andExpect(status().isForbidden());
+        mvc.perform(get(other).with(TestJwt.logosAdmin()))
+            .andExpect(status().isOk()).andExpect(jsonPath("$[0].model_id").value(5002));
+
+        mvc.perform(post("/logosdb/update_model_info").with(TestJwt.logosAdmin())
+                .contentType("application/json").content("{\"model_id\":5001,\"deprecated\":false}"))
+            .andExpect(status().isOk());
+        mvc.perform(get(own).with(TestJwt.adminUser()))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.length()").value(0));
     }
 
     // ── Content ──────────────────────────────────────────────────────────────

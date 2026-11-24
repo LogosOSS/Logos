@@ -11,6 +11,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestAttribute;
@@ -44,6 +45,17 @@ public class TeamActivityController {
         this.teamActivityService = teamActivityService;
         this.apiKeyAdminService = apiKeyAdminService;
         this.objectMapper = objectMapper;
+    }
+
+    @GetMapping("/logosdb/teams/{teamId}/activity/deprecated-models")
+    @PreAuthorize("hasAnyAuthority('" + Role.Names.LOGOS_ADMIN + "', '" + Role.Names.APP_ADMIN + "')")
+    public ResponseEntity<?> deprecatedModels(@PathVariable Integer teamId,
+                                              @RequestAttribute("authContext") AuthContext auth) {
+        if (Role.APP_ADMIN.matches(auth.role())
+                && (auth.userId() == null || !apiKeyAdminService.isTeamOwner(teamId, auth.userId()))) {
+            return ResponseEntity.status(403).body(Map.of("detail", "Team owner access required"));
+        }
+        return ResponseEntity.ok(teamActivityService.getDeprecatedModelWarnings(teamId));
     }
 
     /**

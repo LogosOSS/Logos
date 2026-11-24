@@ -158,6 +158,7 @@ class Model(Base):
     weight_quality = Column(Integer)
     tags = Column(Text)
     description = Column(Text)
+    deprecated = Column(Boolean, nullable=False, default=False)
 
 
 class Provider(Base):

@@ -18,6 +18,12 @@ export interface PermissionCatalogProvider {
   models: { model_id: number; model_name: string }[];
 }
 
+export interface TeamDeprecatedModelWarning {
+  model_id: number;
+  model_name: string;
+  last_used_at: string;
+}
+
 export interface TeamMembersResponse {
   team: TeamDetail;
   members: TeamMember[];
@@ -60,6 +66,12 @@ export class TeamManagementService {
   // ── Detail page ────────────────────────────────────────────────────────────
   getTeamWithMembers(teamId: number): Promise<TeamMembersResponse> {
     return firstValueFrom(this.http.get<TeamMembersResponse>(`/api/teams/${teamId}/members`));
+  }
+
+  getDeprecatedModelWarnings(teamId: number): Promise<TeamDeprecatedModelWarning[]> {
+    return firstValueFrom(this.http.get<TeamDeprecatedModelWarning[]>(
+      `/api/logosdb/teams/${teamId}/activity/deprecated-models`,
+    ));
   }
 
   renameTeam(teamId: number, name: string): Promise<{ name: string }> {

@@ -13,6 +13,7 @@ public interface ModelWithPriceProjection {
     String getTags();
     String getAliases();
     String getDescription();
+    Boolean getDeprecated();
     String getProfileRatingsJson();
     BigDecimal getInputUsdPerMillion();
     BigDecimal getOutputUsdPerMillion();

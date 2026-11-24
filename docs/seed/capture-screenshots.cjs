@@ -383,6 +383,17 @@ const SHOTS = [
   },
   { file: "roles/logos-admin-models.png", user: ADMIN, full: true, go: (p) => p.goto(BASE + "/models") },
   {
+    file: "roles/logos-admin-edit-model-deprecation.png",
+    user: ADMIN,
+    full: true,
+    go: async (p) => {
+      await p.goto(BASE + "/models");
+      await p.getByRole("button", { name: "Edit model llama-3.1-8b-instruct", exact: true })
+        .filter({ visible: true }).click();
+      await p.getByRole("checkbox", { name: "Deprecated", exact: true }).check();
+    },
+  },
+  {
     file: "roles/model-requests.png",
     user: ADMIN,
     full: true,
@@ -887,6 +898,16 @@ const SHOTS = [
   { file: "roles/app-admin-my-workspace.png", user: APP_ADMIN, go: (p) => p.goto(BASE + "/my-workspace") },
   { file: "roles/batches.png", user: APP_ADMIN, full: true, go: (p) => p.goto(BASE + "/batches") },
   { file: "roles/team-detail-overview.png", user: APP_ADMIN, go: (p, ids) => teamTab(p, ids, "Overview") },
+  {
+    file: "roles/team-detail-deprecated-models.png",
+    user: APP_ADMIN,
+    full: true,
+    needs: "seeded llama-3.1-8b-instruct marked deprecated in the isolated docs stack",
+    go: async (p, ids) => {
+      await teamTab(p, ids, "Overview");
+      await p.getByRole("region", { name: "Deprecated models in use" }).waitFor();
+    },
+  },
   {
     file: "roles/team-members-csv.png",
     user: APP_ADMIN,

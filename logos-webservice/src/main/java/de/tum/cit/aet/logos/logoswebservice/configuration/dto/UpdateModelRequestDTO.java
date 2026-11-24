@@ -12,5 +12,6 @@ public record UpdateModelRequestDTO(
     Integer weightCost,
     Integer weightQuality,
     java.util.Map<String, Integer> profileRatings,
-    List<String> aliases
+    List<String> aliases,
+    Boolean deprecated
 ) {}

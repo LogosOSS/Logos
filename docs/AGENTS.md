@@ -318,6 +318,7 @@ flows use a **concept** name (no role prefix); role-only list pages keep the
 | `logos-admin-statistics-worker-lock.png` | `tobias.wasner` | `/statistics` — **Local Providers**, a worker locked with two lanes (e2e stack; capture the lane panel) | `roles/logos-admin.md#worker-locks` |
 | `logos-admin-statistics-requesters.png` | `tobias.wasner` | `/statistics?tab=requests` — **Requesters** list open | `roles/logos-admin.md` |
 | `logos-admin-models.png` | `tobias.wasner` | `/models` | `roles/logos-admin.md` |
+| `logos-admin-edit-model-deprecation.png` | `tobias.wasner` | `/models` — **Edit Model** with **Deprecated** selected | `roles/logos-admin.md#mark-a-model-as-deprecated` |
 | `model-requests.png` | `tobias.wasner` | **Model requests** tab with a team vote | `roles/logos-admin.md#model-requests` |
 | `model-request-license.png` | `tobias.wasner` | **License agreement** with a use policy | `roles/logos-admin.md#model-requests` |
 | `model-request-gated.png` | `tobias.wasner` | **Gated model** dialog | `roles/logos-admin.md#model-requests` |
@@ -375,6 +376,7 @@ flows use a **concept** name (no role prefix); role-only list pages keep the
 | `app-admin-user-management.png` | `alexandra.szuminska` | `/user-management` | `roles/app-admin.md` |
 | `app-admin-team-management.png` | `alexandra.szuminska` | `/team-management` | `roles/app-admin.md` |
 | `team-detail-overview.png` | owner or `logos_admin` | `/teams/<id>` — **Overview** | `roles/app-admin.md#teams` |
+| `team-detail-deprecated-models.png` | owner | `/teams/<id>` — **Overview**, after a Logos Admin marks the seeded `llama-3.1-8b-instruct` model deprecated in the isolated docs stack | `roles/app-admin.md#overview` |
 | `team-members-csv.png` | `alexandra.szuminska` | **Members → Import CSV**, file mapped and existing team selected | `roles/app-admin.md#members` |
 | `team-detail-members.png` | same | `/teams/<id>` — **Members** | same |
 | `team-detail-application-keys.png` | owner or `logos_admin` | `/teams/<id>` — **Application Keys** | same |

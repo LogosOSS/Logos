@@ -197,3 +197,15 @@ app-billing-tab {
   &:disabled { opacity: var(--opacity-disabled); }
 }
 
+
+.deprecated-model-warning {
+  margin-block: 0 1rem;
+  padding: .75rem 1rem;
+  border-inline-start: .25rem solid var(--tum-warning, #b36b00);
+  overflow-wrap: anywhere;
+
+  ul {
+    margin-block: .25rem 0;
+    padding-inline-start: 1.25rem;
+  }
+}

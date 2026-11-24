@@ -171,6 +171,18 @@ The preview depends on current worker availability. It does not reserve a worker
 
 ![Models page](/img/roles/logos-admin-models.png)
 
+### Mark a model as deprecated
+
+1. In **Active models**, select **Edit model** for the applicable model.
+2. Select **Deprecated**.
+3. Select **Save**.
+
+Team owners and Logos Admins see a warning for successful requests in the past 30 days.
+This setting does not disable the model or change its permissions.
+To remove the warning, clear **Deprecated** and select **Save**.
+
+![Edit Model dialog with the Deprecated setting selected](/img/roles/logos-admin-edit-model-deprecation.png)
+
 ### Model requests
 
 Select **Model requests** to see which models users request and how many votes each model has.

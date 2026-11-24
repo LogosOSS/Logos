@@ -7,11 +7,12 @@ import {
   OnInit,
   ChangeDetectionStrategy,
 } from '@angular/core';
+import { DatePipe } from '@angular/common';
 import { ActivatedRoute, Router, RouterModule } from '@angular/router';
 import { FormsModule } from '@angular/forms';
 import { ModalFormComponent } from '../../shared/components/modal/modal-form/modal-form';
 import { AuthService } from '../../core/auth/services/auth.service';
-import { TeamManagementService } from '../../core/services/team-management.service';
+import { TeamManagementService, TeamDeprecatedModelWarning } from '../../core/services/team-management.service';
 import {
   TeamDetail as TeamDetailModel,
   TeamMember,
@@ -47,6 +48,7 @@ export type Tab =
   selector: 'app-team-detail',
   standalone: true,
   imports: [
+    DatePipe,
     FormsModule,
     RouterModule,
     ModalFormComponent,
@@ -78,6 +80,8 @@ export class TeamDetail implements OnInit {
   members = signal<TeamMember[]>([]);
   apiKeys = signal<TeamApiKey[]>([]);
   modelCount = signal(0);
+  deprecatedModelWarnings = signal<TeamDeprecatedModelWarning[]>([]);
+  private warningLoad = 0;
   loading = signal(true);
   loadError = signal(false);
 
@@ -137,6 +141,8 @@ export class TeamDetail implements OnInit {
   private async loadAll(teamId: number): Promise<void> {
     this.loading.set(true);
     this.loadError.set(false);
+    const warningLoad = ++this.warningLoad;
+    this.deprecatedModelWarnings.set([]);
 
     try {
       const membersRes = await this.teamService.getTeamWithMembers(teamId);
@@ -146,6 +152,7 @@ export class TeamDetail implements OnInit {
       const isAdmin = this.isLogosAdmin();
       const isOwner = membersRes.team.is_caller_owner;
       if (isAdmin || isOwner) {
+        void this.loadDeprecatedModelWarnings(teamId, warningLoad);
         const [apiKeys, models] = await Promise.all([
           this.teamService.getTeamApiKeys(teamId),
           this.teamService.getTeamModelPermissions(teamId),
@@ -157,6 +164,17 @@ export class TeamDetail implements OnInit {
       this.loadError.set(true);
     } finally {
       this.loading.set(false);
+    }
+  }
+
+  private async loadDeprecatedModelWarnings(teamId: number, request: number): Promise<void> {
+    try {
+      const warnings = await this.teamService.getDeprecatedModelWarnings(teamId);
+      if (request === this.warningLoad && teamId === this.teamId() && this.canEdit()) {
+        this.deprecatedModelWarnings.set(warnings);
+      }
+    } catch {
+      // The optional warning must not block team administration.
     }
   }
 

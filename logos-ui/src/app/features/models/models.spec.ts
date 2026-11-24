@@ -1,8 +1,9 @@
 import { signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
-import { provideHttpClient } from '@angular/common/http';
+import { HttpClient, provideHttpClient } from '@angular/common/http';
 import { provideRouter, Router } from '@angular/router';
 
+import { Model } from '../../shared/models/model.model';
 import { Models } from './models';
 import { ModelManagementService } from '../../core/services/model-management.service';
 import { ModelRequestService } from '../../core/services/model-request.service';
@@ -163,5 +164,39 @@ describe('Models', () => {
     const page = await boot();
     fixture = page.fx;
     await vi.waitFor(() => expect(getModels).toHaveBeenCalled());
+  });
+  it('sends an explicit false to clear deprecation without rewriting an unchanged flag', async () => {
+    const updateModel = vi.fn().mockResolvedValue(undefined);
+    await TestBed.configureTestingModule({
+      imports: [Models],
+      providers: [
+        { provide: HttpClient, useValue: {} },
+        provideRouter([]),
+        { provide: AuthService, useValue: { role: signal('logos_admin') } },
+        { provide: ModelManagementService, useValue: {
+          updateModel, getModels: vi.fn().mockResolvedValue([]), getModelCapabilities: vi.fn().mockResolvedValue({}),
+        } },
+      ],
+    })
+      .overrideComponent(Models, { set: { template: '' } })
+      .compileComponents();
+
+    const component = TestBed.createComponent(Models).componentInstance;
+    const model: Model = {
+      id: 1, name: 'old-model', description: null, tags: null, aliases: null,
+      weight_latency: null, weight_accuracy: null, weight_cost: null, weight_quality: null, deprecated: true,
+    };
+    component.models.set([model]);
+    component.openEditDialog(model);
+    expect(component.editDeprecated()).toBe(true);
+    await component.submitEdit();
+    expect(updateModel.mock.calls[0][0].deprecated).toBeUndefined();
+    expect(updateModel.mock.calls[0][0].name).toBeUndefined();
+
+    component.openEditDialog(model);
+    component.editDeprecated.set(false);
+    await component.submitEdit();
+    expect(updateModel).toHaveBeenLastCalledWith(expect.objectContaining({ model_id: 1, deprecated: false }));
+    expect(component.models()[0].deprecated).toBe(false);
   });
 });

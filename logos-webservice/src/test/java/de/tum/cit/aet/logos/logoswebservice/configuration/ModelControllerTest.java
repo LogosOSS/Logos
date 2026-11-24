@@ -61,6 +61,30 @@ class ModelControllerTest {
     }
 
     @Test
+    void updateModelInfo_onlyLogosAdminCanSetAndClearDeprecation() throws Exception {
+        mvc.perform(post("/logosdb/update_model_info").with(TestJwt.adminUser())
+                .contentType("application/json").content("{\"model_id\":5001,\"deprecated\":true}"))
+            .andExpect(status().isForbidden());
+        mvc.perform(post("/logosdb/update_model_info").with(TestJwt.logosAdmin())
+                .contentType("application/json").content("{\"model_id\":5001,\"deprecated\":true}"))
+            .andExpect(status().isOk());
+        mvc.perform(post("/logosdb/update_model_info").with(TestJwt.logosAdmin())
+                .contentType("application/json").content("{\"model_id\":5001,\"tags\":\"test\"}"))
+            .andExpect(status().isOk());
+        mvc.perform(post("/logosdb/get_model").with(TestJwt.logosAdmin())
+                .contentType("application/json").content("{\"id\":5001}"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.deprecated").value(true));
+        mvc.perform(post("/logosdb/update_model_info").with(TestJwt.logosAdmin())
+                .contentType("application/json").content("{\"model_id\":5001,\"deprecated\":false}"))
+            .andExpect(status().isOk());
+        mvc.perform(post("/logosdb/get_model").with(TestJwt.logosAdmin())
+                .contentType("application/json").content("{\"id\":5001}"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.deprecated").value(false));
+    }
+
+    @Test
     @SqlMergeMode(SqlMergeMode.MergeMode.MERGE)
     @Sql(statements = {
         "INSERT INTO team_model_permissions (team_id, model_id) VALUES (2001, 5001)",

@@ -6,6 +6,7 @@ export interface Model {
   name: string;
   description: string | null;
   tags: string | null;
+  deprecated?: boolean;
   /** Comma-joined alternative names the model can be requested by. */
   aliases: string | null;
   weight_latency: number | null;
@@ -31,6 +32,7 @@ export interface AddModelPayload {
 
 export interface UpdateModelPayload {
   model_id: number;
+  deprecated?: boolean;
   name?: string;
   description?: string;
   tags?: string;

@@ -33,6 +33,17 @@
       </div>
     </div>
 
+    @if (canEdit() && deprecatedModelWarnings().length) {
+      <section class="deprecated-model-warning" aria-label="Deprecated models in use">
+        <strong>Deprecated models used in the past 30 days</strong>
+        <ul>
+          @for (warning of deprecatedModelWarnings(); track warning.model_id) {
+            <li>{{ warning.model_name }} (last used {{ warning.last_used_at | date:'medium' }})</li>
+          }
+        </ul>
+      </section>
+    }
+
     <nav class="tab-bar" role="tablist">
       @for (tab of visibleTabs(); track tab) {
         <button

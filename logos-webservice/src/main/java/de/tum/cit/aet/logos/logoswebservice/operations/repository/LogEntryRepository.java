@@ -1,6 +1,7 @@
 package de.tum.cit.aet.logos.logoswebservice.operations.repository;
 
 import java.sql.Timestamp;
+import java.time.Instant;
 import java.util.List;
 
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -30,6 +31,29 @@ import de.tum.cit.aet.logos.logoswebservice.operations.entity.LogEntry;
  * what is on screen.
  */
 public interface LogEntryRepository extends JpaRepository<LogEntry, Integer> {
+
+    interface DeprecatedModelUsage {
+        Integer getModelId();
+        String getModelName();
+        Instant getLastUsedAt();
+    }
+
+    // The log records the routed canonical model ID even when the caller requested an alias.
+    // Deliberately ignore unresolved names, which may have been reassigned since the request.
+    @Transactional(readOnly = true)
+    @Query(value = """
+        SELECT m.id AS "modelId", m.name AS "modelName", MAX(le.timestamp_request) AS "lastUsedAt"
+        FROM log_entry le
+        JOIN models m ON m.id = le.model_id AND m.deprecated
+        WHERE le.team_id = :teamId
+          AND le.timestamp_request >= :since
+          AND le.result_status = 'success'
+        GROUP BY m.id, m.name
+        ORDER BY MAX(le.timestamp_request) DESC, m.id
+        """, nativeQuery = true)
+    List<DeprecatedModelUsage> findDeprecatedModelUsage(@Param("teamId") Integer teamId,
+                                                       @Param("since") Instant since);
+
 
     @Transactional(readOnly = true)
     @Query(value = """
