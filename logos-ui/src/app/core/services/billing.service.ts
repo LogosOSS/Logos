@@ -40,14 +40,14 @@ export class BillingService {
   private http = inject(HttpClient);
 
   getTeamBudgetHistory(startIso: string, endIso: string): Promise<TeamBudgetHistoryResponse> {
-    return firstValueFrom(this.http.query<TeamBudgetHistoryResponse>('/api/logosdb/billing/team_budget_history', {
+    return firstValueFrom((this.http as any).query('/api/logosdb/billing/team_budget_history', {
       start_iso: startIso,
       end_iso: endIso,
     }));
   }
 
   getKeyBudgetHistory(teamId: number, startIso: string, endIso: string): Promise<KeyBudgetHistoryResponse> {
-    return firstValueFrom(this.http.query<KeyBudgetHistoryResponse>(`/api/logosdb/billing/key_budget_history/${teamId}`, {
+    return firstValueFrom((this.http as any).query(`/api/logosdb/billing/key_budget_history/${teamId}`, {
       start_iso: startIso,
       end_iso: endIso,
     }));

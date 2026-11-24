@@ -950,6 +950,24 @@ describe('NodeModel', () => {
       expect(root.textContent).not.toContain('when it calibrates this model');
     });
 
+    it('links an unsupported model to the error report of its calibration', async () => {
+      service['getNodeInsights'].mockResolvedValue(
+        insights([
+          insight({
+            row: false,
+            configured: false,
+            model_id: 9,
+            calibration: { status: 'unsupported', reason: 'Needs more memory than the node has.', results: [] },
+          }),
+        ]),
+      );
+      const root = await create();
+
+      const link = root.querySelector<HTMLAnchorElement>('.banner--err a.banner-action')!;
+      expect(link.textContent).toContain('Open the error report');
+      expect(link.getAttribute('href')).toBe('/models/9/details?tab=error_report');
+    });
+
     it('offers it again for an outdated calibration and says why', async () => {
       service['getNodeInsights'].mockResolvedValue(
         insights([insight({ calibration: { status: 'outdated', reason: null, results: [] } })]),

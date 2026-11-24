@@ -641,3 +641,24 @@
     align-items: stretch;
   }
 }
+
+// A button inside an error banner: below the text, solid in the colour of the error, icon in the text colour.
+.banner .banner-action {
+  margin-top: 12px;
+  width: fit-content;
+  color: #fff;
+  border-color: rgb(var(--color-error));
+  background: rgb(var(--color-error));
+
+  &:hover {
+    color: #fff;
+    border-color: rgb(var(--color-error));
+    background: rgb(var(--color-error));
+    filter: brightness(0.9);
+  }
+
+  i {
+    font-size: var(--font-size-sm);
+    color: inherit;
+  }
+}

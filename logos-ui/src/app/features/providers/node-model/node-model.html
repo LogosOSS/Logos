@@ -189,6 +189,14 @@
             {{ insight()?.calibration?.reason || providerName() + ' cannot calibrate this model.' }}
             The worker will not load the model.
           </span>
+          @if (insight()?.model_id; as modelId) {
+            <div>
+              <a class="btn-primary banner-action" [routerLink]="['/models', modelId, 'details']" [queryParams]="{ tab: 'error_report' }">
+                Open the error report
+                <i class="pi pi-arrow-up-right" aria-hidden="true"></i>
+              </a>
+            </div>
+          }
         </div>
       </div>
     }
