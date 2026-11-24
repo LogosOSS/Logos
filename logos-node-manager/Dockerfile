@@ -1,7 +1,7 @@
 # The Docker command line and the Compose plugin come from the official CLI image. The tag is pinned like the other
 # build tools in this repo, so an engine release cannot change what lands in the image without a bump here. The command
 # line talks to the engine of the host through the mounted socket and is compatible with older engines.
-FROM docker:28.5.2-cli AS docker-cli
+FROM docker:29.10.0-cli AS docker-cli
 
 FROM python:3.13-slim
 
@@ -14,13 +14,26 @@ COPY --from=docker-cli /usr/local/libexec/docker/cli-plugins/docker-compose /usr
 
 WORKDIR /app
 
+# The build context is the root of the repository, because the image also carries the compose files of the commit (see
+# below). The .dockerignore of the root lets through exactly what is copied here.
 # The package has no runtime dependencies, so nothing is installed: it runs from
 # the source tree on PYTHONPATH (building a wheel would resolve the build
 # backend's own dependencies at build time). The `node-manager` command the
 # deploy workflows `docker exec` is a wrapper around `python -m`.
-COPY logos_node_manager ./logos_node_manager
+COPY logos-node-manager/logos_node_manager ./logos_node_manager
 RUN printf '#!/bin/sh\nexec python -m logos_node_manager "$@"\n' > /usr/local/bin/node-manager \
   && chmod 0755 /usr/local/bin/node-manager
+
+# The compose files of this commit, for the hosts to take out of the image of a tag: the manager of a host reads
+# /compose/core.yaml or /compose/worker.yml from it (see compose_source.py), so that the settings of a deployment always
+# match its images. The self-update of the manager reads the file of the manager's own service: on a core host that is
+# /compose/deployer.yml, on a worker host the service is part of worker.yml. The label says that the image has the
+# files. Its value is the version of this layout. A file that is added to the layout does not change the version, because
+# a manager that does not know the file does not read it.
+COPY docker-compose.yaml /compose/core.yaml
+COPY logos-workernode/docker-compose.yml /compose/worker.yml
+COPY logos-node-manager/docker-compose.core.yml /compose/deployer.yml
+LABEL io.logos.compose-bundle="1"
 
 # Marks every image of the manager. The deploy workflows remove the unused ones by this label after an update: once a
 # newer image is pulled, an older one has no name left, so the label is the only thing that still identifies it.

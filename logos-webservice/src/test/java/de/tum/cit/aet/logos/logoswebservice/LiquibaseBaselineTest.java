@@ -59,6 +59,38 @@ class LiquibaseBaselineTest {
     @Test
     void schemaApplied() {
         assertThat(tableExists("users")).isTrue();
+        assertThat(columnExists("security_feed_state", "retry_since")).isTrue();
+    }
+
+    @Test
+    void securityFeedRetryWindowPreservesExistingCheckpoints() throws Exception {
+        String schema = "feed_upgrade_" + UUID.randomUUID().toString().replace("-", "");
+        jdbc.execute("CREATE SCHEMA " + schema);
+        try (var connection = DriverManager.getConnection(
+                postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
+                var resources = new ClassLoaderResourceAccessor();
+                var liquibase = new Liquibase("liquibase/changelog/094_security_feed_retry_window.xml",
+                    resources, new JdbcConnection(connection))) {
+            connection.setSchema(schema);
+            liquibase.getDatabase().setDefaultSchemaName(schema);
+            liquibase.getDatabase().setLiquibaseSchemaName(schema);
+            var isolated = new JdbcTemplate(new SingleConnectionDataSource(connection, true));
+            isolated.execute("CREATE TABLE security_feed_state (name text PRIMARY KEY, last_success timestamptz, error text)");
+            isolated.execute("INSERT INTO security_feed_state VALUES ('github', NULL, 'validation failed'), "
+                + "('cisa', '2026-11-16T22:59:34Z', NULL)");
+            var original = isolated.queryForList("SELECT name, last_success, error FROM security_feed_state ORDER BY name");
+            connection.commit();
+            liquibase.update(new Contexts(), new LabelExpression());
+            assertThat(isolated.queryForList("SELECT name, last_success, error FROM security_feed_state ORDER BY name"))
+                .isEqualTo(original);
+            assertThat(isolated.queryForObject("SELECT count(*) FROM security_feed_state WHERE retry_since IS NULL", Integer.class))
+                .isEqualTo(2);
+            liquibase.rollback(1, new Contexts(), new LabelExpression());
+            assertThat(isolated.queryForList("SELECT name, last_success, error FROM security_feed_state ORDER BY name"))
+                .isEqualTo(original);
+        } finally {
+            jdbc.execute("DROP SCHEMA " + schema + " CASCADE");
+        }
     }
 
     @Test

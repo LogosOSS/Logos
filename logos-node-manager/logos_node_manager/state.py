@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -137,13 +138,31 @@ class Deployment:
     # The requests the node still had when the cordon was granted. No new ones arrive after that, so these are the
     # requests the drain waited for.
     drained_requests: int | None = None
-    # When the orchestrator accepted the report of the ending. None until then, and for a deployment that is not
-    # reported at all.
+    # When the ending was reported and taken: by the orchestrator for a deployment from the command line, by Logos for
+    # an order from Logos. None until then.
     reported_at: str | None = None
 
     # The end of the failed container's log, taken before the rollback removes that container.
     failure_logs: str = ""
     events: list[dict[str, str]] = field(default_factory=list)
+
+    # Core host only: the containers of the compose project when the deployment began. The check tells the containers
+    # that the deployment started from the ones that were there already.
+    previous_container_ids: list[str] = field(default_factory=list)
+
+    # An order from Logos. Its progress and its ending are reported to Logos, which notifies the admins itself. A
+    # deployment from the command line is reported to the orchestrator.
+    from_logos: bool = False
+
+    # The compose file of the deployment. Empty means the compose file of the host. Otherwise it is the file that the
+    # manager took out of the image of the tag. The deployment uses it from the pull to the end, also after a restart of
+    # the manager and when the tag has moved on in the meantime.
+    compose_file: str = ""
+    compose_sha256: str = ""
+    # Whether it is settled which compose file the deployment uses, so that a step that is repeated does not ask again.
+    compose_settled: bool = False
+    # Worker only: the compose file that ran before, which the rollback needs. Empty means the compose file of the host.
+    previous_compose_file: str = ""
 
     @property
     def finished(self) -> bool:
@@ -168,7 +187,7 @@ class Deployment:
             raise StateError(f"invalid deployment record: {exc}") from exc
 
 
-def _write_atomically(path: Path, payload: str) -> None:
+def write_atomically(path: Path, payload: str) -> None:
     tmp = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
     try:
         with open(tmp, "w", encoding="utf-8") as handle:
@@ -181,7 +200,7 @@ def _write_atomically(path: Path, payload: str) -> None:
             tmp.unlink()
 
 
-def _create_exclusively(path: Path, payload: str) -> bool:
+def create_exclusively(path: Path, payload: str) -> bool:
     """Create ``path`` with ``payload`` unless it exists. True if this call created it.
 
     The content is written to a temporary file first and linked into place, so a reader never sees a partial file. A
@@ -219,6 +238,9 @@ class StateStore:
         self.state_dir = state_dir
         self.deployments_dir = state_dir / "deployments"
         self.heartbeat_file = state_dir / "heartbeat"
+        # The compose files that were taken out of images: one directory for each deployment, and ``.current`` for the
+        # one that ran last. The name of the latter starts with a dot, so no deployment id can be the same.
+        self.compose_dir = state_dir / "compose"
         # Names of files that were skipped, so that the daemon reports each one once and not on every pass.
         self._ignored: set[str] = set()
 
@@ -236,7 +258,7 @@ class StateStore:
         """Queue a deployment. A second request with the same id returns the first one, so a retry attaches to it."""
         self.ensure()
         validate_tag(deployment.tag)
-        if _create_exclusively(self._path(deployment.id), self._dump(deployment)):
+        if create_exclusively(self._path(deployment.id), self._dump(deployment)):
             return deployment
         existing = self.load(deployment.id)
         if existing is None:
@@ -262,7 +284,19 @@ class StateStore:
 
     def save(self, deployment: Deployment) -> None:
         self.ensure()
-        _write_atomically(self._path(deployment.id), self._dump(deployment))
+        write_atomically(self._path(deployment.id), self._dump(deployment))
+
+    def mark_reported(self, deployment_id: str) -> None:
+        """Note that Logos took the report of the end. Reads the record again and changes nothing else.
+
+        This runs on the thread that reports, while the deployer may save other records. A finished record is not
+        written by the deployer any more, so the one field is safe to set here.
+        """
+        record = self.load(deployment_id)
+        if record is None or not record.finished or record.reported_at is not None:
+            return
+        record.reported_at = utc_now()
+        self.save(record)
 
     def all(self) -> list[Deployment]:
         """Every readable record, oldest request first. A file whose name is not a deployment id is not a record."""
@@ -288,17 +322,18 @@ class StateStore:
         return records[-1] if records else None
 
     def prune(self, keep: int = KEEP_FINISHED) -> None:
-        """Delete the oldest finished records beyond ``keep``."""
+        """Delete the oldest finished records beyond ``keep``, and the compose files that belong to them."""
         finished = [record for record in self.all() if record.finished]
         for record in finished[: max(0, len(finished) - keep)]:
             with contextlib.suppress(FileNotFoundError):
                 self._path(record.id).unlink()
+            shutil.rmtree(self.compose_dir / record.id, ignore_errors=True)
 
     # ------------------------------------------------------------------ Heartbeat
 
     def touch_heartbeat(self) -> None:
         self.state_dir.mkdir(parents=True, exist_ok=True)
-        _write_atomically(self.heartbeat_file, utc_now() + "\n")
+        write_atomically(self.heartbeat_file, utc_now() + "\n")
 
     def heartbeat_age(self) -> float | None:
         """Seconds since the daemon last signalled that it is alive, or None if it never did."""

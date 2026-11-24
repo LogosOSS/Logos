@@ -83,6 +83,9 @@ public class ExportImportService {
         Map<String, Object> data = new LinkedHashMap<>();
         for (String table : TABLES) {
             List<Map<String, Object>> rows = jdbc.queryForList("SELECT * FROM " + safeTable(table)); // NOSONAR table name from the TABLES allow-list (safeTable); not bindable
+            if (table.equals("providers") || table.equals("model_provider")) {
+                rows.forEach(row -> row.remove("api_key"));
+            }
             data.put(table, decodeJsonbColumns(rows));
         }
         return Map.of("result", data);
@@ -211,6 +214,12 @@ public class ExportImportService {
             }
             if ("models".equals(table) && copy.get("profile_ratings") == null) {
                 copy.put("profile_ratings", Map.of());
+            }
+            if ("team_repositories".equals(table)) {
+                copy.putIfAbsent("automatic_workflow_analysis", true);
+            }
+            if ("ai_workflow_analyses".equals(table)) {
+                copy.putIfAbsent("automatically_queued", false);
             }
             if ("ai_llm_call_recommendations".equals(table)) {
                 // Dumps taken before the sla → slo column rename still carry the

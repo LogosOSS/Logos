@@ -104,7 +104,8 @@ public class TeamRepoLinkService {
         link.setBranch(normalizeBranch(body.branch()));
         link.setPaths(normalizePaths(body.paths()));
         configureAgent(link, body.agentEnabled(), body.agentInstructions(), body.verificationCommand());
-        configureSandbox(link, body.agentEgressHosts(), body.agentMayComment());
+        configureSandbox(link, body.agentEgressHosts(), body.agentEgressUnrestricted(), body.agentMayComment());
+        link.setAutomaticWorkflowAnalysis(!Boolean.FALSE.equals(body.automaticWorkflowAnalysis()));
         link.setCreatedAt(now);
         link.setUpdatedAt(now);
         return toMap(saveLink(link, slug));
@@ -145,6 +146,7 @@ public class TeamRepoLinkService {
                 // its own, in a later request.
                 repositoryChanged = true;
                 link.setAgentEgressHosts(List.of());
+                link.setAgentEgressUnrestricted(false);
                 link.setAgentMayComment(false);
                 analysisRepository.deleteByTeamRepositoryId(linkId);
                 cancelOrphanedAnalysisSessions(linkId);
@@ -162,7 +164,13 @@ public class TeamRepoLinkService {
         }
         configureAgent(link, body.agentEnabled(), body.agentInstructions(), body.verificationCommand());
         if (!repositoryChanged) {
-            configureSandbox(link, body.agentEgressHosts(), body.agentMayComment());
+            configureSandbox(link, body.agentEgressHosts(), body.agentEgressUnrestricted(), body.agentMayComment());
+        }
+        if (body.automaticWorkflowAnalysis() != null) {
+            link.setAutomaticWorkflowAnalysis(body.automaticWorkflowAnalysis());
+            if (!link.isAutomaticWorkflowAnalysis()) {
+                cancelQueuedAutomaticAnalyses(linkId);
+            }
         }
         link.setUpdatedAt(Instant.now());
         return Optional.of(toMap(saveLink(link, conflictSlug)));
@@ -178,6 +186,26 @@ public class TeamRepoLinkService {
         cancelOrphanedAnalysisSessions(linkId);
         repoLinkRepository.delete(existing.get());
         return true;
+    }
+
+    private void cancelQueuedAutomaticAnalyses(int linkId) {
+        entityManager.createNativeQuery("""
+            WITH cancelled AS (
+                UPDATE agent_sessions s
+                   SET status = 'cancelled', finished_at = CURRENT_TIMESTAMP,
+                       error = 'Automatic workflow analysis disabled'
+                  FROM ai_workflow_analyses a
+                 WHERE a.team_repository_id = :linkId AND a.automatically_queued
+                   AND s.team_repository_id = :linkId AND s.trigger_kind = 'analysis'
+                   AND s.id = a.agent_session_id AND s.status = 'queued'
+                RETURNING s.id
+            )
+            UPDATE ai_workflow_analyses
+               SET status = 'skipped', finished_at = CURRENT_TIMESTAMP,
+                   error = 'Automatic workflow analysis disabled'
+             WHERE team_repository_id = :linkId AND automatically_queued AND status IN ('queued', 'running')
+               AND (agent_session_id IN (SELECT id FROM cancelled) OR agent_session_id IS NULL)
+            """).setParameter("linkId", linkId).executeUpdate();
     }
 
     /**
@@ -261,8 +289,10 @@ public class TeamRepoLinkService {
         }
     }
 
-    private static void configureSandbox(TeamRepoLink link, List<String> egressHosts, Boolean mayComment) {
+    private static void configureSandbox(
+        TeamRepoLink link, List<String> egressHosts, Boolean egressUnrestricted, Boolean mayComment) {
         if (egressHosts != null) link.setAgentEgressHosts(normalizeEgressHosts(egressHosts));
+        if (egressUnrestricted != null) link.setAgentEgressUnrestricted(egressUnrestricted);
         if (mayComment != null) link.setAgentMayComment(mayComment);
     }
 
@@ -392,10 +422,12 @@ public class TeamRepoLinkService {
         m.put("repo_url", link.getRepoUrl());
         m.put("repo_slug", link.getRepoSlug());
         m.put("branch", link.getBranch());
+        m.put("automatic_workflow_analysis", link.isAutomaticWorkflowAnalysis());
         m.put("agent_enabled", link.isAgentEnabled());
         m.put("agent_instructions", link.getAgentInstructions());
         m.put("verification_command", link.getVerificationCommand());
         m.put("agent_egress_hosts", List.copyOf(link.getAgentEgressHosts()));
+        m.put("agent_egress_unrestricted", link.isAgentEgressUnrestricted());
         m.put("agent_may_comment", link.isAgentMayComment());
         m.put("paths", link.getPaths());
         m.put("created_at", link.getCreatedAt() != null ? link.getCreatedAt().toString() : null);

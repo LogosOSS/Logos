@@ -214,7 +214,9 @@ without its scheduler, because the scheduler starts the seeded sessions. Add a
 `/api/agent` entry (path rewrite to `/`) before `/api` in the proxy
 configuration. Set `LOGOS_AGENT_API_KEY` to a key of the team **Logos** that
 reaches only the models of **Docs Local Worker**; otherwise the page shows a
-model policy error.
+model policy error. For the expanded message view, copy `docs/seed/agent-messages.json`
+to `<fixture-runner-artifact-root>/<seeded-session-id>/messages.json` for the running
+`docs-role-screenshots` session whose task starts with “Fix the flaky login spec”.
 
 The ordinary `docker-compose.dev.yaml` + `ng serve` on `:4200` also works; point
 `psql` at that stack's DB instead of `15432`.
@@ -336,6 +338,11 @@ flows use a **concept** name (no role prefix); role-only list pages keep the
 | `logos-admin-providers.png` | `tobias.wasner` | `/providers` | `roles/logos-admin.md` |
 | `logos-admin-provider-connections.png` | `tobias.wasner` | `/providers` — a cloud provider expanded, connected models with their **Batch** labels | `roles/logos-admin.md` |
 | `logos-admin-add-provider.png` | `tobias.wasner` | `/providers` — **Add Provider** dialog, cloud provider **anthropic** selected, proposed base URL | `roles/logos-admin.md#add-a-provider` |
+| `logos-admin-edit-cloud-key.png` | `tobias.wasner` | **Edit Provider** for a cloud provider with a configured key | `roles/logos-admin.md#add-a-provider` |
+| `logos-admin-rotate-cloud-key.png` | `tobias.wasner` | **Rotate** for a cloud provider, empty **New API key** field | `roles/logos-admin.md#add-a-provider` |
+| `logos-admin-remove-cloud-key.png` | `tobias.wasner` | **Remove** confirmation for a cloud provider key | `roles/logos-admin.md#add-a-provider` |
+| `logos-admin-rotate-worker-key.png` | `tobias.wasner` | **Rotate** confirmation for a worker node | `roles/logos-admin.md#provision-a-worker-key` |
+| `logos-admin-worker-key-created.png` | `tobias.wasner` | **Worker key rotated** with a disposable example key | `roles/logos-admin.md#provision-a-worker-key` |
 | `logos-admin-node-models.png` | `tobias.wasner` | `/providers` — the documentation worker expanded: **Node models** list, **Node settings** and **Connect model** | `roles/logos-admin.md` |
 | `logos-admin-node-model-view.png` | `tobias.wasner` | `/providers/:id/models?model=llama-3.1-8b-instruct` — the model page in view mode | `roles/logos-admin.md` |
 | `logos-admin-node-model-edit.png` | `tobias.wasner` | the same page after **Edit configuration**: TP tiles, KV cache, context, **Advanced settings** | `roles/logos-admin.md` |
@@ -353,7 +360,8 @@ flows use a **concept** name (no role prefix); role-only list pages keep the
 | `logos-admin-security-intake.png` | `tobias.wasner` | `/agents/security` — Report an important incident expanded; `seed/security-incidents.sql` after the role seed | `roles/logos-admin.md#security-incidents` |
 | `logos-admin-security-evidence.png` | `tobias.wasner` | `/agents/security` — Evidence & history expanded; `seed/security-incidents.sql` after the role seed | `roles/logos-admin.md#security-incidents` |
 | `logos-admin-security-confirm.png` | `tobias.wasner` | `/agents/security` — Confirm resolved form; `seed/security-incidents.sql` after the role seed | `roles/logos-admin.md#security-incidents` |
-| `logos-admin-agents.png` | `tobias.wasner` | `/agents` (needs the agent runner API on `/api/agent`) | `roles/logos-admin.md#agent-sessions` |
+| `logos-admin-agents.png` | `tobias.wasner` | `/agents` — current RAM, observed peak, and container limit (needs the agent runner API on `/api/agent`) | `roles/logos-admin.md#agent-sessions` |
+| `logos-admin-agents-messages.png` | `tobias.wasner` | Expanded **Agent messages** with parent and child output, a list and code | `roles/logos-admin.md#agent-sessions` |
 | `logos-admin-agents-new-session.png` | `tobias.wasner` | `/agents` — **New session**, **Repository** `docs-example/sample-app (develop)` selected (needs the agent runner API on `/api/agent`) | `roles/logos-admin.md#start-a-session` |
 | `logos-admin-my-workspace.png` | `tobias.wasner` | `/my-workspace` | `roles/logos-admin.md` |
 | `app-admin-models.png` | `alexandra.szuminska` | `/models` | `roles/app-admin.md` |
@@ -363,7 +371,7 @@ flows use a **concept** name (no role prefix); role-only list pages keep the
 | `team-detail-members.png` | same | `/teams/<id>` — **Members** | same |
 | `team-detail-application-keys.png` | owner or `logos_admin` | `/teams/<id>` — **Application Keys** | same |
 | `team-detail-repositories.png` | owner or `logos_admin` | `/teams/<id>` — **Repositories** | same |
-| `team-detail-repository-agent.png` | same | `/teams/<id>` — **Repositories → Edit**, coding agent enabled | `roles/app-admin.md#enable-the-coding-agent` |
+| `team-detail-repository-agent.png` | same | `/teams/<id>` — **Repositories → Edit**, coding agent enabled and automatic workflow analysis off | `roles/app-admin.md#enable-the-coding-agent` |
 | `team-detail-workflows.png` | owner or `logos_admin` | `/teams/<id>` — **Workflows** | same |
 | `team-detail-models.png` | owner or `logos_admin` | `/teams/<id>` — **Models** | same |
 | `team-detail-activity.png` | owner or `logos_admin` | `/teams/<id>` — **Activity** | same |

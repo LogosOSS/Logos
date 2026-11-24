@@ -175,7 +175,7 @@
                     data-testid="batch-support"
                   >{{ batchLabel(conn) }}</span>
                   <span class="conn-key">{{
-                    conn.api_key ? conn.api_key.slice(0, 6) + '…' : '-'
+                    conn.api_key_hint || '-'
                   }}</span>
                   <div class="conn-actions">
                     <button
@@ -306,19 +306,23 @@
         <p class="field-hint">Default endpoint of {{ addCloudProviderType() }}. Change it for a proxy or a regional endpoint.</p>
       }
     </div>
-    <div class="form-field">
-      <label class="field-label" for="add-key">API Key</label>
-      <input
-        id="add-key"
-        class="field-input"
-        type="text"
-        placeholder="sk-..."
-        [value]="addApiKey()"
-        (input)="addApiKey.set($any($event.target).value)"
-        [disabled]="addLoading()"
-        autocomplete="off"
-      />
-    </div>
+    @if (addProviderType() === 'cloud') {
+      <div class="form-field">
+        <label class="field-label" for="add-key">API Key</label>
+        <input
+          id="add-key"
+          class="field-input"
+          type="password"
+          placeholder="sk-..."
+          [value]="addApiKey()"
+          (input)="addApiKey.set($any($event.target).value)"
+          [disabled]="addLoading()"
+          autocomplete="new-password"
+        />
+      </div>
+    } @else {
+      <p class="field-hint">After adding this worker, open Edit Provider and rotate its key to provision it.</p>
+    }
     <p class="form-section-label form-section-label--mt">Auth</p>
     <div class="form-row">
       <div class="form-field">
@@ -375,50 +379,97 @@
   </div>
 </app-modal-form>
 
-<!-- ── Created Provider API Key Dialog ─────────────────────────────────────── -->
-<app-modal-form
-  [visible]="createdKeyOpen()"
-  (visibleChange)="$event || closeCreatedKeyDialog()"
-  title="Provider created"
->
-  <div class="form-body">
-    <p class="created-key-intro">
-      <strong>{{ createdKeyName() }}</strong> is a Logos worker node. Authenticate it
-      with the shared key below — it is shown only now, so copy it to your worker
-      configuration.
-    </p>
-    <div class="form-field">
-      <label class="field-label" for="created-key">Shared API Key</label>
-      <div class="created-key-row">
-        <input
-          id="created-key"
-          class="field-input"
-          type="text"
-          readonly
-          [value]="createdKey()"
-          autocomplete="off"
-          spellcheck="false"
-        />
-        <button class="btn-secondary" type="button" (click)="copyCreatedKey()">
-          @if (createdKeyCopied()) {
-            <i class="pi pi-check" aria-hidden="true"></i> Copied!
-          } @else {
-            <i class="pi pi-copy" aria-hidden="true"></i> Copy
-          }
+<ng-template #keyActions let-provider="provider" let-connection="connection">
+  <div class="form-field">
+    <span class="field-label">API Key</span>
+    <div class="key-value-row">
+      <code>{{ (connection ? connection.api_key_hint : provider.api_key_hint) || 'No key configured' }}</code>
+      <button class="btn-secondary" type="button" [disabled]="editLoading() || editConnLoading()" (click)="requestKeyChange(provider, connection)">
+        <i class="pi pi-refresh" aria-hidden="true"></i> Rotate
+      </button>
+      @if (provider.provider_type === 'cloud' && (connection ? connection.api_key_hint : provider.api_key_hint)) {
+        <button class="btn-secondary" type="button" [disabled]="editLoading() || editConnLoading()" (click)="requestKeyChange(provider, connection, true)">
+          <i class="pi pi-trash" aria-hidden="true"></i> Remove
         </button>
-      </div>
+      }
     </div>
   </div>
-  <div class="modal-footer" modal-footer>
-    <button class="btn-primary" type="button" (click)="closeCreatedKeyDialog()">
-      Done
-    </button>
-  </div>
-</app-modal-form>
+</ng-template>
+
+@if (keyChange(); as target) {
+  <app-modal-confirm
+    [visible]="true"
+    (visibleChange)="$event || closeKeyChange()"
+    [title]="(target.remove ? 'Remove API key for ' : 'Rotate API key for ') + (target.connection?.model_name || target.provider.name) + '?'"
+    [message]="target.provider.provider_type === 'logosnode'
+      ? 'This immediately invalidates the current key. Copy the new key and redeploy the worker.'
+      : target.remove
+        ? (target.connection ? 'This connection will use the provider key, if configured.' : 'Requests without a connection key will use this provider without an API key.')
+        : 'Enter the new key issued by your cloud provider.'"
+    [icon]="target.remove ? 'pi-trash' : 'pi-refresh'"
+    [confirmLabel]="target.remove ? 'Remove' : 'Rotate'"
+    [loading]="rotationLoading()"
+    [confirmDisabled]="target.provider.provider_type === 'cloud' && !target.remove && !replacementKey().trim()"
+    (confirmed)="confirmKeyChange()"
+  >
+    @if (target.provider.provider_type === 'cloud' && !target.remove) {
+      <div modal-details class="form-field replacement-field">
+        <label class="field-label" for="replacement-key">New API key</label>
+        <input id="replacement-key" class="field-input" type="password" autocomplete="new-password"
+          [disabled]="rotationLoading()" [value]="replacementKey()"
+          (input)="replacementKey.set($any($event.target).value)" />
+      </div>
+    }
+    @if (rotationError()) {
+      <app-error-message modal-error [message]="rotationError()" />
+    }
+  </app-modal-confirm>
+}
+
+@if (rotatedKey(); as key) {
+  <app-modal-form
+    [visible]="true"
+    (visibleChange)="$event || discardWorkerKey()"
+    title="Worker key rotated"
+  >
+    <div class="form-body">
+      <p class="rotated-key-intro">
+        Copy the new key for <strong>{{ key.name }}</strong> before closing this dialog.
+        Set the worker’s LOGOS_API_KEY deployment secret and redeploy the worker.
+      </p>
+      <div class="form-field">
+        <label class="field-label" for="rotated-key">Shared API Key</label>
+        <div class="rotated-key-row">
+          <input
+            id="rotated-key"
+            class="field-input"
+            type="text"
+            readonly
+            [value]="key.value"
+            autocomplete="off"
+            spellcheck="false"
+          />
+          <button class="btn-secondary" type="button" (click)="copyRotatedKey()">
+            @if (rotatedKeyCopied()) {
+              <i class="pi pi-check" aria-hidden="true"></i> Copied!
+            } @else {
+              <i class="pi pi-copy" aria-hidden="true"></i> Copy
+            }
+          </button>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer" modal-footer>
+      <button class="btn-primary" type="button" (click)="discardWorkerKey()">
+        Done
+      </button>
+    </div>
+  </app-modal-form>
+}
 
 <!-- ── Edit Provider Dialog ───────────────────────────────────────────────── -->
 <app-modal-form
-  [visible]="editTarget() !== null"
+  [visible]="editTarget() !== null && !keyChange()"
   (visibleChange)="$event || closeEditDialog()"
   title="Edit Provider"
 >
@@ -485,19 +536,13 @@
         <p class="field-hint">Default endpoint of {{ editCloudProviderType() }}. Change it for a proxy or a regional endpoint.</p>
       }
     </div>
-    <div class="form-field">
-      <label class="field-label" for="edit-key">API Key</label>
-      <input
-        id="edit-key"
-        class="field-input"
-        type="text"
-        placeholder="sk-..."
-        [value]="editApiKey()"
-        (input)="editApiKey.set($any($event.target).value)"
-        [disabled]="editLoading()"
-        autocomplete="off"
-      />
-    </div>
+    @if (editTarget(); as provider) {
+      @if (editProviderType() === provider.provider_type) {
+        <ng-container *ngTemplateOutlet="keyActions; context: { provider }" />
+      } @else {
+        <p class="field-hint">Save the provider type before you rotate its key.</p>
+      }
+    }
     <p class="form-section-label form-section-label--mt">Auth</p>
     <div class="form-row">
       <div class="form-field">
@@ -589,12 +634,12 @@
       <input
         id="conn-key"
         class="field-input"
-        type="text"
+        type="password"
         placeholder="sk-..."
         [value]="connectApiKey()"
         (input)="connectApiKey.set($any($event.target).value)"
         [disabled]="connectLoading()"
-        autocomplete="off"
+        autocomplete="new-password"
       />
     </div>
     @if (connectError()) {
@@ -626,7 +671,7 @@
 
 <!-- ── Edit Connection Dialog ─────────────────────────────────────────────── -->
 <app-modal-form
-  [visible]="editConnModel() !== null"
+  [visible]="editConnModel() !== null && !keyChange()"
   (visibleChange)="$event || closeEditConnDialog()"
   title="Edit Connection"
 >
@@ -645,19 +690,11 @@
         autocomplete="off"
       />
     </div>
-    <div class="form-field">
-      <label class="field-label" for="editconn-key">API Key</label>
-      <input
-        id="editconn-key"
-        class="field-input"
-        type="text"
-        placeholder="sk-..."
-        [value]="editConnApiKey()"
-        (input)="editConnApiKey.set($any($event.target).value)"
-        [disabled]="editConnLoading()"
-        autocomplete="off"
-      />
-    </div>
+    @if (editConnProvider(); as provider) {
+      @if (editConnModel(); as connection) {
+        <ng-container *ngTemplateOutlet="keyActions; context: { provider, connection }" />
+      }
+    }
     @if (editConnError()) {
       <app-error-message [message]="editConnError()!" />
     }

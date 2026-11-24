@@ -181,7 +181,43 @@ class TeamRepoLinkControllerTest {
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.agent_egress_hosts").isArray())
             .andExpect(jsonPath("$.agent_egress_hosts.length()").value(0))
+            .andExpect(jsonPath("$.agent_egress_unrestricted").value(false))
             .andExpect(jsonPath("$.agent_may_comment").value(false));
+    }
+
+    @Test
+    void unrestrictedEgress_isAnExplicitLogosAdminOptInThatDoesNotFollowARepositoryChange() throws Exception {
+        MvcResult created = mvc.perform(post("/admin/teams/2001/repositories")
+                .with(TestJwt.logosAdmin()).contentType("application/json")
+                .content("{\"repo_url\":\"https://github.com/team/open-network\",\"agent_egress_unrestricted\":true}"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.agent_egress_unrestricted").value(true))
+            .andReturn();
+        int id = mapper.readTree(created.getResponse().getContentAsString()).get("id").asInt();
+        String url = "/admin/teams/2001/repositories/" + id;
+
+        mvc.perform(patch(url).with(TestJwt.adminUser()).contentType("application/json")
+                .content("{\"agent_egress_unrestricted\":false}"))
+            .andExpect(status().isForbidden())
+            .andExpect(jsonPath("$.detail")
+                .value("Only Logos admins can change agent network access and comment permissions"));
+        mvc.perform(get("/admin/teams/2001/repositories").with(TestJwt.adminUser()))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$[?(@.id == " + id + ")].agent_egress_unrestricted").value(true));
+
+        mvc.perform(patch(url).with(TestJwt.logosAdmin()).contentType("application/json")
+                .content("{\"repo_url\":\"https://github.com/team/open-network-moved\",\"agent_egress_unrestricted\":true}"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.agent_egress_unrestricted").value(false));
+
+        mvc.perform(patch(url).with(TestJwt.logosAdmin()).contentType("application/json")
+                .content("{\"agent_egress_unrestricted\":true}"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.agent_egress_unrestricted").value(true));
+        mvc.perform(patch(url).with(TestJwt.logosAdmin()).contentType("application/json")
+                .content("{\"agent_egress_unrestricted\":false}"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.agent_egress_unrestricted").value(false));
     }
 
     @Test
@@ -623,6 +659,61 @@ class TeamRepoLinkControllerTest {
            .andExpect(status().isOk())
            .andExpect(jsonPath("$.queued").value(0))
            .andExpect(jsonPath("$.already_in_flight").value(links));
+    }
+
+    @Test
+    void manualAndBulkQueueingShareOneRepositorySlot() throws Exception {
+        String base = "/admin/teams/2001/repositories";
+        var created = mvc.perform(post(base).with(TestJwt.logosAdmin()).contentType("application/json")
+                .content("{\"repo_url\":\"https://github.com/example/queue-race\"}"))
+            .andExpect(status().isOk()).andReturn();
+        int id = mapper.readTree(created.getResponse().getContentAsString()).get("id").asInt();
+        var ready = new java.util.concurrent.CyclicBarrier(2);
+        try (var executor = java.util.concurrent.Executors.newFixedThreadPool(2)) {
+            var manual = executor.submit(() -> {
+                ready.await(5, java.util.concurrent.TimeUnit.SECONDS);
+                return mvc.perform(post(base + "/" + id + "/analyze/agent").with(TestJwt.logosAdmin()))
+                    .andReturn().getResponse().getStatus();
+            });
+            var bulk = executor.submit(() -> {
+                ready.await(5, java.util.concurrent.TimeUnit.SECONDS);
+                return mvc.perform(post("/admin/repositories/analyze").with(TestJwt.logosAdmin()))
+                    .andReturn().getResponse().getStatus();
+            });
+            org.assertj.core.api.Assertions.assertThat(manual.get(10, java.util.concurrent.TimeUnit.SECONDS))
+                .isIn(200, 409);
+            assertEquals(200, bulk.get(10, java.util.concurrent.TimeUnit.SECONDS));
+        }
+        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM ai_workflow_analyses WHERE team_repository_id = ?",
+            Integer.class, id));
+        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM agent_sessions WHERE team_repository_id = ?",
+            Integer.class, id));
+    }
+
+    @Test
+    void ownerOptOutSkipsBulkAndCancelsOnlyQueuedAutomaticAnalysis() throws Exception {
+        String base = "/admin/teams/2001/repositories";
+        MvcResult result = mvc.perform(post(base).with(TestJwt.adminUser()).contentType("application/json")
+                .content("{\"repo_url\":\"https://github.com/example/analysis-choice\"}"))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.automatic_workflow_analysis").value(true)).andReturn();
+        int id = mapper.readTree(result.getResponse().getContentAsString()).get("id").asInt();
+        String link = base + "/" + id;
+        String disabled = "{\"automatic_workflow_analysis\":false}";
+        mvc.perform(post("/admin/repositories/analyze").with(TestJwt.logosAdmin())).andExpect(status().isOk());
+        mvc.perform(patch(link).with(TestJwt.adminUser()).contentType("application/json").content(disabled))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.automatic_workflow_analysis").value(false));
+        assertEquals("cancelled", jdbc.queryForObject("SELECT status FROM agent_sessions WHERE team_repository_id = ?",
+            String.class, id));
+        assertEquals("skipped", jdbc.queryForObject("SELECT status FROM ai_workflow_analyses WHERE team_repository_id = ?",
+            String.class, id));
+        mvc.perform(post("/admin/repositories/analyze").with(TestJwt.logosAdmin()))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.queued").value(0)).andExpect(jsonPath("$.skipped").value(1));
+        mvc.perform(post(link + "/analyze/agent").with(TestJwt.adminUser()))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("queued"));
+        mvc.perform(patch(link).with(TestJwt.adminUser()).contentType("application/json").content(disabled))
+            .andExpect(status().isOk());
+        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM agent_sessions WHERE team_repository_id = ? AND status = 'queued'",
+            Integer.class, id));
     }
 
     @Test

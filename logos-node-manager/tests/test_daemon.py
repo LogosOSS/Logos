@@ -387,3 +387,75 @@ def test_the_start_log_says_whether_the_endings_are_reported(settings, store, do
         daemon.run()
 
     assert expected in caplog.text
+
+
+# ---------------------------------------------------------------------- Self-update
+
+
+class StubUpdater:
+    """Stands for the self-update: says whether a helper has the swap, and remembers what the daemon told it."""
+
+    def __init__(self, *, busy: bool = False, error: Exception | None = None) -> None:
+        self.busy = busy
+        self.error = error
+        self.pending_seen: list[bool] = []
+        self.after: list[tuple[str, Outcome | None]] = []
+
+    def describe(self) -> str:
+        return "a stub"
+
+    def step(self, *, deployments_pending: bool) -> bool:
+        self.pending_seen.append(deployments_pending)
+        if self.error is not None:
+            raise self.error
+        return self.busy
+
+    def after_deployment(self, deployment: Deployment) -> None:
+        self.after.append((deployment.id, deployment.outcome))
+
+
+def test_a_deployment_that_ended_is_handed_to_the_self_update(settings, store):
+    stop = threading.Event()
+    updater = StubUpdater()
+    queue(store, "first", "2026-01-01T00:00:01")
+
+    thread = start(settings, store, ScriptedDeployer(store, stop), stop, updater=updater)
+    try:
+        assert wait_for(lambda: updater.after == [("first", Outcome.SUCCEEDED)])
+    finally:
+        stop.set()
+        thread.join(timeout=5)
+
+    # The self-update is asked on every pass: with a deployment waiting, and without one.
+    assert True in updater.pending_seen and False in updater.pending_seen
+
+
+def test_no_deployment_starts_while_a_helper_has_the_swap(settings, store):
+    stop = threading.Event()
+    updater = StubUpdater(busy=True)
+    deployer = ScriptedDeployer(store, stop)
+    queue(store, "first", "2026-01-01T00:00:01")
+
+    thread = start(settings, store, deployer, stop, updater=updater)
+    try:
+        assert wait_for(lambda: len(updater.pending_seen) >= 3)
+        assert deployer.seen == []
+        updater.busy = False
+        assert wait_for(lambda: deployer.seen == ["first"])
+    finally:
+        stop.set()
+        thread.join(timeout=5)
+
+
+def test_a_self_update_that_fails_does_not_stop_the_deployments(settings, store):
+    stop = threading.Event()
+    deployer = ScriptedDeployer(store, stop)
+    queue(store, "first", "2026-01-01T00:00:01")
+
+    thread = start(settings, store, deployer, stop, updater=StubUpdater(error=RuntimeError("docker is gone")))
+    try:
+        assert wait_for(lambda: deployer.seen == ["first"])
+        assert thread.is_alive()
+    finally:
+        stop.set()
+        thread.join(timeout=5)

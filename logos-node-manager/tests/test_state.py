@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
@@ -145,6 +146,34 @@ def test_unknown_fields_in_a_record_are_ignored(store):
     path.write_text(path.read_text(encoding="utf-8").replace('"tag"', '"future_field": 1, "tag"'), encoding="utf-8")
 
     assert store.load("run-1").tag == "v2"
+
+
+def test_a_record_from_before_the_compose_file_came_from_the_tag_loads_with_the_host_file(store):
+    store.submit(deployment())
+    path = store.deployments_dir / "run-1.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    for name in ("compose_file", "compose_sha256", "compose_settled", "previous_compose_file"):
+        del data[name]
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    loaded = store.load("run-1")
+
+    assert (loaded.compose_file, loaded.compose_settled, loaded.previous_compose_file) == ("", False, "")
+
+
+def test_pruning_a_record_deletes_its_compose_file_and_keeps_the_one_that_ran_last(store):
+    old = store.submit(deployment("old"))
+    old.phase = Phase.DONE
+    old.outcome = Outcome.SUCCEEDED
+    store.save(old)
+    for name in ("old", ".current"):
+        (store.compose_dir / name).mkdir(parents=True)
+        (store.compose_dir / name / "worker.yml").write_text("services: {}", encoding="utf-8")
+
+    store.prune(keep=0)
+
+    assert not (store.compose_dir / "old").exists()
+    assert (store.compose_dir / ".current" / "worker.yml").exists()
 
 
 def test_only_the_newest_finished_records_are_kept(store):

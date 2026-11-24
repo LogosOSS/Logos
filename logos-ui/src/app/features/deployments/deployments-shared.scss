@@ -1,0 +1,210 @@
+/*
+ * What the page Deployments and the page of one deployment share: the status colours, the panels, the tag chip, the
+ * alert banner, the buttons that the global styles do not have, and the log block. The dot, border and tint of a status
+ * use the semantic token (info, success, error, warning). Only the text is a darker mix of it, so that it stays readable
+ * on its own tint in the light theme.
+ */
+:host {
+  --status-running: var(--color-info);
+  --status-succeeded: var(--color-success);
+  --status-failed: var(--color-error);
+  --status-rolled-back: var(--color-warning);
+  --status-running-text: 45 100 144;
+  --status-succeeded-text: 43 110 101;
+  --status-failed-text: 178 56 65;
+  --status-rolled-back-text: 126 102 43;
+
+  display: block;
+}
+
+:host-context([data-theme='dark']) {
+  --status-running-text: var(--color-info);
+  --status-succeeded-text: var(--color-success);
+  --status-failed-text: var(--color-error);
+  --status-rolled-back-text: var(--color-warning);
+}
+
+.deployments {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 36px 32px 48px;
+}
+
+.muted {
+  color: rgb(var(--color-typography-500));
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ── Panel ─────────────────────────────────────────────────────────────── */
+.lg-panel {
+  background: rgb(var(--color-surface-0));
+  border: 1px solid rgb(var(--color-outline-200) / var(--opacity-border));
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.lg-panel__header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 14px 20px 0;
+}
+
+.lg-panel__title {
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-semibold);
+  color: rgb(var(--color-typography-100));
+}
+
+.lg-panel__sub {
+  margin-top: 2px;
+  font-size: var(--font-size-sm);
+  color: rgb(var(--color-typography-500));
+}
+
+.lg-panel__body {
+  padding: 14px 18px 18px;
+}
+
+/* ── Alert banner ──────────────────────────────────────────────────────── */
+.lg-alert {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 16px;
+  border-radius: 12px;
+  color: rgb(var(--color-typography-100));
+  background: rgb(var(--alert-color) / var(--opacity-soft));
+  border: 1px solid rgb(var(--alert-color) / var(--opacity-border));
+  border-left-width: 4px;
+
+  &--error {
+    --alert-color: var(--color-error);
+  }
+
+  &--warning {
+    --alert-color: var(--color-warning);
+  }
+}
+
+.lg-alert__icon {
+  margin-top: 2px;
+  color: rgb(var(--alert-color));
+  font-size: 1.1rem;
+}
+
+.lg-alert__body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  font-size: var(--font-size-sm);
+}
+
+.lg-alert__hint {
+  color: rgb(var(--color-typography-500));
+}
+
+/* ── Image tag chip ────────────────────────────────────────────────────── */
+.lg-tag {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: 8px;
+  border: 1px solid rgb(var(--color-typography-500) / var(--nav-item-text-opacity));
+  background: rgb(var(--color-typography-500) / var(--nav-active-fill-opacity));
+  color: rgb(var(--color-typography-500));
+  font-family: var(--font-family-mono, ui-monospace, monospace);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  white-space: nowrap;
+}
+
+/* ── Buttons that the global styles do not have ────────────────────────── */
+.btn-danger-outline {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 36px;
+  padding: 0 16px;
+  border-radius: 8px;
+  border: 1px solid rgb(var(--color-error));
+  background: transparent;
+  color: rgb(var(--color-error));
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color 0.12s ease;
+
+  &:hover:not(:disabled) {
+    background: rgb(var(--color-error) / var(--opacity-soft));
+  }
+}
+
+.lg-breadcrumb {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: 8px;
+  margin-bottom: 16px;
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-semibold);
+  color: rgb(var(--color-typography-300));
+  text-decoration: none;
+
+  &:hover {
+    color: rgb(var(--color-text-accent));
+  }
+
+  &:focus-visible {
+    outline: 2px solid rgb(var(--color-text-accent));
+    outline-offset: 3px;
+    border-radius: 4px;
+  }
+}
+
+/* ── Log excerpt ───────────────────────────────────────────────────────── */
+.lg-log {
+  margin: 0;
+  padding: 12px;
+  border-radius: 8px;
+  background: rgb(var(--color-background-200));
+  color: rgb(var(--color-typography-700));
+  font-family: var(--font-family-mono, ui-monospace, monospace);
+  font-size: var(--font-size-xs);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.lg-hint {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0;
+  font-size: var(--font-size-xs);
+  line-height: var(--line-height-loose);
+  color: rgb(var(--color-typography-300));
+
+  .pi {
+    margin-top: 5px;
+    font-size: var(--font-size-xs);
+  }
+}

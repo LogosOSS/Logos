@@ -319,7 +319,7 @@ See the [nightly benchmark guide](../admin/nightly-benchmarks.md) for rotation, 
 
 The card then shows **Enabled · in nightly rotation**.
 The schedule stays active after a page reload.
-Each night, Logos selects up to 2 eligible pairs, with new or older attempts first.
+Each night, Logos selects up to `LOGOS_NIGHTLY_MAX_PAIRS` eligible pairs, with new or older attempts first.
 Select **Manage** to inspect the parameter values for this pair. The plan does not guarantee a place for tonight.
 
 The example uses illustrative measurements and an active nightly schedule.
@@ -402,10 +402,27 @@ Select **Add Provider**. The dialog asks for the classification first:
 4. Check the **Base URL**. For OpenAI, Anthropic, DeepSeek and Groq, the dialog
    proposes the public endpoint of the vendor. Replace it for a proxy or a
    regional endpoint. A URL that you typed stays when you change the vendor.
-5. Enter the **Name** and the **API Key**. Leave **Header Name** and **Format**
+5. Enter the **Name**. For a cloud provider, enter its **API Key**. Leave **Header Name** and **Format**
    empty to use the vendor default that the placeholders show.
 
 ![Add Provider dialog with Anthropic selected](/img/roles/logos-admin-add-provider.png)
+
+Open **Edit Provider** to see the masked key. The key can show up to its last 3 characters.
+You can save changes to the provider without changing its key.
+
+![Edit Provider with the masked key and Rotate button](/img/roles/logos-admin-edit-cloud-key.png)
+
+To replace the key, select **Rotate**. Enter the key from the cloud provider in **New API key**.
+Select **Rotate** to apply it, or **Cancel** to keep the current key.
+Use the same steps in **Edit Connection** for a key specific to one model.
+
+![Cloud rotation dialog with an empty New API key field](/img/roles/logos-admin-rotate-cloud-key.png)
+
+Select **Remove** to remove a stored key. Confirm with **Remove**.
+After you remove a connection key, the connection uses the provider key, if available.
+After you remove a provider key, connections without their own key send requests without an API key.
+
+![Confirmation before removal of a cloud provider key](/img/roles/logos-admin-remove-cloud-key.png)
 
 Expand a provider to see its connected models. Next to the endpoint, each model
 shows whether its batches can use the provider's Batch API: **Batch**, **No
@@ -414,6 +431,24 @@ names the batch deployment or the reason for a refusal. See
 [Batch status of a model](../batch-processing.md#batch-status-of-a-model).
 
 ![Providers page — connected models with their batch status](/img/roles/logos-admin-provider-connections.png)
+
+### Provision a worker key
+
+1. Open **Edit Provider** for the worker node.
+2. Select **Rotate** next to the masked key.
+3. Confirm with **Rotate**. The previous key immediately stops working for new authentication requests.
+
+![Worker key rotation confirmation](/img/roles/logos-admin-rotate-worker-key.png)
+
+4. Select **Copy** in **Worker key rotated** before you close the dialog.
+5. Set the deployment secret `LOGOS_API_KEY` for this worker to the new value.
+6. Recreate the worker with the updated environment. Recreate its node manager if the worker uses one.
+7. Check that the worker connects to Logos.
+
+![One-time worker key dialog with a synthetic example](/img/roles/logos-admin-worker-key-created.png)
+
+If you lose the new value, rotate the key again.
+The management export omits provider and model connection keys. Provision them again after you restore an export.
 
 ### Node models
 
@@ -558,6 +593,110 @@ If you change the global arguments, then every model of the node is measured aga
 in the next calibration window. The worker uses a new GPU poll interval after the next start.
 You can save the settings if the worker is offline. The worker applies them when it connects.
 
+## Deployments
+
+The page **Deployments** deploys Logos from Logos. It is for Logos admins only. A
+deployer on each host takes the orders. A Logos deploys only itself: use the page
+of Prod to deploy Prod, the page of Dev to deploy Dev, and the page of Test to
+deploy Test. See [Deployments from Logos](../deployment.md#deployments-from-logos)
+to install the deployers.
+
+If no deployer is set up, the page says so, and the button **Deploy** is off.
+
+![Deployments page](/img/roles/logos-admin-deployments.png)
+
+The page has these parts:
+
+* **Current deployment.** The deployment that runs now, with one row for each
+  node. Each row shows how far the node is: Pull, Drain, Swap and Verify. A node
+  is *Waiting for the core*, *Waiting for the deployer*, *Running*,
+  *Succeeded*, *Unchanged*, *Rolled back*, *Failed* or *Not started*. Click
+  **View details** to open the page of the deployment. Click **Abandon deployment**
+  to stop the next steps of a deployment that this Logos started. Without a
+  running deployment, the part shows the last one.
+* **New deployment.** Enter an image tag and click **Deploy**.
+  Prod shows a red banner. When you click **Deploy** on Prod, a dialog asks you
+  to confirm: click **Deploy** in the dialog to start, or **Cancel** to not
+  start. Dev and Test start at once. The button is off, with a reason, when the
+  core deployer is not online or a deployment runs.
+* **History.** The latest 50 deployments, each with its number, the person who
+  started it and the time. Filter them by status. Click a row to open its page.
+* **Page of a deployment.** Click a row of the history, or **View details**, to open
+  it. The page shows the status, the events of each node and, for a
+  failed part, the end of the container log. A running deployment updates itself.
+* **Deployers.** The deployers of this Logos, when each was seen, and its
+  version. A worker appears in this list when its node manager asks Logos for
+  orders for the first time. It uses its worker key. Click **Add a core
+  deployer** to make the core deployer. Logos shows its key once.
+
+### Start a deployment
+
+1. Enter an image tag in **Image tag**. The list suggests `latest` and the tags
+   of the last deployments.
+2. Click **Deploy**.
+3. On a protected Logos, a dialog asks you to confirm. Click **Deploy** in the
+   dialog to start. Click **Cancel** to not start.
+4. Logos opens the page of the new deployment.
+
+![Confirmation dialog of a protected Logos](/img/roles/logos-admin-deployments-confirm.png)
+
+A protected Logos shows the red banner **Deployments on this Logos affect live
+users**. It accepts only `latest` and release versions such as `1.0.2`. Prod is
+protected. Dev and Test are not, so they start at once.
+
+### Follow a deployment
+
+The core goes first. If the core succeeded, all GPU workers start. The
+orchestrator keeps only one worker out of service at a time. The bar of a node
+has four parts: **Pull**, **Drain**, **Swap** and **Verify**. The bar shows how
+far the node is.
+
+![Current deployment with a worker that drains](/img/roles/logos-admin-deployments-running.png)
+
+In the figure, the core succeeded. The worker waits in the part **Drain** until
+the requests of its node end. The page updates itself.
+
+Click **Abandon deployment** to stop the steps that did not start. A host that
+got its order finishes it. A node that runs the new image keeps it.
+
+### Read the result
+
+Click a row of the history, or **View details**, to open the page of a
+deployment. The page shows the events of each node in the order that they
+happened.
+
+![Page of a deployment that succeeded](/img/roles/logos-admin-deployment-detail.png)
+
+If the node takes its compose file from the image of the tag, the first event
+names the file. The next events show the pull, the drain, the swap and the
+check. For a worker, the events also show how long the node waited for its
+requests.
+
+If the new container of a worker does not come up, the node manager starts the
+previous version again. The node then has the status **Rolled back**. The page
+shows the reason and the end of the container log of the new container.
+
+![Page of a deployment that was rolled back](/img/roles/logos-admin-deployment-rolled-back.png)
+
+If the core fails, the workers do not start. They have the status **Not
+started**. A core deployment has no automatic rollback. Fix the cause and deploy
+again.
+
+### Add a core deployer
+
+1. In the part **Deployers**, click **Add a core deployer**.
+2. Enter the name of the core host.
+3. Click **Make the deployer**.
+4. Copy the key. Logos shows the key one time.
+5. Click **I have copied the key**.
+
+![Dialog with the key of a new core deployer](/img/roles/logos-admin-deployer-key.png)
+
+Store the key as the secret `LOGOS_DEPLOYER_KEY` of the core host. If you lose a
+key, click **New key** for the deployer. The old key stops at once. A worker
+needs no key. It appears in the list when its node manager asks Logos for
+orders.
+
 ## Policies
 
 Policies are the rules that decide which models a team or an API key can use.
@@ -667,15 +806,57 @@ For each session, it shows the work, the state and the pull request. Every
 Logos Admin can open the page. The **Agents** entry in the sidebar shows only
 if the deployment runs the optional agent stack.
 
+![Agent Sessions page](/img/roles/logos-admin-agents.png)
+
+The page has these parts, from top to bottom:
+
+- **Status tiles.** **Runner** shows the mode of the runner. **Sessions** shows
+  the running sessions and the limit, and the sessions that wait. **Memory**
+  shows the memory that the sessions reserve and the memory budget of the
+  host. **Platform capacity** shows if a new session can start, and the reason.
+- **Runner controls.** In **Mode**, select **Run**, **Stop new sessions** or
+  **Pause everything**. **Stop new sessions** lets the running sessions
+  finish. **Pause everything** pauses the running sessions and gives the
+  capacity back to the platform. **Reason** is an optional note for the
+  change.
+- **Memory per session (MiB)** sets the memory limit of each new session. A
+  running session keeps its memory limit.
+- **Sessions at once** sets the maximum number of sessions that run at the
+  same time. The maximum is the number of sessions that the memory budget
+  holds. You can only set a lower value. The value 0 starts no new session.
+- **Session lists.** **Active**, **Queue** and **Finished** show the
+  sessions. Select a session to show its details and messages. Use the
+  arrows of a queued session to change its position in the queue.
+  **RAM now** shows the latest total for the session containers, including helpers and file cache.
+  The runner samples about every 2 seconds. A short peak between samples can be higher.
+  **Observed peak** keeps the highest sample after the session ends or the runner restarts.
+  **Unavailable** means there is no measurement. **Limit** shows the limit per container at the start of the session.
+  A **2x** badge means the parent used one distinct Claude Code subagent. A second child makes it **3x**.
+  The count includes children that already finished. Older sessions without recorded identities have no badge.
+  **Agent estimate** shows the parent’s latest self-reported percentage and when it reported.
+  After about ten active minutes, the next completed tool call reminds the parent to estimate again.
+  Long tool calls can delay a report. At 40% after 20 active minutes, the forecast is about 30 more active minutes.
+  Pausing freezes the countdown. An elapsed forecast or 20 active minutes without a new report displays
+  **Awaiting updated estimate**. Session status records the actual outcome.
+- **Automatic work**, **Workspaces** and **What every session is told** are
+  at the bottom of the page.
+
+Select a session to read **Agent messages** as the agent works. **Agent** identifies
+the parent. **Subagent** and a short identifier distinguish child messages.
+Each message keeps its paragraphs, lists and code. Open **Diagnostic log** to
+see tool activity and runner output, including the logs of older sessions.
+The message view keeps up to 64 recent messages and marks shortened text.
+
+![Expanded agent session with parent and child messages and a code sample](/img/roles/logos-admin-agents-messages.png)
+
 Repository analyses of the linked repositories of the teams also run here.
 Each night, they run again for repositories that have new commits. **Analyze
-all repositories** immediately queues an analysis for every linked repository,
-also if there are no new commits. Use it, for example, after an improvement of
-the analysis. It does not change repositories that already have an analysis
-that is queued or that runs. The results go to the teams as proposals on their
-**Workflows** tab ([Team detail](app-admin.md#workflows)).
-
-![Agent Sessions page](/img/roles/logos-admin-agents.png)
+enabled repositories** in **Automatic work** immediately queues an analysis for
+every repository with **Automatic workflow analysis** enabled, even if there are no new commits. Use it, for
+example, after an improvement of the analysis. It does not change repositories
+that already have an analysis that is queued or that runs. The results go to
+the teams as proposals on their **Workflows** tab
+([Team detail](app-admin.md#workflows)).
 
 ### Start a Session
 
@@ -700,11 +881,11 @@ only for the platform repository. A note below the check boxes gives this
 reason.
 
 The session list and the session details show the repository of a session on
-a linked repository. In the session list, the repository shows next to the
-workspace, for example `docs-example/sample-app` in the **Finished** section
-of the **Agent Sessions** page image.
+a linked repository. In the session list, the repository shows below the task,
+next to the workspace. For example, see `docs-example/sample-app` in the
+**Finished** section of the **Agent Sessions** page image.
 
-A Logos Admin also sets the network hosts and the comment permission of each
+A Logos Admin also sets the network access and the comment permission of each
 linked repository. Edit the repository link on the **Repositories** tab of the
 team ([Agent Sandbox Permissions](app-admin.md#agent-sandbox-permissions)).
 

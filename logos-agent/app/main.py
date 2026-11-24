@@ -6,13 +6,15 @@ health check requires a Keycloak token carrying the operator role.
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import json
 import logging
 import mimetypes
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException, Query, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import Response, StreamingResponse
 
 from . import (
@@ -23,6 +25,8 @@ from . import (
     db,
     docker_engine,
     github,
+    memory_budget,
+    memory_usage,
     model_policy,
     pulse,
     repository_context,
@@ -46,13 +50,16 @@ from .schemas import (
     QueueMove,
     SessionCreate,
     SessionEvent,
+    SessionMessages,
     SessionStatus,
     SessionSummary,
     Workspace,
     WorkspaceCreate,
 )
 from .security_models import AssessmentAction, IncidentInput, RepositoryInput
-from .sessions import artifact_dir, cache_volume_for, manager, resumption_base
+from .sessions import artifact_dir, cache_volume_for, manager, memory_admission_block
+from .sessions import reserved_memory_mb as sessions_reserved_memory_mb
+from .sessions import resumption_base
 
 logging.basicConfig(
     level=logging.INFO,
@@ -90,6 +97,7 @@ async def lifespan(_app: FastAPI):
             "account without 'workflow' scope as LOGOS_AGENT_SESSION_GITHUB_TOKEN to "
             "keep that out of the agent's reach."
         )
+    await memory_budget.establish()
     await manager.start()
     triggers.poller.on_queued = manager.scheduler_pass
     await triggers.poller.start()
@@ -248,6 +256,10 @@ async def get_capacity(_: Principal = Depends(require_agent_operator)) -> Capaci
     blocked = control.admission_block()
     if blocked:
         may_start, reason = False, blocked
+    elif may_start:
+        memory_block = await memory_admission_block(control)
+        if memory_block:
+            may_start, reason = False, memory_block
     # The local-only model policy gates admission as hard as load does, so
     # the page that explains why nothing starts has to show it too — an
     # operator staring at an idle platform should not have to read the logs
@@ -276,7 +288,14 @@ async def get_capacity(_: Principal = Depends(require_agent_operator)) -> Capaci
     )
 
 
-def _control_state(state: controls.Controls) -> ControlState:
+async def _control_state(state: controls.Controls) -> ControlState:
+    budget = memory_budget.current()
+    reserved = 0
+    if budget is not None:
+        try:
+            reserved = await sessions_reserved_memory_mb()
+        except Exception as exc:  # noqa: BLE001 - the page still shows the controls
+            logger.info("could not read the reserved session memory: %s", exc)
     return ControlState(
         mode=state.mode,
         mode_reason=state.mode_reason,
@@ -285,6 +304,13 @@ def _control_state(state: controls.Controls) -> ControlState:
         max_parallel=state.max_parallel,
         max_parallel_override=state.max_parallel_override,
         max_parallel_configured=settings.max_parallel_sessions,
+        max_parallel_available=state.max_parallel_available,
+        session_memory_mb=state.session_memory_mb,
+        session_memory_override=state.session_memory_override,
+        session_memory_configured=settings.session_memory_mb,
+        memory_budget_mb=budget.budget_mb if budget is not None else None,
+        host_memory_mb=budget.host_mb if budget is not None else None,
+        memory_reserved_mb=reserved,
         updated_by=state.updated_by,
     )
 
@@ -292,7 +318,7 @@ def _control_state(state: controls.Controls) -> ControlState:
 @app.get("/controls", response_model=ControlState, tags=["capacity"])
 async def get_controls(_: Principal = Depends(require_agent_operator)) -> ControlState:
     """The kill switch and the ceiling, as they stand."""
-    return _control_state(await controls.current())
+    return await _control_state(await controls.current())
 
 
 @app.post("/controls", response_model=ControlState, tags=["capacity"])
@@ -316,10 +342,14 @@ async def update_controls(body: ControlUpdate, principal: Principal = Depends(re
         limit = None if body.clear_max_parallel else body.max_parallel
         state = await controls.set_max_parallel(limit=limit, by=principal.username)
         logger.info("%s set the parallel ceiling to %s", principal.username, limit if limit is not None else "default")
+    if body.clear_session_memory_mb or body.session_memory_mb is not None:
+        memory = None if body.clear_session_memory_mb else body.session_memory_mb
+        state = await controls.set_session_memory(memory_mb=memory, by=principal.username)
+        logger.info("%s set the memory per session to %s", principal.username, f"{memory} MiB" if memory else "default")
     # A pause takes effect on the next pass anyway; running one now means the
     # operator sees it happen instead of waiting a tick for it.
     manager.request_scheduler_pass()
-    return _control_state(state)
+    return await _control_state(state)
 
 
 @app.get("/models", tags=["capacity"])
@@ -368,6 +398,7 @@ def _coding_repository_fields(row: dict) -> dict:
         "branch": str(row.get("branch") or "main"),
         "verification_command": row.get("verification_command"),
         "agent_egress_hosts": [str(host) for host in hosts],
+        "agent_egress_unrestricted": bool(row.get("agent_egress_unrestricted")),
         "agent_may_comment": bool(row.get("agent_may_comment")),
     }
 
@@ -583,6 +614,8 @@ async def retry_session(session_id: int, principal: Principal = Depends(require_
             team_repository_id=row.get("team_repository_id"),
             verification_command=row.get("verification_command"),
             repo_base_branch=row.get("repo_base_branch"),
+            automatic_analysis=False if row.get("trigger_kind") == "analysis" else None,
+            retry_analysis_session_id=session_id if row.get("trigger_kind") == "analysis" else None,
             point_workspace_at=resumption_base(row),
         )
     except ValueError as exc:
@@ -621,6 +654,30 @@ async def move_session_in_queue(
         )
     logger.info("session %s moved %s in the queue by %s", session_id, body.move, principal.username)
     return SessionSummary(**_summary_fields(moved))
+
+
+@app.get("/sessions/{session_id}/messages", response_model=SessionMessages, tags=["sessions"])
+async def session_messages(
+    session_id: int, request: Request, response: Response, _: Principal = Depends(require_agent_operator)
+) -> SessionMessages | Response:
+    if await db.get_session(session_id) is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    try:
+        data = await asyncio.to_thread(read_artifact, artifact_dir(session_id), "messages.json", limit=512 * 1024)
+    except FileNotFoundError:
+        return SessionMessages()
+    except OSError:
+        raise HTTPException(status_code=503, detail="Session messages could not be read")
+    etag = '"' + hashlib.sha256(data).hexdigest() + '"'
+    headers = {"ETag": etag, "Cache-Control": "private, no-cache", "Vary": "Authorization"}
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=headers)
+    try:
+        messages = SessionMessages.model_validate_json(data, strict=True)
+    except ValueError:
+        raise HTTPException(status_code=503, detail="Session messages could not be read")
+    response.headers.update(headers)
+    return messages
 
 
 @app.get("/sessions/{session_id}/events", response_model=list[SessionEvent], tags=["sessions"])
@@ -747,7 +804,13 @@ async def session_pull_request(session_id: int, _: Principal = Depends(require_a
 def _summary_fields(row: dict) -> dict:
     """Project a database row onto the response model's fields."""
     keys = set(SessionSummary.model_fields)
-    return {k: v for k, v in row.items() if k in keys}
+    fields = {k: v for k, v in row.items() if k in keys}
+    live = memory_usage.current(row["id"], row["status"])
+    fields["memory_current_bytes"] = live
+    if live is not None:
+        # The sampler may commit a newer peak after this request's SELECT.
+        fields["memory_peak_bytes"] = max(live, row.get("memory_peak_bytes") or 0)
+    return fields
 
 
 @app.post("/security/scans/trivy", tags=["security"])

@@ -1064,6 +1064,9 @@ class WorkerRuntimeStatus(BaseModel):
     # Admission-related per-model overrides: GMU, TP and explicit KV bytes.
     # Environment and template payloads are not included.
     # Only models with at least one published key appear.
+    # Models for which the planner can select an alternate restore device. Each
+    # list is the intersection of the worker and model GPU pools on this node.
+    restore_gpu_pool_by_model: dict[str, list[int]] | None = None
     configured_vllm_by_model: dict[str, dict[str, Any]] | None = None
     # Calculated startup gpu_memory_utilization the worker will enforce at
     # cold EngineCore init, per configured model. Each entry:

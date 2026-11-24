@@ -37,6 +37,12 @@ def test_worker_key_is_required():
         render_secrets("worker", {})
 
 
+def test_only_the_core_host_receives_the_key_of_its_deployer():
+    env = {**_environment(), "DEPLOY_SECRET_LOGOS_DEPLOYER_KEY": "deployer-key"}
+    assert 'LOGOS_DEPLOYER_KEY="deployer-key"\n' in render_secrets("core", env)
+    assert "LOGOS_DEPLOYER_KEY" not in render_secrets("worker", env)
+
+
 def test_worker_receives_only_its_api_key():
     output = render_secrets("worker", _environment())
     assert output == 'LOGOS_API_KEY="test-LOGOS_API_KEY"\n'

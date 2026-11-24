@@ -25,13 +25,13 @@
           [disabled]="loading"
           (click)="visibleChange.emit(false)"
         >
-          Cancel
+          {{ cancelLabel }}
         </button>
       }
       <button
         [class]="danger ? 'btn-danger' : 'btn-primary'"
         type="button"
-        [disabled]="loading"
+        [disabled]="loading || confirmDisabled"
         (click)="confirmed.emit()"
       >
         @if (loading) {

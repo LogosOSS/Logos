@@ -10,6 +10,8 @@
  *
  *   cd docs
  *   NODE_PATH=../logos-ui/node_modules node trailer/render.cjs [--fps 30] [--from 0] [--to 60]
+ *
+ * CHROMIUM_PATH names a browser to use when Playwright does not find its own build.
  */
 const { spawn, execFileSync } = require("node:child_process");
 const os = require("node:os");
@@ -31,7 +33,7 @@ const POSTER_T = 9;
   fs.mkdirSync(OUT_DIR, { recursive: true });
   const music = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "logos-trailer-")), "music.wav");
   execFileSync("python3", ["-I", path.join(__dirname, "music.py"), music], { stdio: "inherit" }); // NOSONAR - developer tool: python3 comes from the developer's PATH
-  const browser = await chromium.launch();
+  const browser = await chromium.launch(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {});
   const page = await browser.newPage({ viewport: { width: 1920, height: 1080 }, deviceScaleFactor: 2 });
   await page.goto("file://" + path.join(__dirname, "trailer.html") + "?driven");
   await page.evaluate(() => window.trailerReady);

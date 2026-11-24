@@ -6,7 +6,7 @@
 # Self-built installations can override REGISTRY with their own image source.
 services:
   traefik:
-    image: traefik:v3.7.16
+    image: traefik:v3.7.19
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -244,6 +244,7 @@ services:
       LOGOS_MAINTENANCE_TIMEZONE: "${LOGOS_MAINTENANCE_TIMEZONE:-Europe/Berlin}"
       # Leave empty on Dev to keep its fixed pilot workload. Opt in on Prod only.
       LOGOS_NIGHTLY_REQUEST_USERNAME: "${LOGOS_NIGHTLY_REQUEST_USERNAME:-}"
+      LOGOS_NIGHTLY_MAX_PAIRS: "${LOGOS_NIGHTLY_MAX_PAIRS:-2}"
       LOGOS_CALIB_SLEEP_LEVEL: "${LOGOS_CALIB_SLEEP_LEVEL:-1}"
       # Nightly benchmarks are opt-in per model/worker in the administration UI.
       # The schedule is persisted in PostgreSQL (Europe/Berlin, starts 05:00–07:50).
@@ -434,6 +435,11 @@ services:
       KEYCLOAK_SYNC_ENABLED: "${KEYCLOAK_SYNC_ENABLED:-false}"
       KEYCLOAK_SYNC_CLIENT_ID: "${KEYCLOAK_SYNC_CLIENT_ID:-logos-sync}"
       KEYCLOAK_SYNC_CLIENT_SECRET: "${KEYCLOAK_SYNC_CLIENT_SECRET:-}"
+      # Deployments from Logos. A Logos deploys only itself. A protected Logos (the default) asks for a confirmation in
+      # a dialog and accepts only latest and release versions such as 1.0.2. Set LOGOS_DEPLOYMENTS_PROTECTED to false
+      # on Dev and Test. See docs/deployment.md#deployments-from-logos.
+      LOGOS_DEPLOYMENTS_PROTECTED: "${LOGOS_DEPLOYMENTS_PROTECTED:-true}"
+      LOGOS_DEPLOYMENTS_SILENCE_LIMIT: "${LOGOS_DEPLOYMENTS_SILENCE_LIMIT:-30m}"
       # Origins the webservice accepts browser requests from. Browsers attach an
       # Origin header to POST requests and WebSocket handshakes even when the UI
       # and API share an origin, so the Spring CorsFilter rejects every POST/WS
@@ -514,6 +520,15 @@ services:
       - "traefik.http.routers.webservice-admin.service=logos-webservice-svc"
       - "traefik.http.routers.webservice-admin.middlewares=strip-api,rl-admin"
       - "traefik.http.routers.webservice-admin.priority=200"
+
+      # === Routing: /api/deployments (the deployments page, and the deployers of the hosts) ===
+      # The page uses a JWT. The deployers use a key of their own, checked in the controller. Their requests wait up
+      # to 30 s for an order (long polling), which the rate limit counts as one request.
+      - "traefik.http.routers.webservice-deployments.rule=PathPrefix(`/api/deployments`)"
+      - "traefik.http.routers.webservice-deployments.entrypoints=internal8090"
+      - "traefik.http.routers.webservice-deployments.service=logos-webservice-svc"
+      - "traefik.http.routers.webservice-deployments.middlewares=strip-api,rl-admin"
+      - "traefik.http.routers.webservice-deployments.priority=200"
 
       # === Routing: /api/ws/stats, /api/ws/stats/v2, /api/ws/notifications (WebSocket) ===
       - "traefik.http.routers.webservice-ws.rule=Path(`/api/ws/stats`) || Path(`/api/ws/stats/v2`) || Path(`/api/ws/notifications`)"
@@ -664,6 +679,8 @@ services:
       LOGOS_AGENT_EGRESS_PROXY_URL: "${LOGOS_AGENT_EGRESS_PROXY_URL-http://logos-agent-egress-proxy:3128}"
       LOGOS_AGENT_MAX_PARALLEL_SESSIONS: "${LOGOS_AGENT_MAX_PARALLEL_SESSIONS:-10}"
       LOGOS_AGENT_SESSION_MEMORY_MB: "${LOGOS_AGENT_SESSION_MEMORY_MB:-4096}"
+      LOGOS_AGENT_MEMORY_BUDGET_MB: "${LOGOS_AGENT_MEMORY_BUDGET_MB:-0}"
+      LOGOS_AGENT_HOST_MEMORY_SHARE: "${LOGOS_AGENT_HOST_MEMORY_SHARE:-0.5}"
       LOGOS_AGENT_SESSION_CPUS: "${LOGOS_AGENT_SESSION_CPUS:-2}"
       # The uid the session image runs as; the runner chowns the per-session
       # artefact directories it creates to this user.

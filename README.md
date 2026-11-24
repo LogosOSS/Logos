@@ -173,6 +173,32 @@ are pinned to a fixed archive snapshot, and tool versions are exact everywhere.
 PyCharm setup and every pre-commit hook. The [TUM test instance](https://logososs.github.io/Logos/developer/test-instance)
 page covers SSH and database access to `logos-test.aet.cit.tum.de`.
 
+### Reviewing dependency updates
+
+Dependabot checks Maven (including the Spring Boot parent), uv projects, pip inputs, the UI and documentation npm
+manifests, GitHub Actions, Dockerfiles and Compose images weekly. Routine groups include major, minor and patch
+versions. The agent and node manager share a uv group. GitHub Actions, benchmark tools and pre-commit hooks share a CI tooling PR.
+The orchestrator and UI keep their own SQLAlchemy and TypeScript compatibility rules. FastAPI has a separate pip
+group because the worker image must also satisfy vLLM's requirements. PostgreSQL, Redis and Liquibase image majors
+are reviewed by dependency so a migration can proceed on its own timeline. Security updates have separate groups
+in the service, application and image configurations.
+
+Maven submits its resolved graph when the POM changes on `main`, so GitHub can match advisories against BOM-managed
+versions. The repository's `file:` dependency under `docs/vendor` is maintained in tree.
+
+For pip input changes, the Test job checks the worker image, standalone worker, E2E, benchmark and hook hash locks.
+If a Dependabot change resolves and needs new locks, download the `requirements-locks` artifact on that PR head,
+review and apply `requirements-locks.patch`, then commit it to the PR. To reproduce locally, run
+`scripts/lock-requirements.sh` and inspect the diff. An incompatible set of inputs needs a compatible pin first.
+
+The weekly [platform version report](https://github.com/LogosOSS/Logos/actions/workflows/logos_platform-versions.yml)
+compares workspace tools, CI runtimes and literal apt pins with upstream versions. Review base digests, archive
+snapshots and package versions together. A Temurin update also needs the JDK/JRE hashes for both architectures,
+the workspace package and the CI version. Align repeated tool pins in Dockerfiles and workflow inputs.
+The Linux vLLM and macOS vLLM Metal workflows handle their coupled releases and wheels. Review CUDA compatibility
+with the target driver and GPU fleet when changing that stack. The lock generator keeps compiler wheels on the
+runtime CUDA minor. Test fixtures, vendored code and model revisions require a maintainer's compatibility review.
+
 ### Conventions
 
 - **Pull request titles** are short, descriptive and start with a capital letter, for example

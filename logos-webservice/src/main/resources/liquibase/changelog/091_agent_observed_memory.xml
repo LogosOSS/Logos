@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+    <changeSet id="091-agent-observed-memory" author="LogosOSS">
+        <sql>
+            ALTER TABLE agent_sessions ADD COLUMN memory_peak_bytes BIGINT;
+        </sql>
+        <rollback>
+            <sql>
+                ALTER TABLE agent_sessions DROP COLUMN memory_peak_bytes;
+            </sql>
+        </rollback>
+    </changeSet>
+</databaseChangeLog>

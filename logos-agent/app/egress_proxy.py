@@ -13,7 +13,9 @@ where that list is enforced.
 * The host must match the repository's list, read live from the database,
   so withdrawing a host takes effect within seconds — for new connections
   and for open tunnels alike, which are checked again at the same interval
-  and closed when their grant is gone.
+  and closed when their grant is gone. A Logos administrator can instead
+  opt a repository into unrestricted access: then any host passes this
+  check, and every other rule here still applies.
 * Every address the host resolves to must be public. A name that resolves
   into a private, loopback, link-local or otherwise non-global range is
   refused, and the connection goes to the address that was checked, so a
@@ -114,7 +116,7 @@ def authorised(grant: dict[str, Any] | None, token: str, host: str) -> bool:
         and grant.get("status") == "running"
         and grant.get("token_hash")
         and hmac.compare_digest(str(grant["token_hash"]), token_hash(token))
-        and host_allowed(host, list(grant.get("hosts") or []))
+        and (grant.get("unrestricted") is True or host_allowed(host, list(grant.get("hosts") or [])))
     )
 
 

@@ -22,11 +22,14 @@ import {
   AgentRepository,
   AgentSession,
   AgentSessionStatus,
+  SessionMessages,
   AgentTriggers,
   AgentWorkspace,
   isActive,
 } from '../../shared/models/agent.model';
 import { SelectComponent, AppSelectOption } from '../../shared/components/select/select';
+import { ErrorMessageComponent } from '../../shared/components/error-message/error-message';
+import { SessionMessagesComponent } from './session-messages';
 
 /** How often the list and the open session are refreshed while work is live. */
 const POLL_MS = 4000;
@@ -73,7 +76,7 @@ export function scaleSlotCounts(parts: number[], limit: number): number[] {
 @Component({
   selector: 'app-agents',
   standalone: true,
-  imports: [CommonModule, FormsModule, SelectComponent, RouterLink],
+  imports: [CommonModule, FormsModule, SelectComponent, ErrorMessageComponent, RouterLink, SessionMessagesComponent],
   templateUrl: './agents.html',
   changeDetection: ChangeDetectionStrategy.Eager,
   styleUrl: './agents.scss',
@@ -88,6 +91,22 @@ export class Agents implements OnInit {
 
   /** The template binds a numeric workspace id to the select's string value. */
   readonly String = String;
+  readonly isActive = isActive;
+  private lastSessionRequest = signal(0);
+  private refreshSequence = 0;
+  private appliedSequence = 0;
+  private readonly mib = new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 });
+
+  formatRam(bytes: number | null | undefined): string {
+    if (bytes == null) return 'Unavailable';
+    const value = bytes / 1024 ** 2;
+    return value > 0 && value < 0.1 ? '<0.1 MiB' : this.mib.format(value) + ' MiB';
+  }
+
+  liveRam(session: AgentSession): number | null {
+    // Expire the last response if polling stalls while the page stays open.
+    return this.now() - this.lastSessionRequest() < 3 * POLL_MS ? session.memory_current_bytes ?? null : null;
+  }
 
   // ── data ─────────────────────────────────────────────────────────────────
   sessions = signal<AgentSession[]>([]);
@@ -106,6 +125,11 @@ export class Agents implements OnInit {
   // ── selected session ─────────────────────────────────────────────────────
   selectedId = signal<number | null>(null);
   events = signal<AgentEvent[]>([]);
+  messageSnapshot = signal<SessionMessages | null>(null);
+  messageError = signal(false);
+  private messageRequest: object | null = null;
+  private messageReadAt = 0;
+  private messagesFinal = false;
   private lastEventId = 0;
 
   selected = computed(() => {
@@ -130,32 +154,38 @@ export class Agents implements OnInit {
   pauseReason = signal('');
   /** What is typed in the limit field, until it is applied. */
   limitDraft = signal('');
+  /** What is typed in the memory field, until it is applied. */
+  memoryDraft = signal('');
 
   /**
    * What the slider stands at: the value being dragged if there is one,
-   * otherwise the limit in force — the override, or the configured value
-   * when nothing overrides it.
+   * otherwise the ceiling in force.
    */
   readonly limitShown = computed(() => {
     const draft = this.limitDraft().trim();
     if (draft !== '' && Number.isFinite(Number(draft))) return Number(draft);
-    const state = this.controls();
-    return state?.max_parallel_override ?? state?.max_parallel_configured ?? 0;
+    return this.controls()?.max_parallel ?? 0;
   });
 
   /**
-   * How far the slider goes. The configured value is the normal working
-   * point, so the scale reaches past it without running to the schema's
-   * hundred, which no deployment has the capacity for.
+   * How far the slider goes: the most sessions the host's memory budget
+   * holds with the current memory per session. The slider lowers the
+   * ceiling from there; it cannot raise it.
    */
-  readonly limitCeiling = computed(() => {
-    const state = this.controls();
-    const configured = state?.max_parallel_configured ?? 10;
-    // Never below what is actually set: a stored override of 80 against a
-    // scale that stops at 20 would show 80 in the label, clamp the control
-    // to 20, and lower the limit on the first touch of it.
-    const inForce = Math.max(state?.max_parallel_override ?? 0, this.limitShown());
-    return Math.min(100, Math.max(20, configured * 2, inForce));
+  readonly limitCeiling = computed(() => this.controls()?.max_parallel_available ?? 0);
+
+  /** The memory field: what is being typed, otherwise the memory in force. */
+  readonly memoryShown = computed(() => {
+    const draft = this.memoryDraft().trim();
+    if (draft !== '') return draft;
+    return String(this.controls()?.session_memory_mb ?? '');
+  });
+
+  /** How much of the memory budget the sessions have reserved, 0 to 100. */
+  readonly memoryPercent = computed(() => {
+    const ctl = this.controls();
+    if (!ctl?.memory_budget_mb) return 0;
+    return Math.min(100, Math.max(0, (ctl.memory_reserved_mb / ctl.memory_budget_mb) * 100));
   });
   creatingWorkspace = signal(false);
 
@@ -310,10 +340,15 @@ export class Agents implements OnInit {
   async refresh(options: { quiet?: boolean } = {}): Promise<void> {
     if (!options.quiet) this.loading.set(true);
     try {
+      const sequence = ++this.refreshSequence;
+      const requestedAt = Date.now();
       const [sessions, workspaces] = await Promise.all([
         this.agentService.getSessions(),
         this.agentService.getWorkspaces(),
       ]);
+      if (sequence < this.appliedSequence) return;
+      this.appliedSequence = sequence;
+      this.lastSessionRequest.set(requestedAt);
       this.sessions.set(sessions);
       this.workspaces.set(workspaces);
       this.error.set(null);
@@ -322,7 +357,7 @@ export class Agents implements OnInit {
       }
       await this.loadCapacity();
       if (!options.quiet) await this.loadModelsAndTriggers();
-      if (this.selectedId() !== null) await this.loadEvents();
+      if (this.selectedId() !== null) await Promise.all([this.loadEvents(), this.loadMessages()]);
     } catch {
       this.error.set('Could not reach the agent runner.');
     } finally {
@@ -343,7 +378,7 @@ export class Agents implements OnInit {
       const state = await this.agentService.getControls();
       this.controls.set(state);
       if (!this.controlBusy()) {
-        this.limitDraft.set(String(state.max_parallel_override ?? ''));
+        this.limitDraft.set('');
         this.pauseReason.set(state.mode_reason);
       }
     } catch {
@@ -381,6 +416,39 @@ export class Agents implements OnInit {
   });
 
   /**
+   * Set the memory of each session started from now on, in MiB. An empty
+   * field goes back to the deployment's default. Sessions already running
+   * keep the memory they were started with.
+   */
+  async applyMemory(value: string): Promise<void> {
+    if (this.controlBusy()) return;
+    const trimmed = value.trim();
+    let body: { session_memory_mb?: number; clear_session_memory_mb?: boolean };
+    if (trimmed === '') {
+      body = { clear_session_memory_mb: true };
+    } else {
+      const parsed = Number(trimmed);
+      if (!Number.isFinite(parsed) || parsed < 512) {
+        this.memoryDraft.set('');
+        this.error.set('The memory per session must be at least 512 MiB.');
+        return;
+      }
+      body = { session_memory_mb: Math.round(parsed) };
+    }
+    this.controlBusy.set(true);
+    try {
+      const state = await this.agentService.setControls(body);
+      this.controls.set(state);
+      this.memoryDraft.set('');
+      await this.refresh({ quiet: true });
+    } catch (err: unknown) {
+      this.error.set(this.messageOf(err, 'Could not change the memory per session.'));
+    } finally {
+      this.controlBusy.set(false);
+    }
+  }
+
+  /**
    * Change how many sessions may run at once, from now on.
    *
    * Called when the field is left or Enter is pressed, never on each
@@ -398,16 +466,20 @@ export class Agents implements OnInit {
       if (!Number.isFinite(parsed)) {
         // Nothing to send: an unparseable field is a typo, not an
         // instruction, and null would silently mean "no change".
-        this.limitDraft.set(String(this.controls()?.max_parallel_override ?? ''));
+        this.limitDraft.set('');
         return;
       }
-      body = { max_parallel: Math.max(0, Math.min(100, Math.round(parsed))) };
+      const available = this.controls()?.max_parallel_available ?? 100;
+      const limit = Math.max(0, Math.min(available, Math.round(parsed)));
+      // The maximum is not an override: at the top of the scale the ceiling
+      // follows the memory budget again.
+      body = limit >= available ? { clear_max_parallel: true } : { max_parallel: limit };
     }
     this.controlBusy.set(true);
     try {
       const state = await this.agentService.setControls(body);
       this.controls.set(state);
-      this.limitDraft.set(String(state.max_parallel_override ?? ''));
+      this.limitDraft.set('');
       await this.refresh({ quiet: true });
     } catch (err: unknown) {
       this.error.set(this.messageOf(err, 'Could not change the session limit.'));
@@ -448,6 +520,11 @@ export class Agents implements OnInit {
 
   // ── session selection ────────────────────────────────────────────────────
   async select(session: AgentSession): Promise<void> {
+    this.messageRequest = null;
+    this.messageReadAt = 0;
+    this.messagesFinal = false;
+    this.messageSnapshot.set(null);
+    this.messageError.set(false);
     if (this.selectedId() === session.id) {
       this.selectedId.set(null);
       this.events.set([]);
@@ -460,7 +537,7 @@ export class Agents implements OnInit {
     this.lastEventId = 0;
     this.stopStream();
     this.resetScreenshots();
-    await this.loadEvents();
+    await Promise.all([this.loadEvents(), this.loadMessages()]);
     // The load is asynchronous, and the selection may have moved on while
     // it ran. Opening the stream anyway would leave a connection nobody
     // holds the handle to — untracked, unabortable, and read by the server
@@ -496,6 +573,7 @@ export class Agents implements OnInit {
           this.lastEventId = event.id;
           this.events.update((existing) => [...existing, event]);
           if (event.kind === 'screenshot') void this.loadScreenshots();
+          if (event.kind === 'log' && Date.now() - this.messageReadAt >= 500) void this.loadMessages();
         }
       } catch {
         // Aborted, refused, or dropped: the poll keeps the page correct, so
@@ -669,6 +747,28 @@ export class Agents implements OnInit {
       void this.loadScreenshots();
     } catch {
       /* transient; the next poll retries */
+    }
+  }
+
+  private async loadMessages(): Promise<void> {
+    const id = this.selectedId();
+    if (id === null || this.messageRequest || this.messagesFinal) return;
+    const session = this.selected();
+    const terminal = !!session && !isActive(session.status);
+    const request = {};
+    this.messageRequest = request;
+    this.messageReadAt = Date.now();
+    try {
+      const snapshot = await this.agentService.getMessages(id);
+      if (this.messageRequest === request) {
+        this.messageSnapshot.set(snapshot);
+        this.messagesFinal = terminal;
+        this.messageError.set(false);
+      }
+    } catch {
+      if (this.messageRequest === request) this.messageError.set(true);
+    } finally {
+      if (this.messageRequest === request) this.messageRequest = null;
     }
   }
 
@@ -858,7 +958,7 @@ export class Agents implements OnInit {
     this.formModel.set(name || null);
   }
 
-  /** Queue an analysis of every linked team repository, regardless of commit. */
+  /** Queue an analysis of linked team repositories with automatic analysis enabled. */
   async analyzeAllRepositories(): Promise<void> {
     if (this.analyzingAll()) return;
     this.analyzingAll.set(true);
@@ -918,6 +1018,23 @@ export class Agents implements OnInit {
 
   finishedAgo(session: AgentSession): string {
     return session.finished_at ? this.elapsed(session.finished_at) : '—';
+  }
+
+  reportAge(session: AgentSession): string {
+    return session.progress_reported_at ? this.elapsed(session.progress_reported_at) : '—';
+  }
+
+  progressEta(session: AgentSession): string {
+    const percent = session.progress_percent;
+    const atReport = session.progress_active_s;
+    if (!percent || percent >= 100 || atReport == null || atReport <= 0 ||
+        (session.status !== 'running' && session.status !== 'paused')) return '';
+    const currentInterval = session.active_since && session.status === 'running'
+      ? Math.max(0, (this.now() - Date.parse(session.active_since)) / 1000) : 0;
+    const since = Math.max(0, (session.active_seconds ?? 0) + currentInterval - atReport);
+    const remaining = atReport * (100 - percent) / percent - since;
+    if (remaining <= 0 || since >= 2 * 600) return 'Awaiting updated estimate';
+    return `About ${Math.ceil(remaining / 60)} min of active work left`;
   }
 
   private elapsed(start: string, end: string | null = null): string {

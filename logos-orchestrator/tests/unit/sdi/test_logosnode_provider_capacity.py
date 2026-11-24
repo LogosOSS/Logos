@@ -43,6 +43,9 @@ def _facade_and_provider(
     """Build a facade + registered provider backed by a fake runtime registry."""
 
     class _FakeRegistry:
+        def release_warm_lane(self, provider_id, request_id):
+            pass
+
         @staticmethod
         def peek_runtime_snapshot(provider_id: int):  # noqa: ARG004
             return {"runtime": {"lanes": lanes}}

@@ -154,6 +154,29 @@ workspaces are reused or re-pointed before any queue-only workspace is
 created; a queued session still waits for a real execution slot before it
 starts.
 
+### Memory Budget
+
+The capacity signal says whether the serving fleet has room, not whether the
+host that runs the containers has. Sessions are therefore also admitted
+against a **memory budget**: the memory all sessions together may claim,
+`LOGOS_AGENT_MEMORY_BUDGET_MB`, or by default `LOGOS_AGENT_HOST_MEMORY_SHARE`
+(50 %) of the memory the Docker host reports. An operator sets the **memory
+per session** on the Agents page (default `LOGOS_AGENT_SESSION_MEMORY_MB`).
+The parallel ceiling follows from it, the budget divided by the memory per
+session and never above `MAX_PARALLEL_SESSIONS`, and the slider can only
+lower it. Each session keeps the memory it was started with, and its helper
+containers get the same limit; a new session starts only while the memory
+that starting, running, paused and finalizing sessions reserved, plus its
+own, fits in the budget (`app/memory_budget.py`).
+
+If Docker cleanup fails, a container keeps its reservation until Docker
+confirms it has stopped. On restart the runner inventories managed containers
+before starting the scheduler. For a leftover container that still runs after
+its session ended, the runner restores the reservation from its Docker memory
+limit. Startup fails if the inventory or a required limit is unavailable, or
+if a helper from an active session is still running when recovery would
+repeat its work.
+
 Workspaces the runner creates for triggered work are named after it —
 `issue-812-oom-on-startup`, `pr-772-add-an-agent-runner` — which is also what
 appears in the branch (`logos/agent/issue-812-oom-on-startup/session-42`) and
@@ -348,14 +371,16 @@ unused and can be removed.
 | `LOGOS_INTERNAL_SECRET` | — | Existing internal trust root, shared by orchestrator, runner and model gateway. **Required.** |
 | `LOGOS_AGENT_GITHUB_TOKEN` | — | The agent account's token. **Required.** |
 | `LOGOS_AGENT_GITHUB_LOGIN` | `LogosOSSAgent` | The account every token must belong to |
-| `LOGOS_AGENT_DEFAULT_MODEL` | — | Model when a session does not name one. Optional: with exactly one local model reachable, that one is the default |
+| `LOGOS_AGENT_DEFAULT_MODEL` | — | Model when a session does not name one. Optional: without it, the alias `local-most-powerful` is the default when the agent key reaches it locally, and otherwise the only local model, if there is exactly one |
 | `LOGOS_AGENT_TRIGGERS_ENABLED` | `true` | Kill switch for reacting to the repository |
 | `LOGOS_AGENT_ANALYSIS_NIGHTLY_HOUR_UTC` | `0` | UTC hour of the nightly re-analysis of linked team repositories whose branch head moved; `-1` turns it off |
 | `LOGOS_AGENT_MAX_PARALLEL_SESSIONS` | `10` | Hard ceiling on concurrent (running + paused) sessions |
 | `LOGOS_AGENT_MAX_QUEUE_WORKSPACES` | `0` (= 5× parallel) | Cap on live workspaces holding waiting triggered work |
 | `LOGOS_AGENT_START_BELOW_LOAD` | `0.60` | Start only below this load |
 | `LOGOS_AGENT_PAUSE_ABOVE_LOAD` | `0.85` | Pause at or above this load |
-| `LOGOS_AGENT_SESSION_MEMORY_MB` | `4096` | Per-session memory ceiling |
+| `LOGOS_AGENT_SESSION_MEMORY_MB` | `4096` | Default memory of one session; the Agents page can change it at runtime |
+| `LOGOS_AGENT_MEMORY_BUDGET_MB` | `0` (= host share) | Memory all sessions together may claim |
+| `LOGOS_AGENT_HOST_MEMORY_SHARE` | `0.5` | Share of the Docker host's memory used as the budget when no budget is set |
 | `LOGOS_AGENT_SESSION_CPUS` | `2` | Per-session CPU ceiling |
 | `LOGOS_AGENT_SESSION_TIMEOUT_S` | `0` | Wall-clock ceiling per session; `0` is none, which is the default |
 | `LOGOS_AGENT_SESSION_MODEL_URL` | `http://logos-agent-gateway` | Where sessions send model traffic — a gateway that exposes only the orchestrator's `/v1` model surface, so a session never reaches the rest of the internal network |
@@ -756,6 +781,7 @@ an agent steered by text it read cannot turn it against anybody.
 | Capability | Who enables it | Bound |
 |---|---|---|
 | **Internet over HTTPS** to named hosts | A Logos admin, per link (`agent_egress_hosts`) | Only through `logos-agent-egress-proxy`: `CONNECT` to port 443, only listed hosts (`*.example.org` for subdomains), only public addresses, only while the session runs, authenticated by a per-session token whose hash is on the row. The list is read live. |
+| **Internet over HTTPS** to any public host | A Logos admin, per link, as an explicit opt-in (`agent_egress_unrestricted`) | The host list is not consulted; every other bound of the row above holds. Text an agent reads can then make it send what it sees anywhere, so the session notes tell it to treat such text as data, and the option is meant for repositories where a host list is not practical. |
 | **Workspace cache** at `$LOGOS_CACHE_DIR` (`/cache`) | Every linked-repository session | A volume per workspace, removed with it. The agent phase writes it, verification reads it; credential-bearing helpers never mount it. |
 | **GitHub reads**: `logos-github issue N`, `logos-github issues --label L --assignee none` | Every linked-repository session | The session's repository only, 500 reads per session. |
 | **Comments**: `logos-github comment N "text"` | A Logos admin, per link (`agent_may_comment`) | The session's repository only, 30 per session, mentions neutralised, model disclosure appended, every comment an event on the session. |
@@ -803,11 +829,37 @@ The runner checks the queue every 5 minutes and ingests these feeds hourly:
   of material impact. This covers early vendor notices and infrastructure outside
   package catalogs, such as BMC, BIOS, or PVE advisories.
 
-On first start, feeds cover the previous 7 days. Feed outages are visible in the
-dashboard and do not advance the cursor. Advisory IDs deduplicate intake.
+On first start, feeds cover the previous 7 days, with a one-hour overlap.
+The start of each unfinished window is persisted before contacting the source,
+including on the first poll. Feed outages and partial pagination are visible in
+the dashboard and retain that window across retries and restarts. Only a fully
+completed poll advances the successful checkpoint. GitHub search dates truncate
+to whole seconds and include the boundary; advisory IDs deduplicate replays.
 Registering a repository queues existing incidents for that repository. Reports
 of ordinary low/medium findings are rejected. High findings need manual impact
 triage or confirmation of exploitation from KEV.
+
+Apply the webservice's migration 094 before updating the agent. For an older
+installation that has never successfully polled, the previous implementation
+did not retain the first attempted window. Recover its earliest required UTC
+timestamp from operational records; the current error alone may describe a
+later attempt. To queue an idempotent GitHub backfill, run this SQL against the
+management database with the psql variable `feed_since` set to that timestamp:
+
+```sql
+INSERT INTO security_feed_state (name, retry_since)
+VALUES ('github', :'feed_since'::timestamptz)
+ON CONFLICT (name) DO UPDATE SET
+    retry_since=LEAST(security_feed_state.retry_since, EXCLUDED.retry_since);
+```
+
+This only records an earlier pending boundary; it does not fabricate a successful
+poll or remove existing incidents. The next enabled feed poll replays the window
+and deduplicates its records, even if the last success was less than an hour ago.
+A narrower in-flight poll cannot clear a newly requested earlier boundary. The
+20-page limit still applies: an incomplete replay remains pending with a visible
+error instead of silently advancing. Changes to source metadata can advance an
+incident's revision and trigger reassessment during a backfill.
 
 Each repository has its own assessment, evidence, checked commit, next check,
 linked session, PR and status history. Analysis checks lockfiles, transitive

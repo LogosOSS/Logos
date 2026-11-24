@@ -60,7 +60,7 @@ Select **Performance → Analysis** for **Charts and comparison** or **Run detai
 
 ## Automatic Pair Rotation
 
-Each night admits at most 2 enabled model/worker pairs, one after the other.
+Each night admits at most `LOGOS_NIGHTLY_MAX_PAIRS` enabled model/worker pairs, one after the other.
 Pairs without a previous attempt come first, followed by the oldest previous attempt.
 The pair ID determines the initial order when previous attempt dates match.
 After a restored round, the pair waits behind the other admitted pair.
@@ -418,10 +418,10 @@ Benchmarks start only after these attempts finish and before 08:00.
 If new calibration work appears during a benchmark, the current run finishes first.
 The scheduler restores the worker and stops the remaining benchmark plan with `calibration_pending`.
 
-`LOGOS_MAINTENANCE_MAX_NODES` limits simultaneous maintenance workers. The default is `1`.
-Set it to `2` to permit 2 calibrations or 2 benchmarks on different workers at the same time.
+`LOGOS_MAINTENANCE_MAX_NODES` limits simultaneous workers in automatic calibration and benchmark runs. The default is `1`.
+Set it to `2` to permit 2 automatic calibrations or 2 benchmarks on different workers at the same time.
 Calibration and benchmark phases remain separate. Each worker runs only 1 maintenance operation at a time.
-This limit also applies to manual calibration and manual benchmarks, including cloud benchmarks.
+Manual benchmarks, including cloud benchmarks, also use the limit. Manual calibrations can run concurrently on distinct workers.
 Conflicting manual starts return HTTP 409. They do not enter a queue.
 Automatic calibration stops at the end of its window. The 50% completion rule applies only to benchmarks.
 
@@ -455,14 +455,14 @@ or release it with **Release recovery** (see [Release a recovery](#release-a-rec
 
 ## Maintenance Capacity
 
-`LOGOS_MAINTENANCE_MAX_NODES=1` keeps maintenance sequential, including installations with only 1 worker.
+`LOGOS_MAINTENANCE_MAX_NODES=1` runs automatic calibration and benchmarks sequentially.
 A larger positive integer permits parallel maintenance on different workers.
 The nightly quota remains 2 model/worker pairs per date, independent of this limit.
 Two pairs on the same worker run sequentially.
 Use the same limit on all orchestrators. Invalid values prevent startup.
 The old `LOGOS_NIGHTLY_ALLOW_SINGLE_WORKER` variable no longer controls admission.
 
-The configured maintenance limit applies to manual and nightly runs.
+The configured maintenance limit applies to benchmarks and automatic calibration. An operator can start manual calibration on separate workers concurrently. Each worker accepts one calibration at a time, and active benchmarks or recovery block new calibrations.
 The selected worker must still be online, healthy and free of calibration.
 Existing requests drain first. New normal requests cannot enter a reserved worker.
 If all workers are reserved, normal requests must wait.

@@ -24,7 +24,7 @@ RUN apt-get -o Acquire::Check-Valid-Until=false -o Acquire::Retries=3 update \
 
 # Install uv – a drop-in pip replacement written in Rust (10-100× faster)
 # Pinned to a specific version to mitigate supply-chain risk (update explicitly)
-COPY --from=ghcr.io/astral-sh/uv:0.13.6 /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.13.9 /uv /usr/local/bin/uv
 
 # Create an isolated virtual-env that we will copy into the runtime image
 RUN uv venv /opt/venv
@@ -60,10 +60,24 @@ RUN mkdir -p src/logos && echo '__version__ = "0.1.0"' > src/logos/__init__.py \
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-install-project --compile-bytecode
 
+# The E2E stack recreates the orchestrator between scenarios. Fetch the real
+# classifier once at build time so its readiness check never waits on the Hub.
+FROM builder AS e2e-classifier
+RUN python - <<'PY'
+import huggingface_hub
+
+huggingface_hub.snapshot_download(
+    "sentence-transformers/all-MiniLM-L6-v2",
+    revision="1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+    local_dir="/e2e-classifier",
+    allow_patterns=["*.json", "vocab.txt", "model.safetensors", "README.md"],
+)
+PY
+
 # ──────────────────────────────────────────────────────────
 # Stage 2: Runtime – slim image without compilers or build tools
 # ──────────────────────────────────────────────────────────
-FROM python:3.13-slim-trixie@sha256:e48f59cdba69a3cbd9ed2cf0f348d90d45a8d350d98134cf1070bc106ee9ed90
+FROM python:3.13-slim-trixie@sha256:e48f59cdba69a3cbd9ed2cf0f348d90d45a8d350d98134cf1070bc106ee9ed90 AS runtime
 
 WORKDIR /app
 
@@ -114,3 +128,10 @@ USER 10001:10001
 EXPOSE 8080 50051
 
 CMD ["uvicorn", "logos.main:app", "--host", "0.0.0.0", "--port", "8080", "--ws-ping-interval", "60", "--ws-ping-timeout", "60", "--ws-max-size", "268435456"]
+
+FROM runtime AS e2e
+# SentenceTransformer resolves its configured model name relative to /app.
+COPY --from=e2e-classifier /e2e-classifier /app/all-MiniLM-L6-v2
+ENV HF_HUB_OFFLINE=1
+
+FROM runtime AS production

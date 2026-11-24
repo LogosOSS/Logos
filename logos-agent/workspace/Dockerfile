@@ -7,7 +7,7 @@
 # Resolve the same Maven toolchain and project dependencies as the application
 # image while build-time network access is available. Running test-compile
 # warms compiler/plugin dependencies that dependency:go-offline can miss.
-FROM maven:3.10-eclipse-temurin-25@sha256:37ecd7dbbe926e9b69586747a25164c0f3b764455072322d25cc7724ee9e1b64 AS java-verification
+FROM maven:3.10-eclipse-temurin-25@sha256:4ed0327629de542aefd6ea9fd5da0c52e80143bf8405e5dc32ac2bde55d70d88 AS java-verification
 COPY logos-webservice/install-temurin.sh /tmp/install-temurin.sh
 RUN sh /tmp/install-temurin.sh jdk && rm /tmp/install-temurin.sh
 ENV JAVA_VERSION=jdk-25.0.5.1+2
@@ -120,7 +120,7 @@ RUN arch="$(dpkg --print-architecture)" \
   && gh --version | grep -q "gh version ${GH_VERSION} "
 
 # uv, matching the pin used by the other Logos images.
-COPY --from=ghcr.io/astral-sh/uv:0.13.6 /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.13.9 /uv /usr/local/bin/uv
 
 # Logos targets Python 3.13; Debian bookworm ships 3.11. Install the interpreter
 # at build time into a shared location, so a session runs `uv venv --python
@@ -192,6 +192,7 @@ RUN useradd --create-home --shell /bin/bash --uid 10001 agent \
   && mkdir -p /workspace /artifacts /cache \
   && chown -R agent:agent /workspace /artifacts /cache /home/agent
 
+COPY logos-agent/workspace/session_activity.py /usr/local/lib/session_activity.py
 COPY --chown=agent:agent logos-agent/workspace/run_session.py /usr/local/lib/run_session.py
 COPY --chown=agent:agent logos-agent/workspace/verify_checkout.py /usr/local/lib/verify_checkout.py
 COPY --chown=agent:agent logos-agent/workspace/screenshot.js /usr/local/lib/screenshot.js

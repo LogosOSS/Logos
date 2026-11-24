@@ -1,0 +1,130 @@
+<div class="deployments">
+  <a class="lg-breadcrumb" routerLink="/deployments">
+    <i class="pi pi-chevron-left" aria-hidden="true"></i> Deployments
+  </a>
+
+  @if (loading()) {
+    <p class="muted">Loading the deployment…</p>
+  } @else if (loadError()) {
+    <div class="lg-alert lg-alert--error" role="alert">
+      <i class="pi pi-exclamation-triangle lg-alert__icon" aria-hidden="true"></i>
+      <div class="lg-alert__body">{{ loadError() }}</div>
+    </div>
+  } @else if (plan(); as p) {
+    <header class="head">
+      <div class="head__main">
+        <div class="titleline">
+          <h1 class="page-title titleline__text">Deployment #{{ p.number }}</h1>
+          <span class="lg-tag">{{ p.tag }}</span>
+          <app-status-pill [tone]="planTone(p.status)" [label]="planLabel[p.status]" />
+        </div>
+        <p class="page-subtitle">
+          Started by {{ p.initiator }} ·
+          <span>{{ fullDate(p.created_at) }}</span>
+          @if (duration()) {
+            · {{ duration() }}
+          }
+        </p>
+      </div>
+      @if (canAbandon()) {
+        <button type="button" class="btn-danger-outline" (click)="askAbandon()">
+          Abandon deployment
+        </button>
+      }
+    </header>
+
+    @if (p.status === 'failed' || p.status === 'rolled_back') {
+      <div
+        class="lg-alert"
+        [class.lg-alert--error]="p.status === 'failed'"
+        [class.lg-alert--warning]="p.status === 'rolled_back'"
+        role="alert"
+      >
+        <i class="pi pi-exclamation-triangle lg-alert__icon" aria-hidden="true"></i>
+        <div class="lg-alert__body">
+          <strong>{{ p.status === 'failed' ? 'The deployment failed' : 'The deployment was rolled back' }}</strong>
+          @if (p.reason) {
+            <span class="lg-alert__hint">{{ p.reason }}</span>
+          }
+          @if (p.abandoned_by) {
+            <span class="lg-alert__hint">Abandoned by {{ p.abandoned_by }}.</span>
+          }
+        </div>
+      </div>
+    }
+
+    <section class="lg-panel" aria-label="Node events">
+      <div class="lg-panel__header">
+        <div>
+          <div class="lg-panel__title">Node events</div>
+          <div class="lg-panel__sub">What each node did, in the order it happened.</div>
+        </div>
+      </div>
+      <div class="lg-panel__body cards">
+        @for (step of steps(); track step.id) {
+          <article class="card" [ngClass]="'card--' + stepTone(step.status)">
+            <div class="card__head">
+              <div>
+                <div class="card__title">{{ step.deployer_name }}</div>
+                <div class="card__kind">{{ nodeKindLabel(step.kind) }}</div>
+              </div>
+              <div class="card__status">{{ stepStatusText(step, p.tag) }}</div>
+            </div>
+            <app-phase-bar [states]="phaseStates(step)" />
+            @if (step.events.length > 0) {
+              <ol class="timeline">
+                @for (event of step.events; track $index) {
+                  <li>
+                    <span class="timeline__time">{{ clockTime(event.at) }}</span>
+                    <span class="timeline__title">{{ eventTitle(event.phase, step.status) }}</span>
+                    <span class="timeline__note">{{ event.note }}</span>
+                  </li>
+                }
+              </ol>
+            } @else {
+              <p class="muted card__none">No events yet.</p>
+            }
+          </article>
+        } @empty {
+          <p class="muted">This deployment has no steps.</p>
+        }
+      </div>
+    </section>
+
+    @if (logStep(); as log) {
+      <section class="lg-panel" aria-label="Container log">
+        <div class="lg-panel__header">
+          <div>
+            <div class="lg-panel__title">Container log</div>
+            <div class="lg-panel__sub">The last lines of the new container on {{ log.deployer_name }}.</div>
+          </div>
+          <button type="button" class="btn-copy" (click)="copyLog()">
+            <i class="pi" [class.pi-copy]="!copied()" [class.pi-check]="copied()" aria-hidden="true"></i>
+            {{ copied() ? 'Copied' : 'Copy' }}
+          </button>
+        </div>
+        <div class="lg-panel__body">
+          <pre class="lg-log">{{ log.failure_logs }}</pre>
+        </div>
+      </section>
+    }
+  }
+</div>
+
+<app-modal-confirm
+  [visible]="abandonOpen()"
+  (visibleChange)="$event || closeAbandon()"
+  [title]="'Abandon deployment #' + (plan()?.number ?? '') + '?'"
+  message="Steps that did not start never will. A host that already received its order carries it out, and nodes that already run the new image keep it."
+  cancelLabel="Keep running"
+  confirmLabel="Abandon deployment"
+  icon="pi-exclamation-triangle"
+  [loading]="abandoning()"
+  (confirmed)="confirmAbandon()"
+>
+  <div modal-error>
+    @if (abandonError()) {
+      <p class="lg-hint lg-hint--error" role="alert">{{ abandonError() }}</p>
+    }
+  </div>
+</app-modal-confirm>

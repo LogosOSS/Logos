@@ -12,7 +12,25 @@ from __future__ import annotations
 from dataclasses import replace
 
 import pytest
-from app import controls, conventions, db, docker_engine, model_policy, sessions, upstream
+from app import controls, conventions, db, docker_engine, memory_budget, model_policy, sessions, upstream
+
+
+@pytest.fixture(autouse=True)
+def no_memory_budget(monkeypatch):
+    """No host memory budget unless a test sets one: the suite's host is not a deployment's."""
+
+    async def establish():
+        return None
+
+    monkeypatch.setattr(memory_budget, "establish", establish)
+
+    async def no_recorded_memory(_session_id):
+        return None
+
+    monkeypatch.setattr(db, "session_memory_mb", no_recorded_memory)
+    memory_budget.set_for_tests(None)
+    yield
+    memory_budget.set_for_tests(None)
 
 
 @pytest.fixture(autouse=True)

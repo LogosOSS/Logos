@@ -105,6 +105,7 @@ class CodingRepository(BaseModel):
     branch: str
     verification_command: str | None = None
     agent_egress_hosts: list[str] = Field(default_factory=list)
+    agent_egress_unrestricted: bool = False
     agent_may_comment: bool = False
 
 
@@ -167,6 +168,15 @@ class SessionSummary(BaseModel):
     # What the agent reported spending, in US dollars — the currency
     # Claude Code reports. Authoritative accounting stays in the request log.
     cost_usd: float
+    memory_mb: int | None = None  # Per-container limit at admission, in MiB.
+    memory_current_bytes: int | None = None
+    memory_peak_bytes: int | None = None
+    subagent_count: int | None = None
+    progress_percent: int | None = None
+    progress_active_s: int | None = None
+    progress_reported_at: datetime | None = None
+    active_seconds: float = 0
+    active_since: datetime | None = None
     screenshot_count: int = 0
     # Set when the runner queued this session itself in response to the
     # repository: what kind of event it was ('issue', 'review') and which one
@@ -225,6 +235,18 @@ class QueueMove(BaseModel):
     move: str = Field(pattern="^(up|down|first)$")
 
 
+class AssistantMessage(BaseModel):
+    id: str = Field(pattern=r"^[a-f0-9]{32}$")
+    actor: str = Field(pattern=r"^(main|child-[a-f0-9]{8})$")
+    text: str = Field(min_length=1, max_length=16384)
+    truncated: bool = False
+
+
+class SessionMessages(BaseModel):
+    messages: list[AssistantMessage] = Field(default_factory=list, max_length=64)
+    omitted: int = Field(default=0, ge=0)
+
+
 class SessionEvent(BaseModel):
     id: int
     session_id: int
@@ -247,6 +269,19 @@ class ControlState(BaseModel):
     max_parallel: int
     max_parallel_override: int | None = None
     max_parallel_configured: int
+    # The most sessions that may run at once with the current memory per
+    # session: what the host's memory budget holds, within the configured
+    # cap. The ceiling in force never exceeds it; an operator can lower it.
+    max_parallel_available: int = 0
+    # The memory limit of a session started now, and the deployment's default.
+    session_memory_mb: int = 0
+    session_memory_override: int | None = None
+    session_memory_configured: int = 0
+    # The memory all sessions together may claim, null without a budget, and
+    # what the live sessions have reserved of it.
+    memory_budget_mb: int | None = None
+    host_memory_mb: int | None = None
+    memory_reserved_mb: int = 0
     updated_by: str = ""
 
 
@@ -262,6 +297,10 @@ class ControlUpdate(BaseModel):
     # Null clears the override and the configured ceiling applies again.
     max_parallel: int | None = Field(default=None, ge=0, le=100)
     clear_max_parallel: bool = False
+    # The memory limit of each session started from now on, in MiB. Null
+    # with clear_session_memory_mb goes back to the deployment's default.
+    session_memory_mb: int | None = Field(default=None, ge=512, le=1_048_576)
+    clear_session_memory_mb: bool = False
 
 
 class CapacityState(BaseModel):

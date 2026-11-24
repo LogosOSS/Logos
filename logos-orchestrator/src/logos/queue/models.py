@@ -126,6 +126,15 @@ class QueueEntry:
     """Caller key that enqueued this entry, when known. Lets a runner tell how
     much of a model's backlog is its own traffic rather than a waiting user."""
 
+    context_tokens: int = 0
+    allowed_provider_ids: frozenset[int] | None = None
+
+    def accepts_provider(self, provider_id: int | None) -> bool:
+        return provider_id is None or (
+            self.provider_affinity in (None, provider_id)
+            and (self.allowed_provider_ids is None or provider_id in self.allowed_provider_ids)
+        )
+
     @property
     def wait_time_seconds(self) -> float:
         """Calculate how long this entry has been waiting in queue."""

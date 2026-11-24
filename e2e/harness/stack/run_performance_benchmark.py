@@ -244,6 +244,7 @@ def configure(*, project: str, speed: float, local_images: bool) -> None:
     images = "logos-e2e-bench" if local_images else os.environ.get("E2E_PERF_IMAGE_PROJECT", project)
     for env, service in [
         ("DB", "logos-db"),
+        ("MIGRATE", "migrate"),
         ("ORCHESTRATOR", "logos-orchestrator"),
         ("NODE_A", "node-ada-a"),
         ("NODE_B", "node-ada-b"),

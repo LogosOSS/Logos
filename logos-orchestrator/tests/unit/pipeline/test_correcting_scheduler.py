@@ -142,6 +142,21 @@ class MockLogosNodeFacade:
     def try_reserve_capacity(self, model_id, provider_id, request_id):
         return self._reserve_results.get((model_id, provider_id), True)
 
+    def unqueued_context_limit(self, model_id, provider_id):
+        return float("inf")
+
+    def warm_lane_rank(self, model_id, provider_id, context_tokens=0):
+        return None
+
+    def cancel_warm_booking(self, request_id):
+        pass
+
+    def book_queued_warm_lane(self, model_id, provider_id, request_id, context_tokens=0):
+        pass
+
+    def book_warm_lane(self, model_id, provider_id, request_id, context_tokens=0):
+        pass
+
     def on_request_start(self, request_id, **kwargs):
         if self.raise_on_request_start:
             raise ValueError("Model not registered")

@@ -1,6 +1,7 @@
 """Nightly admission, progress and bounded recovery policy."""
 
 import asyncio
+import os
 import time as clock
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
@@ -16,7 +17,18 @@ LEASE_CHECK: ContextVar[Callable[[], bool]] = ContextVar("nightly_lease_check", 
 STALL_SECONDS = 300
 PREPARATION_SECONDS = 900
 POLL_SECONDS = 1
-MAX_PAIRS_PER_NIGHT = 2
+DEFAULT_PAIRS_PER_NIGHT = 2
+
+
+def pairs_per_night(value: str | None) -> int:
+    """How many model/worker pairs a night admits: LOGOS_NIGHTLY_MAX_PAIRS, at least one."""
+    try:
+        return max(1, int(str(value).strip())) if value not in (None, "") else DEFAULT_PAIRS_PER_NIGHT
+    except ValueError:
+        return DEFAULT_PAIRS_PER_NIGHT
+
+
+MAX_PAIRS_PER_NIGHT = pairs_per_night(os.getenv("LOGOS_NIGHTLY_MAX_PAIRS"))
 
 
 def local_now() -> datetime:
