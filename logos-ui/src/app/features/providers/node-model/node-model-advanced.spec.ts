@@ -76,6 +76,13 @@ describe('checking the settings', () => {
     expect(advancedErrors(draft({ max_num_seqs: '2.5' }))['max_num_seqs']).toBeDefined();
   });
 
+  it('limits the parallel requests to the range the engine settings allow', () => {
+    expect(advancedErrors(draft({ max_num_seqs: '1' }))).toEqual({});
+    expect(advancedErrors(draft({ max_num_seqs: '65536' }))).toEqual({});
+    expect(advancedErrors(draft({ max_num_seqs: '65537' }))['max_num_seqs']).toBe('Use a whole number from 1 to 65536.');
+    expect(advancedErrors(draft({ max_num_seqs: '0' }))['max_num_seqs']).toBe('Use a whole number from 1 to 65536.');
+  });
+
   it('has a field for the base residency, under capability, and asks for a positive number', () => {
     const d = initialAdvanced(entry);
 
