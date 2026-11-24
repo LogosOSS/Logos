@@ -4,44 +4,32 @@
   <section class="onboarding-card" aria-labelledby="logging-title">
     <header class="onboarding-header">
       <app-logo [size]="36" />
-      <h1 id="logging-title">Choose how Logos logs your requests</h1>
-      <p>This choice applies to your active developer keys that use billing-only logging.</p>
+      <h1 id="logging-title">Help make Logos faster</h1>
+      <p>Your requests can help us find faster model settings for work like yours. Thanks for helping improve Logos for everyone!</p>
     </header>
 
-    <form (submit)="$event.preventDefault(); complete()">
-      <fieldset aria-labelledby="logging-title" [disabled]="saving()">
-        <label class="logging-option">
-          <input type="radio" name="request-logging" [checked]="choice() === false"
-                 aria-labelledby="billing-label" aria-describedby="billing-details" (change)="choice.set(false)" />
-          <span>
-            <strong id="billing-label">Keep billing-only logging</strong>
-            <span id="billing-details">Logos stores usage and billing data.</span>
-          </span>
-        </label>
+    <div class="logging-details" id="logging-details">
+      <h2>What full logging shares</h2>
+      <p>Logos stores request and response content, including prompts and generated answers, and can replay requests in benchmarks.</p>
+      <p>This applies to your active developer keys that use billing-only logging. You can change logging per key in My Workspace.</p>
+    </div>
 
-        <label class="logging-option">
-          <input type="radio" name="request-logging" [checked]="choice() === true"
-                 aria-labelledby="full-label" aria-describedby="full-details" (change)="choice.set(true)" />
-          <span>
-            <strong id="full-label">Enable full logging</strong>
-            <span id="full-details">
-              Logos also stores request and response content, including prompts and generated answers.
-              Logos can replay requests in benchmarks to test model settings and help make similar requests
-              faster over time.
-            </span>
-          </span>
-        </label>
-      </fieldset>
-
-      <p class="logging-note">Both options let you continue using Logos. You can change logging per key in My Workspace.</p>
-
+    <div class="onboarding-actions">
       @if (error()) {
         <app-error-message [message]="error()" />
       }
 
-      <button type="submit" class="btn-primary" [disabled]="choice() === null || saving()">
-        {{ saving() ? 'Saving…' : 'Continue' }}
+      <button type="button" class="btn-primary" aria-describedby="logging-details"
+              [disabled]="savingChoice() !== null" (click)="complete(true)">
+        {{ savingChoice() === true ? 'Saving…' : 'Enable full logging' }}
       </button>
-    </form>
+      <button type="button" class="billing-button" [disabled]="savingChoice() !== null" (click)="complete(false)">
+        @if (savingChoice() === false) {
+          Saving…
+        } @else {
+          Keep billing-only logging <span aria-hidden="true">:(</span>
+        }
+      </button>
+    </div>
   </section>
 </main>

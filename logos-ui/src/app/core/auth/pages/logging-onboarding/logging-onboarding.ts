@@ -17,27 +17,28 @@ export class LoggingOnboarding {
   private router = inject(Router);
   private route = inject(ActivatedRoute);
 
-  choice = signal<boolean | null>(null);
-  saving = signal(false);
+  savingChoice = signal<boolean | null>(null);
   error = signal('');
 
-  async complete(): Promise<void> {
-    const fullLogging = this.choice();
-    if (fullLogging === null || this.saving()) return;
+  async complete(fullLogging: boolean): Promise<void> {
+    if (this.savingChoice() !== null) return;
 
-    this.saving.set(true);
+    this.savingChoice.set(fullLogging);
     this.error.set('');
     try {
       await this.auth.completeLoggingOnboarding(fullLogging);
     } catch {
       this.error.set('We could not save your choice. Please try again.');
       return;
-    } finally {
-      this.saving.set(false);
+      this.savingChoice.set(null);
     }
 
     const returnUrl = this.route.snapshot.queryParamMap.get('returnUrl');
     const destination = returnUrl?.startsWith('/') && !returnUrl.startsWith('//') ? returnUrl : '/';
-    await this.router.navigateByUrl(destination, { replaceUrl: true });
+    try {
+      await this.router.navigateByUrl(destination, { replaceUrl: true });
+    } finally {
+      this.savingChoice.set(null);
+    }
   }
 }

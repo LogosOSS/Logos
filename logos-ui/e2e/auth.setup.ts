@@ -48,11 +48,10 @@ setup('authenticate as a Logos admin', async ({ page }) => {
   // account's roles, so this waits for the authenticated shell to mount rather
   // than for one specific path.
   const shell = page.locator('app-shell');
-  const keepBilling = page.getByRole('radio', { name: 'Keep billing-only logging' });
+  const keepBilling = page.getByRole('button', { name: 'Keep billing-only logging', exact: true });
   await expect(shell.or(keepBilling)).toBeVisible({ timeout: 30_000 });
   if (await keepBilling.isVisible()) {
-    await keepBilling.check();
-    await page.getByRole('button', { name: 'Continue', exact: true }).click();
+    await keepBilling.click();
   }
   await expect(shell).toBeVisible({ timeout: 30_000 });
   await expect(page.getByRole('button', { name: /sign in with tum/i })).toHaveCount(0);

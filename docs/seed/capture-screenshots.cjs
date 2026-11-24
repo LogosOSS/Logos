@@ -86,11 +86,10 @@ async function login(browser, user, dark = false) {
   await page.click("#kc-login");
   await page.waitForURL((u) => u.toString().startsWith(BASE), { timeout: 30000 });
   const shell = page.locator(".shell-layout");
-  const keepBilling = page.getByRole("radio", { name: "Keep billing-only logging" });
+  const keepBilling = page.getByRole("button", { name: "Keep billing-only logging", exact: true });
   await shell.or(keepBilling).waitFor();
   if (await keepBilling.isVisible()) {
-    await keepBilling.check();
-    await page.getByRole("button", { name: "Continue", exact: true }).click();
+    await keepBilling.click();
   }
   await shell.waitFor();
   return { ctx, page };
