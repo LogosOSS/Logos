@@ -751,7 +751,7 @@ const SHOTS = [
     full: true,
     go: async (p, ids) => {
       await runView(p, ids, true);
-      await details(p, "vLLM settings for the next run");
+      await p.getByText("vLLM settings for the next run", { exact: true }).click();
     },
   },
   {
