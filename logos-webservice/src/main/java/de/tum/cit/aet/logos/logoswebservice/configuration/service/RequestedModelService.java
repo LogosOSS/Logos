@@ -479,8 +479,8 @@ public class RequestedModelService {
      * Deliberately not transactional around the loop: the prechecks are
      * remote round trips and must not hold a pooled database connection while
      * waiting (the same reason the vote's precheck runs before its
-     * transaction), so the read, the checks and each conditional clear run in
-     * their own short transactions. Only a positive {@code reachable} verdict
+     * transaction). Each flag clear and its approval share a short transaction.
+     * Only a positive {@code reachable} verdict
      * unflags: still-gated, not-found and timeout are no answer about the
      * license, so the flag stays until a reachable answer comes.
      *
@@ -491,18 +491,24 @@ public class RequestedModelService {
         for (RequestedModel model : requestedModelRepository.findByIsGatedTrue()) {
             HfReachabilityResult reachability = hfReachabilityClient.check(model.getName());
             if (HfReachabilityResult.STATUS_REACHABLE.equals(reachability.status())
-                && requestedModelRepository.clearGatedFlagIfStillSet(model.getId()) > 0) {
+                && recordApprovalIfStillGated(model.getId())) {
                 cleared++;
-                // The unflag is the acceptance: record it (no user, database
-                // timestamp) before fetching, so the tick shows even while the
-                // license text is still coming.
-                licenseApprovalRepository.recordGlobalApprovalIfAbsent(model.getId());
                 // The token can read the repository now, so its license is
                 // readable for the first time — fetch it (best effort).
                 fetchAndStoreLicense(model);
             }
         }
         return cleared;
+    }
+
+    private boolean recordApprovalIfStillGated(Integer modelId) {
+        return Boolean.TRUE.equals(transactionTemplate.execute(status -> {
+            if (requestedModelRepository.clearGatedFlagIfStillSet(modelId) == 0) {
+                return false;
+            }
+            licenseApprovalRepository.recordGlobalApprovalIfAbsent(modelId);
+            return true;
+        }));
     }
 
     /**

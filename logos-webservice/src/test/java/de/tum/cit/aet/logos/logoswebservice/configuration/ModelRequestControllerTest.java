@@ -17,6 +17,7 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.annotation.Import;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.TaskScheduler;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
@@ -31,10 +32,12 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import de.tum.cit.aet.logos.logoswebservice.TestContainersConfig;
 import de.tum.cit.aet.logos.logoswebservice.TestJwt;
 import de.tum.cit.aet.logos.logoswebservice.configuration.service.RequestedModelHfRechecker;
+import de.tum.cit.aet.logos.logoswebservice.configuration.service.RequestedModelService;
 import de.tum.cit.aet.logos.logoswebservice.orchestrator.OrchestratorHfLicenseClient;
 import de.tum.cit.aet.logos.logoswebservice.orchestrator.OrchestratorHfLicenseClient.HfLicenseResult;
 import de.tum.cit.aet.logos.logoswebservice.orchestrator.OrchestratorHfReachabilityClient;
@@ -730,6 +733,30 @@ class ModelRequestControllerTest {
             "SELECT license_fetched_date IS NOT NULL FROM requested_models WHERE name = 'acme/unlocked'",
             Boolean.class)).isTrue();
         Mockito.verify(hfLicenseClient).fetch("acme/unlocked");
+    }
+
+    @Test
+    void failedAutomaticApprovalLeavesTheModelGatedForRetry(@Autowired RequestedModelService requests) {
+        String name = "acme/approval-retry";
+        Integer id;
+        jdbc.execute("ALTER TABLE model_license_approvals ADD CONSTRAINT reject_automatic_approval "
+            + "CHECK (user_id IS NOT NULL) NOT VALID");
+        try {
+            id = jdbc.queryForObject(
+                "INSERT INTO requested_models (name, is_gated) VALUES (?, true) RETURNING id", Integer.class, name);
+            assertThatThrownBy(requests::recheckGatedModels).isInstanceOf(DataIntegrityViolationException.class);
+            assertThat(isGated(name)).isTrue();
+            Mockito.verify(hfLicenseClient, Mockito.never()).fetch(name);
+        } finally {
+            jdbc.execute("ALTER TABLE model_license_approvals DROP CONSTRAINT reject_automatic_approval");
+        }
+
+        requests.recheckGatedModels();
+
+        assertThat(isGated(name)).isFalse();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM model_license_approvals "
+            + "WHERE requested_model_id = ? AND user_id IS NULL AND team_id IS NULL", Integer.class, id)).isEqualTo(1);
+        Mockito.verify(hfLicenseClient).fetch(name);
     }
 
     @Test
