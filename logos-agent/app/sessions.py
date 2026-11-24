@@ -48,7 +48,6 @@ from . import (
     memory_usage,
     model_policy,
     repository_context,
-    triggers,
     upstream,
 )
 from .artifacts import read_artifact_text
@@ -1306,15 +1305,9 @@ class SessionManager:
             # Admitting it against another model's load is how a queued
             # session enters a full lane on an idle one's figure — the
             # launch checks permission afterwards, never capacity.
-            # The automation may fill the platform but not the last places
-            # in it: with its quota used up, only work a person queued is
-            # claimable. The quota is about what is *running*, so the
-            # backlog behind it stays queued and visible.
-            person_waiting = await db.next_queued_session(include_triggered=False) is not None
-            quota = triggers.max_active_sessions(control.max_parallel, person_waiting=person_waiting)
-            triggered = await db.count_active_trigger_sessions()
-            include_triggered = triggered < quota
-            candidate = await db.next_queued_session(include_triggered=include_triggered)
+            # The queue prefers claimable manual work. If none is waiting,
+            # automated work can use the same capacity instead of reserving it.
+            candidate = await db.next_queued_session()
             if candidate is None:
                 return
             wanted = admission_policy.resolve(candidate.get("model"))
@@ -1344,15 +1337,13 @@ class SessionManager:
             # peek and here the candidate can be cancelled, or something
             # more urgent on another model can arrive, and either would be
             # started against a reading of somebody else's lane.
-            # The quota is checked again inside the claim, against a count
-            # taken in the same statement: this one was read before the
-            # capacity call above, and another scheduler could have used the
-            # room in between.
+            # The claim rechecks both the total ceiling and whether eligible
+            # manual work arrived while we measured the automated candidate.
             # The memory is written by the claim itself, so the next admission
             # counts it, and kept for the session's life: a later change of
             # the per-session memory applies to sessions started later.
             taken = await db.claim_session(
-                int(candidate["id"]), trigger_quota=quota, memory_mb=control.session_memory_mb
+                int(candidate["id"]), max_active=control.max_parallel, memory_mb=control.session_memory_mb
             )
             if taken:
                 self._spend_capacity_sample(reading)

@@ -625,16 +625,18 @@ class TestClaimingOnOneBranch:
                 row = self.model.sessions.get(params["session_id"])
                 if row is None or not self._lock_row(row) or not self._startable(row, True):
                     return TestClaimingOnOneBranch._Result([])
-                quota = params.get("trigger_quota")
-                if quota is not None and row.get("trigger_ref") is not None:
+                ceiling = params.get("max_active")
+                if ceiling is not None:
                     active = sum(
-                        1
+                        self.status_of(other["id"]) in TestClaimingOnOneBranch.OCCUPYING
                         for other in self.model.sessions.values()
-                        if other.get("trigger_ref") is not None
-                        and self.status_of(other["id"]) in TestClaimingOnOneBranch.OCCUPYING
                     )
-                    if active >= quota:
+                    if active >= ceiling:
                         return TestClaimingOnOneBranch._Result([])
+                if row.get("trigger_ref") is not None and any(
+                    self._startable(other, False) for other in self.model.sessions.values()
+                ):
+                    return TestClaimingOnOneBranch._Result([])
                 return TestClaimingOnOneBranch._Result([row["id"]])
             if sql.startswith("UPDATE agent_sessions SET status"):
                 if "ANY(:ids)" in sql:
