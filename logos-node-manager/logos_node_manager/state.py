@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 # A deployment id becomes a file name, so it is restricted to characters that are safe there.
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
-# The Docker tag grammar, and the same limit the deploy workflow checks before it writes the tag to the .env file.
+# The Docker tag grammar, with its length limit.
 _TAG = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]{0,127}")
 
 MAX_EVENTS = 60

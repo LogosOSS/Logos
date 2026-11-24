@@ -170,15 +170,12 @@ removes the image it pulled, because no container runs it. The next try pulls it
 The manager removes an image by its ID (`docker rmi`), so an image that a container uses, or that has more than one
 name, stays. A problem during the removal is logged and does not change the result of the deployment.
 
-The deploy workflow removes the image of the node manager in the step "Update node manager". When the
-new manager answers `node-manager ping`, the step removes every image of the manager that no container uses
-(`docker image prune -a`, limited to the label `io.logos.component=node-manager`). A pull takes the name from the old
-image, so only the label finds it, and the same call removes images that piled up in earlier updates. An image that a
-container uses stays. If the new manager does not start, the old image stays on the host, so the previous version can
-run again.
+To remove every image of the manager that no container uses, run
+`docker image prune -a --filter label=io.logos.component=node-manager`. A pull takes the name from the old image, so
+only the label finds it, and the same call removes images that piled up in earlier updates. An image that a container
+uses stays. Run it only when the new manager answers `node-manager ping`: until then, the old image is the way back.
 
-A problem during the removal does not fail the step. Images built before the label existed have none: remove them once
-by ID with `docker rmi`. A host without the deploy workflow keeps its old manager images and needs the same command.
+Images built before the label existed have none: remove them once by ID with `docker rmi`.
 
 ## Compose file from the tag
 
@@ -388,18 +385,13 @@ to the compose profile `node-manager`, so it only exists on hosts that enable th
 COMPOSE_PROFILES=node-manager
 ```
 
-The deploy workflows write this line for every worker whose matrix entry has `node-manager: true`. They also write
-`NODE_MANAGER_DRAIN_ENABLED` for it: `true` if the entry has `drain: true`, `false` otherwise. With `drain: true` the
-job of the worker ends as soon as the image is on the host (`deploy --until-pulled`), and the drain, the swap and the
-checks go on there. The orchestrator then keeps at most one node out of service, because the matrix of the workflow can no
-longer do it. A worker without `drain: true` is followed to its end (`deploy --wait`) and replaces its container at
-once. Give every worker of a workflow `drain: true`, or put the workers without it first: a worker without it does not
-wait for a node that still drains. The next run prints how the last deployment of the host ended.
+Set `NODE_MANAGER_DRAIN_ENABLED` in the same file: `true` drains the node before each swap, `false` replaces the
+container at once. The orchestrator keeps at most one node out of service. Set the drain on every worker: a worker
+without it does not wait for a node that still drains.
 
 The image of the service is `${REGISTRY}/logos-node-manager`. The default registry is `ghcr.io/logososs`, the public GHCR
 namespace of Logos. It carries the images of `main` (tag `latest`), of pull requests (tag `pr-<number>`) and of releases
-(a version such as `1.0.2`). The deploy workflows write `REGISTRY` and `IMAGE_TAG` to the `.env` of the worker. On a
-host without them, set `IMAGE_TAG` there to pull a tag other than `latest`.
+(a version such as `1.0.2`). Set `IMAGE_TAG` in the `.env` of the worker to pull a tag other than `latest`.
 
 The service needs two things from the host:
 

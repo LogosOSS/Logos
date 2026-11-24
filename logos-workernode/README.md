@@ -72,8 +72,8 @@ absolute path to vLLM as `--chat-template`. Values escaping the directory
 fails the lane spawn with an explicit error instead of silently reverting to
 the model's built-in template.
 
-Adding or editing a template needs no redeploy — the deploy workflow only ships
-`docker-compose.yml` and `.env` — just drop the file on the host and restart the
+Adding or editing a template needs no redeploy — a deployment replaces only the
+compose file and the container — just drop the file on the host and restart the
 lane. Set `LOGOS_CHAT_TEMPLATE_DIR` to relocate the directory (local dev, tests).
 
 ## Storage layout

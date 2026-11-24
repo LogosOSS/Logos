@@ -2,7 +2,7 @@
 # For local development, use: docker compose -f docker-compose.dev.yaml up --build
 #
 # REGISTRY defaults to ghcr.io/logososs, where all Logos images are public.
-# The deploy workflows use the same registry; no registry login is required.
+# Deployments use the same registry; no registry login is required.
 # Self-built installations can override REGISTRY with their own image source.
 services:
   traefik:
@@ -364,7 +364,7 @@ services:
     cap_drop:
       - ALL
     # No fixed container_name: Traefik load-balances across replicas.
-    # Production/dev/test deploy workflows scale from the node's .env:
+    # The core deployer scales from the node's .env:
     #   LOGOS_WEBSERVICE_REPLICAS=<N>   # default 1
     # via `docker compose up -d --remove-orphans --scale logos-webservice=$N`
     # on docker-compose.yaml only (worker compose files skip --scale). See

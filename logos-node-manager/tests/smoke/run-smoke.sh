@@ -132,7 +132,7 @@ docker rmi "$REGISTRY/dummy-worker:v2" "$REGISTRY/dummy-worker:v3" "$REGISTRY/du
 log "Building the node manager image"
 docker build -q -f "$COMPONENT/Dockerfile" -t "$MANAGER_IMAGE" "$REPO_ROOT" >/dev/null ||
   die "the build of the manager image failed"
-expect_equal "the manager image carries the label of the deploy workflows" "node-manager" \
+expect_equal "the manager image carries its component label" "node-manager" \
   "$(docker image inspect --format '{{ index .Config.Labels "io.logos.component" }}' "$MANAGER_IMAGE")"
 expect_equal "the manager image says that it carries the compose files" "1" \
   "$(docker image inspect --format '{{ index .Config.Labels "io.logos.compose-bundle" }}' "$MANAGER_IMAGE")"

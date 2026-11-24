@@ -301,8 +301,8 @@ class ProjectContainer:
 def read_env_value(path: Path, name: str) -> str | None:
     """The value of ``name`` in a ``.env`` file, or None. The last assignment wins, as it does for Compose.
 
-    A value in double quotes is read as JSON, which is how the deploy workflows write it. Anything else is taken as it
-    stands, without surrounding quotes. The file is read, never run: a value is data, not a shell command.
+    A value in double quotes is read as JSON. Anything else is taken as it stands, without surrounding quotes. The file
+    is read, never run: a value is data, not a shell command.
     """
     try:
         text = path.read_text(encoding="utf-8")

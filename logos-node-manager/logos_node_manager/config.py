@@ -1,8 +1,8 @@
 """Settings of the node manager.
 
-Everything comes from environment variables with the prefix ``NODE_MANAGER_``. The defaults match the layout the
-deploy workflows create on a worker host: the compose project in ``/opt/logos-workernode`` with the worker service
-and container ``logos-workernode``.
+Everything comes from environment variables with the prefix ``NODE_MANAGER_``. The defaults match the layout of a
+worker host: the compose project in ``/opt/logos-workernode`` with the worker service and container
+``logos-workernode``.
 """
 
 from __future__ import annotations
