@@ -270,8 +270,11 @@ export function advancedErrors(draft: AdvancedDraft): Record<string, string> {
     const text = (draft.values[field.key] ?? '').trim();
     if (text === '') continue;
     const n = Number(text);
-    if (field.kind === 'int' && !(/^\d+$/.test(text) && n >= (field.min ?? 0))) {
-      errors[field.key] = `Use a whole number of ${field.min ?? 0} or more.`;
+    if (field.kind === 'int' && !(/^\d+$/.test(text) && n >= (field.min ?? 0) && (field.max === undefined || n <= field.max))) {
+      errors[field.key] =
+        field.max === undefined
+          ? `Use a whole number of ${field.min ?? 0} or more.`
+          : `Use a whole number from ${field.min ?? 0} to ${field.max}.`;
     } else if (
       (field.kind === 'num' || field.kind === 'percent') &&
       !(Number.isFinite(n) && n >= field.min! && (field.max === undefined || n <= field.max))
