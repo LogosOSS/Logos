@@ -1073,9 +1073,17 @@ class LaneManager:
     # Imperative lane operations
     # ------------------------------------------------------------------
 
-    async def add_lane(self, lane_config: LaneConfig, *, nightly_gpu_budget: bool = False) -> LaneStatus:
+    async def add_lane(
+        self,
+        lane_config: LaneConfig,
+        *,
+        nightly_gpu_budget: bool = False,
+        nightly_restore_mib_by_gpu: dict[int, float] | None = None,
+    ) -> LaneStatus:
         """Add a single lane."""
         lid = _lane_id_from_config(lane_config)
+        if nightly_restore_mib_by_gpu is not None and not nightly_gpu_budget:
+            raise NightlyGpuBudgetUnavailable("a restore budget requires strict nightly admission")
         self._validate_vllm_runtime_requirements([lane_config])
         if self._max_lanes > 0 and len(self._handles) >= self._max_lanes:
             if nightly_gpu_budget:
@@ -1085,7 +1093,9 @@ class LaneManager:
             if lid in self._handles:
                 raise ValueError(f"Lane '{lid}' already exists")
             if nightly_gpu_budget:
-                await self._add_lane_unlocked(lid, lane_config, claim=claim, nightly_gpu_budget=True)
+                await self._add_lane_unlocked(
+                    lid, lane_config, claim=claim, nightly_gpu_budget=True, minimum_by_gpu=nightly_restore_mib_by_gpu
+                )
             else:
                 await self._add_lane_unlocked(lid, lane_config, claim=claim)
             status = await self._get_status_unlocked(lid)
@@ -3286,6 +3296,10 @@ class LaneManager:
         count = self._launch_gpu_count(vc, global_args)
         if count != len(gpus) or count != vc.parallel_gpu_count:
             raise NightlyGpuBudgetUnavailable(f"lane {lane_id} has ambiguous GPU parallelism")
+        if minimum_by_gpu is not None and (
+            minimum_by_gpu.keys() != gpus or any(not math.isfinite(mib) or mib <= 0 for mib in minimum_by_gpu.values())
+        ):
+            raise NightlyGpuBudgetUnavailable(f"saved memory budget for lane {lane_id} does not match its GPU group")
         self._check_nightly_overlap(lane_id, gpus, nightly=True)
         budget_flags = {
             "--config",
@@ -3542,7 +3556,13 @@ class LaneManager:
         )
 
     async def _add_lane_unlocked(
-        self, lane_id: str, lane_config: LaneConfig, claim: Claim | None = None, *, nightly_gpu_budget: bool = False
+        self,
+        lane_id: str,
+        lane_config: LaneConfig,
+        claim: Claim | None = None,
+        *,
+        nightly_gpu_budget: bool = False,
+        minimum_by_gpu: dict[int, float] | None = None,
     ) -> None:
         """Start a lane.
 
@@ -3636,7 +3656,7 @@ class LaneManager:
                     "Placement is refused until the session ends; leftover GPU(s) remain available."
                 )
             if nightly_gpu_budget:
-                await self._require_nightly_gpu_budget(lane_id, lane_config)
+                await self._require_nightly_gpu_budget(lane_id, lane_config, minimum_by_gpu=minimum_by_gpu)
                 self._claim_nightly_gpus(lane_id, actual_gpus)
             else:
                 await self._wait_for_vram_headroom(lane_id, lane_config)

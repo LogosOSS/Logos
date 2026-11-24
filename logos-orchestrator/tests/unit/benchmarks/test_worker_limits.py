@@ -259,7 +259,20 @@ async def test_metal_batching_is_admitted_through_internal_benchmark_route(monke
     registry = MagicMock()
     registry.active_provider_ids.return_value = [7]
     registry.is_calibrating.return_value = False
-    registry.peek_runtime_snapshot.return_value = metal_snapshot()
+    status = metal_snapshot()
+    lanes = status["runtime"]["lanes"]
+    if nightly:
+        lanes[0].update(lane_id="pinned", runtime_state="loaded")
+        lanes.insert(
+            0,
+            {
+                "lane_id": "other-replica",
+                "model": "m",
+                "runtime_state": "loaded",
+                "lane_config": {"vllm": True, "vllm_config": {"max_num_batched_tokens": 8}},
+            },
+        )
+    registry.peek_runtime_snapshot.return_value = status
     monkeypatch.setattr(main, "_logosnode_registry", registry)
     monkeypatch.setattr(main, "_capacity_planner", MagicMock())
     monkeypatch.setattr(internal, "DBManager", lambda: db)
@@ -274,14 +287,31 @@ async def test_metal_batching_is_admitted_through_internal_benchmark_route(monke
     monkeypatch.setattr(nightly_store, "status", lambda _: {"enabled": True})
     token = NIGHTLY_CONTEXT.set(nightly)
     if nightly:
-        benchmark_reservations.reserve(7, "*", -31)
+        benchmark_reservations.reserve_nightly(7, "m", -31)
+        benchmark_reservations.pin_lane(7, "m", -31, "pinned")
     try:
-        response = await internal.internal_run_model_benchmark(
-            internal.InternalBenchmarkRequest(model_provider_id=31, serving_overrides={"max_num_seqs": 20}),
-            MagicMock(),
-        )
+        request_data = internal.InternalBenchmarkRequest(model_provider_id=31, serving_overrides={"max_num_seqs": 20})
+        response = await internal.internal_run_model_benchmark(request_data, MagicMock())
         assert response.status_code == 202
         await main._benchmark_tasks_by_job[712]
+        run = runner.await_args.kwargs
+        assert run["serving_configuration"]["max_num_batched_tokens"] == 4096
+        lanes[-1]["lane_config"]["vllm_config"]["max_num_batched_tokens"] = 8192
+        assert run["serving_configuration_getter"]()["max_num_batched_tokens"] == 8192
+        if nightly:
+            lanes.pop()
+            with pytest.raises(RuntimeError, match="'pinned'.*missing from worker status"):
+                run["serving_configuration_getter"]()
+            with pytest.raises(HTTPException, match="'pinned'.*missing from worker status") as exc:
+                await internal.internal_run_model_benchmark(request_data, MagicMock())
+            assert exc.value.status_code == 409
+            db.create_job_record.assert_called_once()
+            benchmark_reservations.release(-31)
+            with pytest.raises(RuntimeError, match="no longer owns its pinned lane"):
+                run["serving_configuration_getter"]()
+            with pytest.raises(HTTPException, match="no longer owns its pinned lane") as exc:
+                await internal.internal_run_model_benchmark(request_data, MagicMock())
+            assert exc.value.status_code == 409
     finally:
         NIGHTLY_CONTEXT.reset(token)
         benchmark_reservations.release(-31)

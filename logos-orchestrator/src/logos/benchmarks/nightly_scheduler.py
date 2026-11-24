@@ -240,6 +240,8 @@ class NightlyScheduler:
         self._require_lease()
         replies = []
         if lane is None:
+            if budget and not recovery.get("adoption") and recovery.get("required_mib_by_gpu"):
+                budget["nightly_restore_mib_by_gpu"] = recovery["required_mib_by_gpu"]
             result = await self.registry.send_command(
                 provider_id,
                 "add_lane",
@@ -737,9 +739,14 @@ class NightlyScheduler:
                 if lane is None:
                     raise RuntimeError("Worker no longer reports the temporary benchmark lane")
             else:
-                await self.registry.send_command(
+                assessment = await self.registry.send_command(
                     pid, "check_nightly_gpu_budget", {"lane_id": recovery["lane_id"]}, timeout_seconds=30
                 )
+                required_mib = assessment.get("required_mib_by_gpu")
+                if not isinstance(required_mib, dict) or not required_mib:
+                    raise RuntimeError("Worker did not report the original lane's GPU budget")
+                recovery["required_mib_by_gpu"] = required_mib
+                store.save(pair_id, "preparing", report, recovery)
             current = lane_serving_configuration(lane)
             limits = worker_limits(snapshot, model, lane=lane)
             plan = parameter_plan(current)

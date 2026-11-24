@@ -6,12 +6,12 @@ from .configuration import ServingOverrides
 from .guidellm_runner import benchmark_model_lane, lane_serving_configuration
 
 
-def worker_limits(snapshot: dict | None, model: str, *, lane: dict | None = None) -> dict:
+def worker_limits(snapshot: dict | None, model: str, *, lane: dict | None = None, lane_id: str | None = None) -> dict:
     runtime = (snapshot or {}).get("runtime") or {}
     summary = runtime.get("devices") or {}
     devices = [(index, d) for index, d in enumerate(summary.get("devices", [])) if d.get("kind") == "nvidia"]
     known = bool(summary.get("nvidia_smi_available"))
-    lane = benchmark_model_lane(snapshot, model) if lane is None else lane
+    lane = benchmark_model_lane(snapshot, model, lane_id=lane_id) if lane is None else lane
     config = lane.get("lane_config") or {}
     selectors = [runtime.get("gpu_devices", "all")]
     if lane.get("is_static"):

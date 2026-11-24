@@ -7,6 +7,7 @@ import base64
 import copy
 import json
 import logging
+import math
 import os
 import subprocess
 import threading
@@ -1047,8 +1048,27 @@ class LogosBridgeClient:
 
     @staticmethod
     def _added_lane_config(params: dict[str, Any]) -> LaneConfig:
-        """Parse the lane settings without the transient Nightly command option."""
-        return LaneConfig(**{key: value for key, value in params.items() if key != "nightly_gpu_budget"})
+        """Parse the lane settings without the transient Nightly command options."""
+        command_options = {"nightly_gpu_budget", "nightly_restore_mib_by_gpu"}
+        return LaneConfig(**{key: value for key, value in params.items() if key not in command_options})
+
+    @staticmethod
+    def _nightly_restore_budget(value: Any) -> dict[int, float]:
+        if not isinstance(value, dict) or not value:
+            raise NightlyGpuBudgetUnavailable("a saved restore budget must identify its GPUs")
+        budget = {}
+        for key, mib in value.items():
+            index = str(key)
+            if not index.isascii() or not index.isdecimal() or type(mib) not in (int, float):
+                raise NightlyGpuBudgetUnavailable("a saved restore budget must contain GPU indices and MiB values")
+            try:
+                gpu, needs = int(index), float(mib)
+            except (OverflowError, ValueError) as exc:
+                raise NightlyGpuBudgetUnavailable("a saved restore budget contains invalid values") from exc
+            if gpu in budget or not math.isfinite(needs) or needs <= 0:
+                raise NightlyGpuBudgetUnavailable("a saved restore budget contains invalid values")
+            budget[gpu] = needs
+        return budget
 
     @staticmethod
     def _command_target(action: str, params: dict[str, Any]) -> str | None:
@@ -1161,10 +1181,15 @@ class LogosBridgeClient:
 
         if action == "add_lane":
             lane_config = self._added_lane_config(params)
-            if params.get("nightly_gpu_budget") is True:
-                status = await lane_manager.add_lane(lane_config, nightly_gpu_budget=True)
-            else:
-                status = await lane_manager.add_lane(lane_config)
+            nightly = params.get("nightly_gpu_budget") is True
+            options = {"nightly_gpu_budget": True} if nightly else {}
+            if "nightly_restore_mib_by_gpu" in params:
+                if not nightly:
+                    raise NightlyGpuBudgetUnavailable("a restore budget requires strict nightly admission")
+                options["nightly_restore_mib_by_gpu"] = self._nightly_restore_budget(
+                    params["nightly_restore_mib_by_gpu"]
+                )
+            status = await lane_manager.add_lane(lane_config, **options)
             return status.model_dump(mode="json")
 
         lane_id = str(params.get("lane_id", "")).strip()

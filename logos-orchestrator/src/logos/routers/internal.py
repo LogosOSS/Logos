@@ -721,12 +721,18 @@ async def internal_run_model_benchmark(data: InternalBenchmarkRequest, request: 
                 raise HTTPException(status_code=503, detail="Provider has not sent its first status yet")
 
         model_name = str(target["model_name"])
+        pinned_lane = benchmark_reservations.pinned_lane(provider_id, model_name) if owns_nightly_reservation else None
+        if provider_type == "logosnode" and NIGHTLY_CONTEXT.get() and pinned_lane is None:
+            raise HTTPException(status_code=409, detail="Nightly benchmark no longer owns its pinned lane")
         try:
+            limits = worker_limits(runtime_snapshot, model_name, lane_id=pinned_lane)
             for settings in configurations:
-                validate_worker_overrides(settings.serving_overrides, worker_limits(runtime_snapshot, model_name))
+                validate_worker_overrides(settings.serving_overrides, limits)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        serving_configuration = extract_serving_configuration(runtime_snapshot, model_name)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        serving_configuration = limits["current"]
         job_payload = {
             "nightly": NIGHTLY_CONTEXT.get(),
             "model_provider_id": data.model_provider_id,
@@ -764,6 +770,13 @@ async def internal_run_model_benchmark(data: InternalBenchmarkRequest, request: 
         if is_internal_worker_benchmark
         else None
     )
+
+    def read_serving_configuration():
+        if pinned_lane is not None and benchmark_reservations.pinned_lane(provider_id, model_name) != pinned_lane:
+            raise RuntimeError("Nightly benchmark no longer owns its pinned lane")
+        return extract_serving_configuration(
+            _main._logosnode_registry.peek_runtime_snapshot(provider_id), model_name, lane_id=pinned_lane
+        )
 
     async def execute_run(
         settings: BenchmarkRunSettings | InternalBenchmarkRequest,
@@ -809,9 +822,7 @@ async def internal_run_model_benchmark(data: InternalBenchmarkRequest, request: 
             settings=settings,
             max_output_tokens=settings.max_output_tokens,
             serving_configuration=serving_configuration,
-            serving_configuration_getter=lambda: extract_serving_configuration(
-                _main._logosnode_registry.peek_runtime_snapshot(provider_id), model_name
-            ),
+            serving_configuration_getter=read_serving_configuration,
             request_headers=request_headers,
             worker_preparer=worker_preparer,
             worker_session_is_current=(

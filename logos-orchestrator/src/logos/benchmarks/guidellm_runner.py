@@ -285,20 +285,25 @@ def lane_is_serving(lane: dict[str, Any]) -> bool:
     return lane.get("runtime_state") in {"loaded", "running"} and lane.get("sleep_state") != "sleeping"
 
 
-def benchmark_model_lane(snapshot: dict[str, Any] | None, model: str) -> dict[str, Any]:
+def benchmark_model_lane(snapshot: dict[str, Any] | None, model: str, *, lane_id: str | None = None) -> dict[str, Any]:
     runtime = (snapshot or {}).get("runtime")
-    if not isinstance(runtime, dict):
-        return {}
-    lanes = runtime.get("lanes")
+    lanes = runtime.get("lanes") if isinstance(runtime, dict) else None
     if not isinstance(lanes, list):
-        return {}
+        lanes = []
     matching = [lane for lane in lanes if isinstance(lane, dict) and lane.get("model") == model]
+    if lane_id is not None:
+        lane = next((lane for lane in matching if lane.get("lane_id") == lane_id), None)
+        if lane is None:
+            raise RuntimeError(f"Nightly benchmark lane '{lane_id}' for '{model}' is missing from worker status")
+        return lane
     return next((lane for lane in matching if lane_is_serving(lane)), matching[0] if matching else {})
 
 
-def extract_serving_configuration(snapshot: dict[str, Any] | None, model: str) -> dict[str, Any]:
-    """Capture the live configuration, preferring the lane eligible to serve requests."""
-    return lane_serving_configuration(benchmark_model_lane(snapshot, model))
+def extract_serving_configuration(
+    snapshot: dict[str, Any] | None, model: str, *, lane_id: str | None = None
+) -> dict[str, Any]:
+    """Capture the live settings for the requested lane or the eligible replica."""
+    return lane_serving_configuration(benchmark_model_lane(snapshot, model, lane_id=lane_id))
 
 
 def lane_serving_configuration(lane: dict[str, Any]) -> dict[str, Any]:

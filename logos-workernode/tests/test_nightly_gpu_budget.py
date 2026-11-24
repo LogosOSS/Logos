@@ -201,6 +201,52 @@ async def test_replacement_is_checked_against_live_memory_after_shutdown(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_measured_lane_can_be_restored_after_failed_restart_without_calibration(monkeypatch) -> None:
+    measured_mib = 19_000
+    minimum_mib = measured_mib + 512
+    free = {0: 12_000, 1: TOTAL_MIB}
+    manager = _manager(free)
+    manager._model_profiles._profiles.clear()
+    original = _config()
+    running = ProcessStatus(state=ProcessState.RUNNING, pid=15)
+
+    async def destroy() -> None:
+        free[0] = minimum_mib - 1
+
+    manager._handles["benchmark"] = MagicMock(
+        lane_config=original,
+        status=MagicMock(return_value=running),
+        destroy=AsyncMock(side_effect=destroy),
+        close=AsyncMock(),
+    )
+    manager._port_alloc.allocate("benchmark")
+    manager._nightly_process_gpu_vram = AsyncMock(return_value={"gpu0": measured_mib})
+    minimum_by_gpu = await manager.check_nightly_gpu_budget("benchmark")
+    assert minimum_by_gpu == {0: minimum_mib}
+
+    replacement = MagicMock(init=AsyncMock(), spawn=AsyncMock(return_value=running))
+    create = MagicMock(return_value=replacement)
+    monkeypatch.setattr("logos_worker_node.lane_manager._create_handle", create)
+    updates = {"vllm_config": {**original.vllm_config.model_dump(), "max_num_seqs": 16}}
+    with pytest.raises(NightlyGpuBudgetUnavailable, match="including warm-up"):
+        await manager.reconfigure_lane("benchmark", updates, require_idle=True, nightly_gpu_budget=True)
+    assert "benchmark" not in manager._handles
+    with pytest.raises(NightlyGpuBudgetUnavailable, match="no calibrated or measured VRAM footprint"):
+        await manager.add_lane(original, nightly_gpu_budget=True)
+    with pytest.raises(NightlyGpuBudgetUnavailable, match="does not match its GPU group"):
+        await manager.add_lane(original, nightly_gpu_budget=True, nightly_restore_mib_by_gpu={1: minimum_mib})
+    with pytest.raises(NightlyGpuBudgetUnavailable, match="including warm-up"):
+        await manager.add_lane(original, nightly_gpu_budget=True, nightly_restore_mib_by_gpu=minimum_by_gpu)
+    create.assert_not_called()
+
+    free[0] = minimum_mib
+    manager._get_status_unlocked = AsyncMock()
+    await manager.add_lane(original, nightly_gpu_budget=True, nightly_restore_mib_by_gpu=minimum_by_gpu)
+    assert replacement.spawn.await_args.args[0] == original
+    assert manager._handles["benchmark"] is replacement
+
+
+@pytest.mark.asyncio
 async def test_nvidia_process_query_only_credits_the_lane_and_its_children(monkeypatch) -> None:
     manager = _manager({0: TOTAL_MIB, 1: TOTAL_MIB})
     result = b"\n".join(
@@ -265,6 +311,17 @@ async def test_nightly_bridge_preserves_budget_and_lane_identity_semantics() -> 
         assert (await send("add_lane", model=MODEL, vllm=True, nightly_gpu_budget=True))["success"]
         assert manager.add_lane.await_args.kwargs == {"nightly_gpu_budget": True}
         assert "nightly_gpu_budget" not in manager.add_lane.await_args.args[0].model_dump()
+        restored = await send("add_lane", **cold_params, nightly_restore_mib_by_gpu={"0": EXPECTED_MIB})
+        assert restored["success"]
+        assert manager.add_lane.await_args.kwargs == {
+            "nightly_gpu_budget": True,
+            "nightly_restore_mib_by_gpu": {0: EXPECTED_MIB},
+        }
+        assert "nightly_restore_mib_by_gpu" not in manager.add_lane.await_args.args[0].model_dump()
+        invalid = await send("add_lane", **cold_params, nightly_restore_mib_by_gpu={"0": float("inf")})
+        assert invalid["reason_code"] == "nightly_gpu_budget"
+        ordinary = await send("add_lane", model=MODEL, nightly_restore_mib_by_gpu={"0": EXPECTED_MIB})
+        assert ordinary["reason_code"] == "nightly_gpu_budget"
         report = await send(
             "reconfigure_lane", updates={"vllm_config": {}}, force_restart=True, nightly_gpu_budget=True
         )

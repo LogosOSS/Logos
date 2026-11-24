@@ -16,6 +16,8 @@ from logos.benchmarks.nightly import (
 )
 from logos.benchmarks.reservations import benchmark_reservations
 
+GPU_BUDGET = {"0": 12_288.0}
+
 
 @pytest.fixture
 def scheduler(monkeypatch):
@@ -29,6 +31,8 @@ def scheduler(monkeypatch):
     def send_command(pid, action, *_args, **_kwargs):
         if action == "get_runtime" and benchmark_reservations.provider_owner(pid) in {-31, -32, -33}:
             return registry.peek_runtime_snapshot.return_value["runtime"]
+        if action == "check_nightly_gpu_budget":
+            return {"ok": True, "required_mib_by_gpu": GPU_BUDGET}
         return DEFAULT
 
     registry.send_command = AsyncMock(return_value={"lanes": []}, side_effect=send_command)
@@ -459,6 +463,18 @@ async def test_rotation_admits_two_pairs_sequentially_and_keeps_daily_cap(schedu
     await scheduler.tick()
     assert claimed == {31, 32}
     assert [call.args[0] for call in scheduler.run_schedule.await_args_list] == [31, 32]
+
+
+async def test_metal_worker_does_not_claim_a_nightly_slot(scheduler, rotation):
+    _, claimed = rotation
+    runtime = scheduler.registry.peek_runtime_snapshot.return_value["runtime"]
+    runtime.update(supports_nightly_gpu_budget=False, devices={"devices": [{"kind": "metal"}]})
+    scheduler.target_lane.side_effect = lambda pair: (
+        module.NightlyScheduler.target_lane(scheduler, pair) if pair == 31 else ({"provider_id": pair}, {}, None)
+    )
+    await scheduler.tick()
+    assert claimed == {32, 33}
+    assert scheduler.saved[0][1] == "unavailable"
 
 
 async def test_unavailable_pair_does_not_consume_a_nightly_slot(scheduler, rotation):
@@ -1106,7 +1122,7 @@ def simulate_worker(scheduler, lanes, *, max_lanes=0, missing_delete_succeeds=Fa
         lane = next((item for item in runtime["lanes"] if item["lane_id"] == lane_id), None)
         if action == "check_nightly_gpu_budget":
             assert lane is not None
-            return {"ok": True}
+            return {"ok": True, "required_mib_by_gpu": GPU_BUDGET}
         if action == "release_nightly_gpu_budget":
             return {"ok": True}
         if action == "add_lane":
@@ -1118,7 +1134,9 @@ def simulate_worker(scheduler, lanes, *, max_lanes=0, missing_delete_succeeds=Fa
                 raise module.LogosNodeCommandError(f"Lane '{lane_id}' already exists")
             lane = lane_status(lane_id, model=params["model"])
             lane["lane_config"] = {
-                key: copy.deepcopy(value) for key, value in params.items() if key != "nightly_gpu_budget"
+                key: copy.deepcopy(value)
+                for key, value in params.items()
+                if key not in {"nightly_gpu_budget", "nightly_restore_mib_by_gpu"}
             }
             runtime["lanes"].append(lane)
         elif action == "delete_lane":
@@ -1239,6 +1257,32 @@ async def test_capacity_deferral_during_a_trial_restores_without_adopting(schedu
         "reason": "GPU headroom fell below the warm-up budget",
     }
     assert benchmark_reservations.provider_owner(20) is None
+
+
+async def test_nightly_recreates_the_original_lane_with_journaled_gpu_budget(scheduler):
+    original = lane_status("lane")
+    runtime, events = simulate_worker(scheduler, [original])
+
+    async def submit(*_args):
+        assert module.store.save.call_args.args[3]["required_mib_by_gpu"] == GPU_BUDGET
+        runtime["lanes"].clear()
+        raise RuntimeError("Benchmark engine failed during restart")
+
+    scheduler.submit = submit
+    assert await scheduler.run_schedule(31, MagicMock())
+
+    command = next(call for call in scheduler.registry.send_command.await_args_list if call.args[1] == "add_lane")
+    assert command.args[2] == {
+        **original["lane_config"],
+        "nightly_gpu_budget": True,
+        "nightly_restore_mib_by_gpu": GPU_BUDGET,
+    }
+    assert runtime["lanes"] == [original]
+    assert events == [
+        ("check_nightly_gpu_budget", "lane"),
+        ("add_lane", "lane"),
+        ("release_nightly_gpu_budget", "lane"),
+    ]
 
 
 async def test_nightly_restores_only_the_benchmark_lane_after_cancellation(scheduler):

@@ -112,7 +112,15 @@ class _NvidiaCollector:
             nvidia_smi_available=True,
             telemetry_available=True,
             degraded_reason="",
-            devices=[],
+            devices=[
+                DeviceInfo(
+                    device_id="gpu0",
+                    memory_total_mb=8192.0,
+                    memory_used_mb=1024.0,
+                    memory_free_mb=7168.0,
+                    extra={"index": 0},
+                )
+            ],
             total_memory_mb=8192.0,
             used_memory_mb=1024.0,
             free_memory_mb=7168.0,
@@ -168,6 +176,7 @@ async def test_build_runtime_status_uses_proc_meminfo_for_degraded_node(monkeypa
 
     assert runtime.devices.mode == "derived"
     assert runtime.devices.nvidia_smi_available is False
+    assert runtime.supports_nightly_gpu_budget is False
     assert runtime.devices.total_memory_mb == 8192.0
     assert runtime.devices.used_memory_mb == 3072.0
     assert runtime.devices.free_memory_mb == 5120.0
@@ -192,6 +201,8 @@ async def test_build_runtime_status_preserves_measured_metal_telemetry(monkeypat
     assert runtime.devices.mode == "metal"
     assert runtime.devices.nvidia_smi_available is False
     assert runtime.devices.telemetry_available is True
+    assert runtime.model_dump(mode="json")["supports_nightly_gpu_budget"] is False
+    assert runtime.supports_benchmark_restart is True
     assert runtime.devices.total_memory_mb == 24000.0
     assert runtime.devices.used_memory_mb == 12000.0
     assert runtime.devices.free_memory_mb == 12000.0
@@ -218,6 +229,7 @@ async def test_build_runtime_status_preserves_degraded_metal_telemetry(monkeypat
 
     assert runtime.devices.mode == "metal"
     assert runtime.devices.telemetry_available is False
+    assert runtime.supports_nightly_gpu_budget is False
     assert runtime.devices.degraded_reason.startswith("mlx device_info unavailable")
     assert runtime.devices.total_memory_mb == 28000.0
     assert runtime.devices.free_memory_mb == 19000.0
@@ -238,6 +250,7 @@ async def test_build_runtime_status_preserves_measured_nvidia_telemetry(monkeypa
 
     assert runtime.devices.mode == "nvidia"
     assert runtime.devices.nvidia_smi_available is True
+    assert runtime.supports_nightly_gpu_budget is True
     assert runtime.devices.total_memory_mb == 8192.0
     assert runtime.capacity.free_memory_mb == 7168.0
 
@@ -257,6 +270,7 @@ async def test_runtime_reports_worker_gpu_selection(raw_config, expected):
     config = AppConfig.model_validate(raw_config)
     runtime = await build_runtime_status(_make_app([], _NvidiaCollector(), config=config))
     assert runtime.gpu_devices == expected
+    assert runtime.supports_nightly_gpu_budget is (expected in {"all", "0,1"})
 
 
 @pytest.mark.asyncio
@@ -424,6 +438,22 @@ async def test_build_runtime_status_keeps_the_faults_when_every_gpu_is_lost(monk
     assert runtime.devices.faulted_gpu_indices == [0]
     assert runtime.devices.total_memory_mb == 0.0
     assert runtime.devices.devices == []
+    assert runtime.supports_nightly_gpu_budget is False
+
+
+@pytest.mark.asyncio
+async def test_gpu_budget_capability_ignores_non_nvidia_devices_and_faulted_gpu_indices():
+    class Inventory(_NvidiaCollector):
+        async def get_snapshot(self):
+            snapshot = await super().get_snapshot()
+            snapshot.devices.append(
+                DeviceInfo(device_id="other", kind="metal", memory_total_mb=16_384.0, extra={"index": 1})
+            )
+            snapshot.faulted_gpu_indices = [0]
+            return snapshot
+
+    runtime = await build_runtime_status(_make_app([], Inventory()))
+    assert runtime.supports_nightly_gpu_budget is False
 
 
 @pytest.mark.asyncio

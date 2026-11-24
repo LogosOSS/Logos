@@ -178,6 +178,76 @@ async def test_configured_benchmark_waits_for_worker_configuration():
     assert planner.prepare_benchmark_lane.await_count == 2
 
 
+async def test_nightly_configuration_checks_only_the_pinned_replica():
+    from logos.benchmarks.configuration import ServingOverrides
+    from logos.benchmarks.reservations import benchmark_reservations
+
+    planner, _, _ = _configured_planner()
+    config = {"max_num_batched_tokens": 4096}
+    updated = {**config, "max_num_seqs": 20}
+
+    def snapshot(pinned_config):
+        return {
+            "runtime": {
+                "devices": {"nvidia_smi_available": True, "devices": [{"kind": "nvidia"}]},
+                "lanes": [
+                    {
+                        "lane_id": "first-replica",
+                        "model": "org/model",
+                        "runtime_state": "loaded",
+                        "lane_config": {"vllm": True, "vllm_config": {"max_num_batched_tokens": 8}},
+                    },
+                    {
+                        "lane_id": "model-lane",
+                        "model": "org/model",
+                        "runtime_state": "loaded",
+                        "lane_config": {"vllm": True, "vllm_config": pinned_config},
+                    },
+                ],
+            }
+        }
+
+    planner._registry.peek_runtime_snapshot.side_effect = [snapshot(config), snapshot(config), snapshot(updated)]
+    planner._registry.send_command.return_value = {"lane_config": {"vllm_config": updated}}
+    benchmark_reservations.reserve_nightly(7, "org/model", -31)
+    benchmark_reservations.pin_lane(7, "org/model", -31, "model-lane")
+    try:
+        assert await planner.prepare_configured_benchmark_lane(7, "org/model", ServingOverrides(max_num_seqs=20))
+    finally:
+        benchmark_reservations.release(-31)
+    planner._registry.send_command.assert_awaited_once_with(
+        7,
+        "reconfigure_lane",
+        {
+            "lane_id": "model-lane",
+            "updates": {"vllm_config": updated},
+            "require_idle": True,
+            "nightly_gpu_budget": True,
+        },
+        timeout_seconds=600,
+    )
+
+
+async def test_configured_benchmark_refuses_to_reconfigure_after_losing_its_pin():
+    from logos.benchmarks.reservations import benchmark_reservations
+
+    planner, overrides, _ = _configured_planner()
+
+    async def release_pin(*args):
+        benchmark_reservations.release(-31)
+        return True
+
+    planner.prepare_benchmark_lane.side_effect = release_pin
+    benchmark_reservations.reserve_nightly(7, "org/model", -31)
+    benchmark_reservations.pin_lane(7, "org/model", -31, "model-lane")
+    try:
+        with pytest.raises(RuntimeError, match="no longer owns its pinned lane"):
+            await planner.prepare_configured_benchmark_lane(7, "org/model", overrides)
+    finally:
+        benchmark_reservations.release(-31)
+    planner._registry.send_command.assert_not_awaited()
+
+
 async def test_configured_benchmark_restores_routing_if_worker_refuses():
     planner, overrides, _ = _configured_planner()
     planner._registry.send_command.side_effect = RuntimeError("Requests are active")
