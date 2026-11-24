@@ -538,28 +538,6 @@ and the variable is required, the deployment fails before it changes anything.
 The error names the variable. Add the variable to the `.env` file, and deploy
 again.
 
-### Deploy from GitHub
-
-The workflows **Logos - Deploy to Test**, **Logos - Deploy to Dev** and **Logos -
-Deploy to Prod** stay. Use them if Logos cannot deploy itself, for example if the
-new web service does not start. These workflows do not use the page
-**Deployments**.
-
-A workflow of a core host also installs or updates the deployer. It does this
-only if the secret `LOGOS_DEPLOYER_KEY` is set in the GitHub environment of the
-host. The deployer is a compose project of its own, so a
-deployment of the core does not replace it. The workflow installs the deployer
-last. A problem with the deployer does not stop the deployment.
-
-* The deployer gets the image tag that you deploy. To keep the deployer on
-  another tag, set the variable `NODE_MANAGER_IMAGE_TAG` in the GitHub
-  environment of the host.
-* If the deployer still runs a deployment, the workflow does not replace it. A
-  deployer that restarts continues its old order. That order can replace the
-  services that the workflow started. The workflow shows a warning. Wait until
-  the deployment ends, then run the workflow again.
-* A host without the secret `LOGOS_DEPLOYER_KEY` is not changed.
-
 ### Start a deployment
 
 1. Open the page **Deployments** of the Logos of the environment that you want to
