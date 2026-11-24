@@ -8,27 +8,6 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 public class SchedulingConfig {
 
     /**
-     * The default scheduler for the {@code @Scheduled} jobs that name no
-     * scheduler.
-     *
-     * Spring resolves that scheduler by this exact bean name
-     * ({@code DEFAULT_TASK_SCHEDULER_BEAN_NAME}); without it,
-     * {@link #hfRecheckScheduler()} would be the context's only
-     * {@code TaskScheduler} and every other scheduled job — the gateway
-     * accounting sweeps, the rate-limiter eviction, the nightly updates —
-     * would run on the HF recheck's single thread, held up behind blocking
-     * Hugging Face round trips. Single-threaded, as the auto-configured
-     * default was before the HF recheck moved off it.
-     */
-    @Bean(destroyMethod = "shutdown")
-    public ThreadPoolTaskScheduler taskScheduler() {
-        ThreadPoolTaskScheduler scheduler = new ThreadPoolTaskScheduler();
-        scheduler.setPoolSize(1);
-        scheduler.setThreadNamePrefix("scheduling-");
-        return scheduler;
-    }
-
-    /**
      * Dedicated single-thread scheduler for the Hugging Face recheck.
      *
      * A recheck pass makes blocking remote round trips — a precheck and a
@@ -38,7 +17,7 @@ public class SchedulingConfig {
      * all the gateway accounting sweeps; this keeps it on its own thread.
      * One thread also guarantees that at most one pass is in flight.
      */
-    @Bean(destroyMethod = "shutdown")
+    @Bean(defaultCandidate = false, destroyMethod = "shutdown")
     public ThreadPoolTaskScheduler hfRecheckScheduler() {
         ThreadPoolTaskScheduler scheduler = new ThreadPoolTaskScheduler();
         scheduler.setPoolSize(1);

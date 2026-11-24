@@ -13,10 +13,12 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentMatchers;
 import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.scheduling.TaskScheduler;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
@@ -70,6 +72,13 @@ class ModelRequestControllerTest {
      * fetch answers with a license and a use policy, unless a test says
      * otherwise.
      */
+    @Test
+    void rechecksUseASeparateScheduler(
+            @Autowired @Qualifier("taskScheduler") TaskScheduler applicationScheduler,
+            @Autowired @Qualifier("hfRecheckScheduler") TaskScheduler recheckScheduler) {
+        assertThat(recheckScheduler).isNotSameAs(applicationScheduler);
+    }
+
     @BeforeEach
     void stubHfClients() {
         Mockito.lenient().when(hfReachabilityClient.check(ArgumentMatchers.anyString()))
