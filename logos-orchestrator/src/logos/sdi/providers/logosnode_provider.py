@@ -933,6 +933,12 @@ class LogosNodeDataProvider:
         if snapshot is None:
             return AdmissionDecision(can_admit=True, batch_limit=None, reason=None)
         ready_lanes = [lane for lane in lanes or [] if lane.get("runtime_state") in ("loaded", "running")]
+        if isinstance(self._runtime_registry, LogosNodeRuntimeRegistry):
+            simple_lanes = self._runtime_registry.simple_ready_lanes(
+                self.provider_id, self._model_id_to_name.get(model_id)
+            )
+            if simple_lanes is not None:
+                ready_lanes = simple_lanes
         if not ready_lanes:
             return AdmissionDecision(can_admit=False, batch_limit=0, reason="no_ready_lane")
 
@@ -1039,6 +1045,11 @@ class LogosNodeDataProvider:
         if cache_usage is not None:
             free_fraction = max(0.0, 1.0 - _lane_metric_float(cache_usage) / 100.0)
         return max(1, int(guaranteed * free_fraction)), None
+
+    def spend_queue_budget(self, model_id: int) -> None:
+        """Count a queued dispatch against the same report budget as immediate admissions."""
+        with self._lock:
+            self._forwarded_since_snapshot[model_id] = self._forwarded_since_snapshot.get(model_id, 0) + 1
 
     def try_reserve_capacity(self, model_id: int, request_id: str) -> bool:
         """Book a slot for one request, or refuse and leave it queued here.

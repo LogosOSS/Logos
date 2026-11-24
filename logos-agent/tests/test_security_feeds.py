@@ -4,7 +4,33 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 
 import httpx
+import pytest
 from app import security_feeds as feeds
+
+
+@pytest.mark.parametrize(
+    "since, expected",
+    [
+        ("2026-11-16T22:59:34.318770+00:00", ">=2026-11-16T22:59:34+00:00"),
+        ("2026-11-16T22:59:34.999999+00:00", ">=2026-11-16T22:59:34+00:00"),
+        ("2026-11-17T00:59:34.000001+02:00", ">=2026-11-17T00:59:34+02:00"),
+        ("2026-11-16T22:59:34+00:00", ">=2026-11-16T22:59:34+00:00"),
+    ],
+)
+async def test_github_search_date_truncates_seconds_and_accepts_empty_results(monkeypatch, since, expected):
+    monkeypatch.setattr(feeds.github, "_headers", lambda: {})
+
+    def handle(request):
+        assert request.url.params["modified"] == expected
+        return httpx.Response(200, json=[])
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        feeds.httpx, "AsyncClient", lambda **kwargs: real_client(transport=httpx.MockTransport(handle), **kwargs)
+    )
+    monkeypatch.setattr(feeds.security_store, "ingest", AsyncMock())
+    await feeds.github_advisories(datetime.fromisoformat(since))
+    feeds.security_store.ingest.assert_not_awaited()
 
 
 async def test_github_pagination_keeps_credentials_on_github_and_excludes_noncritical(monkeypatch):
@@ -36,9 +62,10 @@ async def test_github_pagination_keeps_credentials_on_github_and_excludes_noncri
     )
     ingest = AsyncMock()
     monkeypatch.setattr(feeds.security_store, "ingest", ingest)
-    await feeds.github_advisories(datetime.now(timezone.utc))
+    await feeds.github_advisories(datetime(2026, 11, 16, 22, 59, 34, 318770, tzinfo=timezone.utc))
     assert len(seen) == 2
     assert all(r.url.host == "api.github.com" for r in seen)
+    assert all(r.url.params["modified"] == ">=2026-11-16T22:59:34+00:00" for r in seen)
     assert seen[1].url.params["after"] == "next"
     assert ingest.await_count == 1
     assert ingest.call_args.args[2]["vulnerabilities"][0]["first_patched_version"] is None
@@ -73,6 +100,27 @@ async def test_long_github_title_does_not_block_following_advisories(monkeypatch
     assert second.advisory_id == "CVE-2026-12346"
 
 
+@pytest.mark.parametrize(
+    "next_url, expected_calls",
+    [("https://api.github.com/advisories?page=2", 1), ("https://api.github.com/advisories?after=next", 20)],
+)
+async def test_incomplete_github_pagination_is_a_failure(monkeypatch, next_url, expected_calls):
+    calls = []
+
+    def handle(request):
+        calls.append(request)
+        return httpx.Response(200, json=[], headers={"Link": f'<{next_url}>; rel="next"'})
+
+    monkeypatch.setattr(feeds.github, "_headers", lambda: {})
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        feeds.httpx, "AsyncClient", lambda **kwargs: real_client(transport=httpx.MockTransport(handle), **kwargs)
+    )
+    with pytest.raises(ValueError, match="pagination has no cursor|exceeded 20 pages"):
+        await feeds.github_advisories(datetime(2026, 11, 16, 22, 59, 34, 318770, tzinfo=timezone.utc))
+    assert len(calls) == expected_calls
+
+
 class Connection:
     def __init__(self, previous=None):
         self.previous = previous
@@ -86,7 +134,12 @@ class Connection:
 
     async def execute(self, query, params):
         self.writes.append((str(query), params))
+        if "since" in params:
+            self.since = params["since"]
         return self
+
+    def scalar_one(self):
+        return self.since
 
     def mappings(self):
         return self
@@ -98,16 +151,17 @@ class Connection:
         pass
 
 
-async def test_failed_feed_does_not_advance_durable_cursor(monkeypatch):
+@pytest.mark.parametrize("message", ["upstream unavailable", ""])
+async def test_failed_feed_does_not_advance_durable_cursor(monkeypatch, message):
     previous = datetime.now(timezone.utc) - timedelta(hours=2)
     conn = Connection({"last_success": previous})
     monkeypatch.setattr(feeds.db, "sessionmaker", lambda: lambda: conn)
-    monkeypatch.setattr(feeds, "github_advisories", AsyncMock(side_effect=RuntimeError("upstream unavailable")))
-    monkeypatch.setattr(feeds, "cisa_advisories", AsyncMock(side_effect=RuntimeError("upstream unavailable")))
+    monkeypatch.setattr(feeds, "github_advisories", AsyncMock(side_effect=RuntimeError(message)))
+    monkeypatch.setattr(feeds, "cisa_advisories", AsyncMock(side_effect=RuntimeError(message)))
     await feeds.poll_feeds()
-    writes = [params for sql, params in conn.writes if "INSERT" in sql]
+    writes = [params for sql, params in conn.writes if "success" in params]
     assert len(writes) == 2
-    assert all(w["success"] is None and w["error"] == "upstream unavailable" for w in writes)
+    assert all(w["success"] is None and w["error"] == (message or "RuntimeError") for w in writes)
     assert feeds.github_advisories.call_args.args[0] == previous - timedelta(hours=1)
 
 
