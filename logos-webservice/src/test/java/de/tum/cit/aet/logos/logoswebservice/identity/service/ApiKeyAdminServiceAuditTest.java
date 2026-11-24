@@ -49,7 +49,7 @@ class ApiKeyAdminServiceAuditTest {
         key.setTeamId(3);
         key.setLog(LogLevel.BILLING);
         key.setSettings("{\"cloud_rpm_limit\":10}");
-        when(keys.findById(5)).thenReturn(Optional.of(key));
+        when(keys.findByIdForUpdate(5)).thenReturn(Optional.of(key));
     }
 
     @ParameterizedTest

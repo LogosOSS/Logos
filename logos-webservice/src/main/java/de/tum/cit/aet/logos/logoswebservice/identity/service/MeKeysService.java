@@ -87,12 +87,12 @@ public class MeKeysService {
         if (!"BILLING".equals(level) && !"FULL".equals(level)) {
             throw new IllegalArgumentException("log must be BILLING or FULL");
         }
-        Optional<ApiKey> keyOpt = apiKeyRepository.findById(keyId);
+        Optional<ApiKey> keyOpt = apiKeyRepository.findByIdForUpdate(keyId);
         if (keyOpt.isEmpty()) {
             return Optional.empty();
         }
         ApiKey key = keyOpt.get();
-        if (!key.getUserId().equals(userId)) {
+        if (!Integer.valueOf(userId).equals(key.getUserId())) {
             // Deliberately collapse "exists but not owned" into the same outcome as
             // "not found" so callers can return a uniform 404 and avoid key
             // enumeration.

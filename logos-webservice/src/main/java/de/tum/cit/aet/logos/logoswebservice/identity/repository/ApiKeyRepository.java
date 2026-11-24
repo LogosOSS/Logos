@@ -4,7 +4,10 @@ import java.sql.Timestamp;
 import java.util.List;
 import java.util.Optional;
 
+import jakarta.persistence.LockModeType;
+
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
@@ -16,6 +19,11 @@ import de.tum.cit.aet.logos.logoswebservice.identity.repository.ModelAccessProje
 import de.tum.cit.aet.logos.logoswebservice.identity.repository.RateLimitUsageProjection;
 
 public interface ApiKeyRepository extends JpaRepository<ApiKey, Integer> {
+    /** Read the actual previous state while serializing concurrent logging mutations. */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT k FROM ApiKey k WHERE k.id = :id")
+    Optional<ApiKey> findByIdForUpdate(@Param("id") int id);
+
     @Query(value = "SELECT * FROM api_keys WHERE key_value = :keyValue AND is_active = true AND internal_service IS NULL", nativeQuery = true)
     Optional<ApiKey> findByKeyValueAndIsActiveTrue(@Param("keyValue") String keyValue);
 

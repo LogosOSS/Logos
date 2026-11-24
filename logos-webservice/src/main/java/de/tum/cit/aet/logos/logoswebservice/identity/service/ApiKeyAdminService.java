@@ -140,7 +140,7 @@ public class ApiKeyAdminService {
         if (!"BILLING".equals(level) && !"FULL".equals(level)) {
             throw new IllegalArgumentException("set_log must be BILLING or FULL");
         }
-        ApiKey k = apiKeyRepository.findById(keyId)
+        ApiKey k = apiKeyRepository.findByIdForUpdate(keyId)
             .orElseThrow(() -> new IllegalArgumentException("API key not found: " + keyId));
         String previous = k.getLog() == null ? null : k.getLog().name();
         k.setLog(LogLevel.valueOf(level));
@@ -161,7 +161,7 @@ public class ApiKeyAdminService {
 
     @Transactional
     public Map<String, Object> updateKey(int keyId, UpdateApiKeyRequestDTO req) {
-        ApiKey k = apiKeyRepository.findById(keyId)
+        ApiKey k = apiKeyRepository.findByIdForUpdate(keyId)
             .orElseThrow(() -> new IllegalArgumentException("API key not found: " + keyId));
         Map<String, Object> settings = parseJsonToMap(k.getSettings());
         Map<String, Object> before = keySettingsSnapshot(k, settings);

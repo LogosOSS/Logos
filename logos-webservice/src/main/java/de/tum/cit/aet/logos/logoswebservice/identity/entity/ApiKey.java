@@ -1,5 +1,6 @@
 package de.tum.cit.aet.logos.logoswebservice.identity.entity;
 
+import org.hibernate.annotations.DynamicUpdate;
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 import jakarta.persistence.Column;
@@ -12,6 +13,7 @@ import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 
 @Entity
+@DynamicUpdate // Unrelated edits must not write back a stale logging level.
 @Table(name = "api_keys")
 public class ApiKey {
 
