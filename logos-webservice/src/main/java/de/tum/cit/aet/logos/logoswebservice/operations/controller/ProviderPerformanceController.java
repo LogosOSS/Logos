@@ -195,6 +195,12 @@ public class ProviderPerformanceController {
         return nightlyResponse("configure", body);
     }
 
+    @PostMapping("/model_benchmarks/nightly/window")
+    @PreAuthorize("hasAuthority('" + Role.Names.LOGOS_ADMIN + "')")
+    public ResponseEntity<?> configureNightlyWindow(@RequestBody Map<String, Object> body) {
+        return nightlyResponse("window", body);
+    }
+
     private ResponseEntity<?> nightlyResponse(String operation, Map<String, Object> body) {
         try {
             return orchestratorWorkerAdminClient.nightlyBenchmark(operation, body);

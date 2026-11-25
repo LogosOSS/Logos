@@ -323,6 +323,7 @@ flows use a **concept** name (no role prefix); role-only list pages keep the
 | `model-request-gated.png` | `tobias.wasner` | **Gated model** dialog | `roles/logos-admin.md#model-requests` |
 | `logos-admin-nightly-enable.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — nightly schedule ready to enable | `roles/logos-admin.md#nightly-benchmarks` |
 | `logos-admin-nightly-benchmarks.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — **Overview → Nightly rotation** enabled | `roles/logos-admin.md#nightly-benchmarks` |
+| `logos-admin-nightly-edit.png` | `tobias.wasner` | **Edit nightly rotation** dialog with the pair's time window | `roles/logos-admin.md#nightly-benchmarks` |
 | `logos-admin-nightly-automatic-source.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — automatic recent-user source policy | `roles/logos-admin.md#nightly-benchmarks` |
 | `logos-admin-nightly-workload.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — request dataset form | `roles/logos-admin.md#nightly-benchmarks` |
 | `logos-admin-nightly-results.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — **Nightly rotation**, **Worker**, **Currently deployed** and **Timeline** | `roles/logos-admin.md#model-benchmarks` |

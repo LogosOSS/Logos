@@ -13,7 +13,7 @@ Schedules are off by default and persist in PostgreSQL. The nightly plan is inde
 of the manual benchmark editor. Disabling a schedule cancels its active run and
 restores the worker before it returns to production.
 
-## Enable, Inspect and Disable a Schedule
+## Edit, Enable and Disable a Schedule
 
 See the [illustrated admin walkthrough](../roles/logos-admin.md#nightly-benchmarks)
 for screenshots of the schedule controls.
@@ -28,8 +28,11 @@ for screenshots of the schedule controls.
 6. Check for **Enabled** and a green dot beside the worker.
 
 The schedule persists after a page reload or browser close.
-To remove the pair from rotation, open its tile and select **Disable nightly rotation**.
-Confirm with **Disable nightly rotation**.
+Use **Edit nightly rotation** to set the daily start and end time for the selected model and worker, then select **Save window**.
+The end must be on the same day and more than 10 minutes after the start.
+Until you save a custom window, the pair follows the deployment default of 05:00–08:00 Europe/Berlin.
+An active round keeps its original end time.
+To remove the pair from rotation, open **Edit nightly rotation**, select **Disable nightly rotation** and confirm.
 Activation requires
 an updated, connected worker. Run admission also checks the lane and the other
 available workers.
@@ -68,13 +71,13 @@ parameter configurations, further rounds and bounded retries belong to the same 
 The count persists across application restarts and disabling/re-enabling a
 schedule cannot reset it. The next Berlin calendar date has a fresh quota.
 
-The 08:00 admission cutoff can leave fewer than 2 pairs tested. Remaining
+The admission cutoff for each pair can leave fewer than 2 pairs tested. Remaining
 pairs keep their priority for the next night. Recovery of an interrupted worker
 always happens before selection, even when tonight's quota is already full.
 
 After a successful round, the scheduler stores the candidate and confirms the next production configuration.
 It then gives the other admitted pair its turn.
-Further rounds use the same saved inputs and refine the candidate until 08:00.
+Further rounds use the same saved inputs and refine the candidate until that pair's window ends.
 The daily quota limits distinct pairs, not rounds.
 A failed baseline or a round without successful variants does not schedule another round.
 If the baseline fails, the scheduler stops the remaining variants and restores the worker.
@@ -85,8 +88,8 @@ Disabling a schedule stops further rounds. Pending recovery always takes priorit
 
 All times use `Europe/Berlin`, including daylight-saving changes.
 
-- Start configurations and retries from 05:00 inclusive to 08:00 exclusive.
-- At 08:00, stop an active run with fewer than 50% of its measured requests
+- Start configurations and retries from the pair's start time inclusive to its end time exclusive.
+- At the end of the window, stop an active run with fewer than 50% of its measured requests
   successfully completed. Started requests and output tokens do not count
   toward this percentage. With 50 samples, at least 25 must have completed.
 - At or above 50%, let the current configuration finish. Do not start another
@@ -94,9 +97,9 @@ All times use `Europe/Berlin`, including daylight-saving changes.
   an outer limit; the preparation budget is separate.
 - During measurement, 5 minutes without output content or a successful
   request completion stops the run. Transport and lease heartbeats do not
-  count. This watchdog also applies after 08:00.
+  count. This watchdog also applies after the window ends.
 - A stalled run gets at most 1 retry with the same configuration, after a
-  worker-lane restart, and only before 08:00. A second stall skips that
+  worker-lane restart, and only before the window ends. A second stall skips that
   configuration. Configuration errors are recorded and skipped without retry.
 - Preparation and warm-up have a separate 15-minute budget. Worker draining
   also has a 15-minute budget. Cleanup can finish after the nominal window.
@@ -193,8 +196,8 @@ The setting applies to all enabled nightly schedules in that deployment.
 The orchestrator reads its own configured database. It does not connect Dev to Prod.
 Deploy migration 069, the orchestrator and the user interface together.
 
-At the maintenance window start, Logos stores 1 source selection before calibration.
-The default cutoff is 05:00 Europe/Berlin.
+Logos stores 1 source selection for the day before calibration or the first Nightly round, whichever comes first.
+The cutoff is 05:00 Europe/Berlin by default. An enabled pair that starts earlier moves the cutoff earlier when the source is first selected.
 The selection contains the latest 50 successful FULL requests with stored inputs.
 Both request arrival and completion must occur at or before the cutoff.
 The recorded `log_entry.user_id` must match exactly 1 user with the configured username.
@@ -418,7 +421,7 @@ New benchmark configurations stop when the window ends.
 
 Calibration has priority. A healthy worker with pending calibration blocks new benchmarks during the calibration window.
 Each worker gets at most 1 automatic calibration attempt per window.
-Benchmarks start only after these attempts finish and before 08:00.
+Benchmarks that overlap the calibration window wait for these attempts and can start until their own window closes.
 If new calibration work appears during a benchmark, the current run finishes first.
 The scheduler restores the worker and stops the remaining benchmark plan with `calibration_pending`.
 
@@ -567,7 +570,7 @@ last successful measurement. The current pair limit is the code constant
 | `capacity_deferred` | The maintenance window ended while the round waited for GPU capacity. |
 | `continuing` | The production configuration is confirmed. Another round waits for its turn within this window. |
 | `completed` | The night finished. Inspect individual outcomes; this does not mean every configuration succeeded. |
-| `window_closed` | No further configuration can start after 08:00. |
+| `window_closed` | No further configuration can start after the pair's window ends. |
 | `window_closed_below_half` | The window ended before half of the current test requests completed. The UI shows **Stopped · nightly window ended**. |
 | `preparation_timeout` / `stalled` | Preparation exceeded its budget, or measurement stopped making progress. Inspect the attempt report. |
 | `recovery_required` | The original configuration is not ready. Resolve the worker error; keep the reservation and journal intact. |
@@ -576,7 +579,7 @@ last successful measurement. The current pair limit is the code constant
 
 A restart, a failed run or an opt-in change does not clear the nightly quota.
 If fewer than 2 pairs run, check eligibility, existing manual jobs, recovery
-and the 08:00 cutoff. One long round can use the available admission window.
+and each pair's cutoff. One long round can use the available admission window.
 
 ## Validation
 

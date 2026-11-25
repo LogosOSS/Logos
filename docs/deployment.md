@@ -620,10 +620,11 @@ See [deployment-specific request sources](admin/nightly-benchmarks.md#deployment
 This setting reads the deployment's own database. It does not copy Prod requests to Dev.
 
 Nightly benchmarks require updates to the webservice, orchestrator, web application and selected workers.
-The webservice applies changelog `065_nightly_benchmarks.xml` before the new scheduler starts.
+The webservice applies changelogs `065_nightly_benchmarks.xml` and `100_nightly_rotation_window.xml` before the scheduler starts.
 Workers report `supports_benchmark_restart` and `supports_nightly_gpu_budget` in their runtime status.
 These capabilities allow Logos to reserve the benchmark lane's GPUs and check capacity before each restart.
 All schedules default to disabled.
+Enabled pairs follow the deployment's 05:00–08:00 Europe/Berlin default until an admin saves a custom window for that pair.
 
 Logos selects 1 vLLM lane or starts a temporary lane when needed.
 `LOGOS_MAINTENANCE_MAX_NODES` limits simultaneous maintenance workers. Its default is `1`.

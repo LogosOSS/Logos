@@ -26,6 +26,16 @@ class NightlyUpdateRequest(NightlyStatusRequest):
     expected_workload_id: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
 
 
+ClockTime = Annotated[str, Field(pattern=r"^(?:[01][0-9]|2[0-3]):[0-5][0-9]$")]
+
+
+class NightlyWindowRequest(NightlyStatusRequest):
+    start: ClockTime
+    end: ClockTime
+    expected_start: ClockTime
+    expected_end: ClockTime
+
+
 class RecentBenchmarkWorkloadRequest(NightlyStatusRequest):
     lookback_days: Literal[1, 3, 7] | None = None
 

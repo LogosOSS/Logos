@@ -3,16 +3,18 @@ import { HttpClient, HttpErrorResponse } from '@angular/common/http';
 import { firstValueFrom } from 'rxjs';
 import { FormsModule } from '@angular/forms';
 import { ModalConfirmComponent } from '../../shared/components/modal/modal-confirm/modal-confirm';
+import { ModalFormComponent } from '../../shared/components/modal/modal-form/modal-form';
 import { requestDatasetLabel } from './benchmark-configuration';
 
 interface SavedWorkload { id: string; name: string; request_count: number; provenance: string; created_at?: string; }
+type NightlyWindow = { start: string; end: string; benchmark_start_cutoff: string; timezone: string };
 
 export interface NightlyStatus {
   workload_policy?: { kind: 'selected' | 'recent_user'; username?: string; request_count?: number; ready?: boolean; error?: string | null };
   workload_id?: string | null;
   workloads?: SavedWorkload[];
   optimizer?: { production_adoption?: { benchmark_id: number; baseline_id: number; baseline_throughput: number; throughput: number }; reference_id?: number; best_benchmark_id?: number; iterations?: number; nightly_session?: { date: string; rounds: number; successful_configurations: number } };
-  window?: { start: string; end: string; benchmark_start_cutoff: string; timezone: string };
+  window?: NightlyWindow;
   enabled: boolean;
   status: string;
   recovery_required: boolean;
@@ -24,7 +26,7 @@ export interface NightlyStatus {
 @Component({
   selector: 'app-nightly-benchmarks',
   standalone: true,
-  imports: [ModalConfirmComponent, FormsModule],
+  imports: [ModalConfirmComponent, ModalFormComponent, FormsModule],
   templateUrl: './nightly-benchmarks.html',
   styleUrl: './nightly-benchmarks.scss',
 })
@@ -38,12 +40,17 @@ export class NightlyBenchmarks implements OnChanges, OnDestroy {
   private readonly http = inject(HttpClient);
   readonly state = signal<NightlyStatus | null>(null);
   readonly confirming = signal(false);
+  readonly editing = signal(false);
+  readonly windowError = signal<string | null>(null);
   readonly saving = signal(false);
   readonly error = signal<string | null>(null);
   selectedWorkload: string | null = null;
   sourceEdited = false;
   lookbackDays: 1 | 3 | 7 | null = null;
   readonly sourceNotice = signal<string | null>(null);
+  windowStart = '';
+  windowEnd = '';
+  private expectedWindow: NightlyWindow | null = null;
   private version = 0;
   private timer?: ReturnType<typeof setTimeout>;
   private destroyed = false;
@@ -59,6 +66,9 @@ export class NightlyBenchmarks implements OnChanges, OnDestroy {
     this.saving.set(false);
     this.error.set(null);
     this.confirming.set(false);
+    this.editing.set(false);
+    this.expectedWindow = null;
+    this.windowError.set(null);
     clearTimeout(this.timer);
     void this.refresh();
   }
@@ -108,6 +118,66 @@ export class NightlyBenchmarks implements OnChanges, OnDestroy {
 
   get window() {
     return this.state()?.window;
+  }
+
+  get windowChanged(): boolean {
+    return !!this.expectedWindow && (this.windowStart !== this.expectedWindow.start || this.windowEnd !== this.expectedWindow.end);
+  }
+
+  get windowInvalid(): boolean {
+    const minutes = (time: string) => {
+      const [hour, minute] = time.split(':').map(Number);
+      return hour * 60 + minute;
+    };
+    const clockTime = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
+    return !clockTime.test(this.windowStart) || !clockTime.test(this.windowEnd)
+      || minutes(this.windowEnd) - minutes(this.windowStart) <= 10;
+  }
+
+  openEditor(): void {
+    const window = this.window;
+    if (!window || this.saving()) return;
+    this.expectedWindow = window;
+    this.windowStart = window.start;
+    this.windowEnd = window.end;
+    this.windowError.set(null);
+    this.editing.set(true);
+  }
+
+  async saveWindow(): Promise<void> {
+    const expected = this.expectedWindow;
+    if (!expected || !this.windowChanged || this.windowInvalid || this.saving()) return;
+    const version = ++this.version;
+    this.saving.set(true);
+    this.windowError.set(null);
+    clearTimeout(this.timer);
+    let refreshWindow = false;
+    try {
+      const result = await firstValueFrom(this.http.post<{ window: NightlyWindow }>(
+        '/api/logosdb/model_benchmarks/nightly/window', {
+          model_provider_id: this.pairId, start: this.windowStart, end: this.windowEnd,
+          expected_start: expected.start, expected_end: expected.end,
+        }));
+      if (version !== this.version || this.destroyed) return;
+      this.state.update(state => state && { ...state, window: result.window });
+      this.editing.set(false);
+    } catch (error) {
+      if (version !== this.version || this.destroyed) return;
+      const detail = error instanceof HttpErrorResponse ? error.error?.detail ?? error.error?.error : null;
+      this.windowError.set(typeof detail === 'string' ? detail : 'Could not save the nightly window. Try again.');
+      refreshWindow = error instanceof HttpErrorResponse && error.status === 409;
+    } finally {
+      if (version === this.version && !this.destroyed) {
+        this.saving.set(false);
+        if (refreshWindow) void this.refresh();
+        else this.timer = setTimeout(() => void this.refresh(), 15000);
+      }
+    }
+  }
+
+  disableFromEditor(): void {
+    this.editing.set(false);
+    void this.toggleNightly();
   }
 
   get automaticSource(): boolean { return this.state()?.workload_policy?.kind === 'recent_user'; }

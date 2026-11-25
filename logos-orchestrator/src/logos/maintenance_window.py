@@ -1,4 +1,4 @@
-"""One configured window for automatic calibration, benchmarks and their UI."""
+"""Local-time maintenance windows and deployment defaults."""
 
 import os
 from dataclasses import dataclass
@@ -25,25 +25,26 @@ class MaintenanceWindow:
     end: time = time(8)
     timezone: str = "Europe/Berlin"
 
+    def __post_init__(self) -> None:
+        if self.start.tzinfo or self.end.tzinfo:
+            raise ValueError("Maintenance times must be local times without a UTC offset")
+        if any(value.second or value.microsecond for value in (self.start, self.end)):
+            raise ValueError("Maintenance times must use whole minutes")
+        ZoneInfo(self.timezone)
+        duration = self.end.hour * 60 + self.end.minute - self.start.hour * 60 - self.start.minute
+        if duration <= 10:
+            raise ValueError("The maintenance window must end on the same day, more than 10 minutes after its start")
+
     @classmethod
     def from_env(cls) -> "MaintenanceWindow":
         """Reject invalid shared settings instead of silently using different windows."""
         maintenance_node_limit()
         defaults = cls()
-        window = cls(
+        return cls(
             start=time.fromisoformat(_env("LOGOS_MAINTENANCE_WINDOW_START", defaults.start.isoformat())),
             end=time.fromisoformat(_env("LOGOS_MAINTENANCE_WINDOW_END", defaults.end.isoformat())),
             timezone=_env("LOGOS_MAINTENANCE_TIMEZONE", defaults.timezone),
         )
-        if window.start.tzinfo or window.end.tzinfo:
-            raise ValueError("Maintenance times must be local times without a UTC offset")
-        if any(value.second or value.microsecond for value in (window.start, window.end)):
-            raise ValueError("Maintenance times must use whole minutes")
-        ZoneInfo(window.timezone)
-        duration = window.end.hour * 60 + window.end.minute - window.start.hour * 60 - window.start.minute
-        if duration <= 10:
-            raise ValueError("The maintenance window must end on the same day, more than 10 minutes after its start")
-        return window
 
     def bounds(self, now: datetime) -> tuple[datetime, datetime]:
         """Return the shared start and end on the local calendar date."""

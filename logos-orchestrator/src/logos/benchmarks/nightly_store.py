@@ -5,9 +5,9 @@ from contextlib import contextmanager
 
 from sqlalchemy import text
 
-from logos.benchmarks.nightly import CAPACITY_WAITING, MAX_PAIRS_PER_NIGHT
+from logos.benchmarks.nightly import CAPACITY_WAITING, MAX_PAIRS_PER_NIGHT, schedule_window
 from logos.dbutils.dbmanager import DBManager, _init_engine
-from logos.maintenance_window import maintenance_node_limit
+from logos.maintenance_window import MaintenanceWindow, maintenance_node_limit
 
 LOCK_ID = 125500301
 MAX_RECOVERY_RESUMES = 2
@@ -71,6 +71,7 @@ def status(pair_id: int) -> dict:
             db.session.execute(
                 text(
                     "SELECT model_provider_id, enabled, last_run_date, status, report, workload_id, optimizer, "
+                    "window_start, window_end, "
                     "recovery IS NOT NULL AS recovery_required FROM nightly_benchmarks WHERE model_provider_id = :id"
                 ),
                 {"id": pair_id},
@@ -91,6 +92,35 @@ def status(pair_id: int) -> dict:
                 "optimizer": {},
             }
         )
+
+
+def set_window(pair_id: int, window: MaintenanceWindow, expected: MaintenanceWindow) -> bool:
+    """Save only the requested pair's window if it still matches the editor."""
+    default = MaintenanceWindow.from_env()
+    with DBManager() as db:
+        db.session.execute(
+            text("INSERT INTO nightly_benchmarks(model_provider_id) VALUES (:id) ON CONFLICT DO NOTHING"),
+            {"id": pair_id},
+        )
+        changed = db.session.execute(
+            text(
+                "UPDATE nightly_benchmarks SET window_start = :start, window_end = :end "
+                "WHERE model_provider_id = :id "
+                "AND COALESCE(window_start, CAST(:default_start AS time)) = :expected_start "
+                "AND COALESCE(window_end, CAST(:default_end AS time)) = :expected_end"
+            ),
+            {
+                "id": pair_id,
+                "start": window.start,
+                "end": window.end,
+                "default_start": default.start,
+                "default_end": default.end,
+                "expected_start": expected.start,
+                "expected_end": expected.end,
+            },
+        ).rowcount
+        db.session.commit()
+        return bool(changed)
 
 
 def set_enabled(pair_id: int, enabled: bool, expected: bool, workload_id=UNCHANGED, expected_workload_id=None) -> dict:
@@ -129,19 +159,33 @@ def set_enabled(pair_id: int, enabled: bool, expected: bool, workload_id=UNCHANG
     return status(pair_id)
 
 
-def claim(pair_id: int, day) -> bool:
+def claim(pair_id: int, day, *, window: MaintenanceWindow | None = None) -> bool:
     """Claim a new pair or another restored round; only distinct pairs consume the daily quota."""
+    default = MaintenanceWindow.from_env()
     with DBManager() as db:
         claimed = bool(
             db.session.execute(
                 text(
                     "UPDATE nightly_benchmarks SET last_run_date = :day, status = 'running', report = '[]'::jsonb "
                     "WHERE model_provider_id = :id AND enabled AND recovery IS NULL "
+                    "AND (NOT :check_window OR ("
+                    "COALESCE(window_start, CAST(:default_start AS time)) = CAST(:start AS time) AND "
+                    "COALESCE(window_end, CAST(:default_end AS time)) = CAST(:end AS time))) "
                     "AND ((last_run_date = :day AND status IN ('continuing', :capacity_waiting)) OR "
                     "((last_run_date IS NULL OR last_run_date < :day) "
                     "AND (SELECT COUNT(*) FROM nightly_benchmarks WHERE last_run_date = :day) < :limit))"
                 ),
-                {"id": pair_id, "day": day, "limit": MAX_PAIRS_PER_NIGHT, "capacity_waiting": CAPACITY_WAITING},
+                {
+                    "id": pair_id,
+                    "day": day,
+                    "limit": MAX_PAIRS_PER_NIGHT,
+                    "capacity_waiting": CAPACITY_WAITING,
+                    "check_window": window is not None,
+                    "default_start": default.start,
+                    "default_end": default.end,
+                    "start": (window or default).start,
+                    "end": (window or default).end,
+                },
             ).rowcount
         )
 
@@ -749,19 +793,13 @@ def finish(pair_id, state, report, search=None, *, resume_after_recovery=False):
 
 def finalize_continuations(now):
     """Publish the final result only after all restored rounds end, including after a restart."""
-    from logos.maintenance_window import MaintenanceWindow
-
     with cluster_lock() as connection:
         if connection is None:
             return
         for row in rows():
             if row["status"] not in {"continuing", CAPACITY_WAITING} or row["recovery"] is not None:
                 continue
-            if (
-                not row["enabled"]
-                or row["last_run_date"] != now.date()
-                or not MaintenanceWindow.from_env().contains(now)
-            ):
+            if not row["enabled"] or row["last_run_date"] != now.date() or now >= schedule_window(row).bounds(now)[1]:
                 if not row["enabled"]:
                     state = "disabled"
                 else:

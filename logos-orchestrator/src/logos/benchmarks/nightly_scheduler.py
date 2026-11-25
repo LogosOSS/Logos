@@ -4,6 +4,7 @@ import asyncio
 import copy
 import json
 import logging
+from contextvars import copy_context
 
 from starlette.requests import Request
 
@@ -19,12 +20,14 @@ from logos.benchmarks.nightly import (
     MAX_PAIRS_PER_NIGHT,
     NIGHTLY_CONTEXT,
     NIGHTLY_GPU_BUDGET_REASON,
+    NIGHTLY_WINDOW,
     NightlyCapacityDeferred,
     NightlyStopped,
     can_start,
     configured_lane_id,
     local_now,
     parameter_plan,
+    schedule_window,
 )
 from logos.benchmarks.reservations import benchmark_reservations
 from logos.benchmarks.worker_limits import validate_worker_overrides, worker_limits
@@ -97,7 +100,8 @@ class NightlyScheduler:
 
     async def _tick(self):
         schedules = store.rows()
-        if not any(row["recovery"] for row in schedules) and not can_start(local_now()):
+        now = local_now()
+        if not any(row["recovery"] or (row["enabled"] and schedule_window(row).contains(now)) for row in schedules):
             return
         with store.cluster_lock() as connection:
             if connection is None:
@@ -125,20 +129,20 @@ class NightlyScheduler:
                 deferred = []
                 for row in remaining:
                     pair_id = row["model_provider_id"]
-                    day = local_now().date()
-                    if (
-                        not can_start(local_now())
-                        or store.has_active_benchmarks()
-                        or (self.calibration and self.calibration.benchmarks_must_wait())
-                    ):
+                    now = local_now()
+                    day = now.date()
+                    if store.has_active_benchmarks() or (self.calibration and self.calibration.benchmarks_must_wait()):
                         break
                     if not row["enabled"]:
+                        continue
+                    window = schedule_window(row)
+                    if not window.contains(now):
                         continue
                     claimed_today = row["last_run_date"] == day
                     if claimed_today:
                         if row.get("status") == CAPACITY_WAITING:
                             updated = row.get("updated_at")
-                            if updated and (local_now() - updated).total_seconds() < CAPACITY_RETRY_SECONDS:
+                            if updated and (now - updated).total_seconds() < CAPACITY_RETRY_SECONDS:
                                 continue
                         elif row.get("status") != "continuing":
                             continue
@@ -164,14 +168,18 @@ class NightlyScheduler:
                         continue
                     if not store.lock_held(connection):
                         return
-                    if store.claim(pair_id, day):
-                        selected.append(pair_id)
+                    if store.claim(pair_id, day, window=window):
+                        selected.append((pair_id, window))
                         providers.add(provider_id)
                 if not selected:
                     return
                 # TaskGroup cancels and awaits every sibling's restoration on failure or shutdown.
                 async with asyncio.TaskGroup() as group:
-                    tasks = [group.create_task(self.run_schedule(pair, connection)) for pair in selected]
+                    tasks = []
+                    for pair, window in selected:
+                        context = copy_context()
+                        context.run(NIGHTLY_WINDOW.set, window)
+                        tasks.append(group.create_task(self.run_schedule(pair, connection), context=context))
                 if not all(task.result() for task in tasks):
                     return
                 remaining = deferred
@@ -632,7 +640,7 @@ class NightlyScheduler:
                     "interrupted_recovered",
                     row["report"],
                     recovery.get("search"),
-                    resume_after_recovery=row.get("last_run_date") == now.date() and can_start(now),
+                    resume_after_recovery=row.get("last_run_date") == now.date() and schedule_window(row).contains(now),
                 )
                 benchmark_reservations.release(-pair_id)
                 return True

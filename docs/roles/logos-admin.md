@@ -372,6 +372,11 @@ Close the dialog to return to the same worker and timeline position.
 ![Enabled nightly rotation in the performance overview](../static/img/roles/logos-admin-nightly-benchmarks.png)
 
 Select the worker tile to see the workload and maintenance window.
+Select **Edit nightly rotation** to set the daily start and end time for this model and worker.
+The default is 05:00–08:00 in Europe/Berlin. Select **Save window** to apply the change to future rounds.
+
+![Editor with the daily start and end time for the selected worker](../static/img/roles/logos-admin-nightly-edit.png)
+
 Logos checks GPU memory for the benchmark lane and its warm-up before the round.
 If the worker needs more GPU memory, then the schedule shows **Waiting for GPU capacity**.
 Other models on the same worker continue to serve requests.
@@ -388,7 +393,7 @@ See [deployment-specific request sources](../admin/nightly-benchmarks.md#deploym
 To remove the pair from the nightly rotation:
 
 1. Under **Nightly rotation**, select the tile for the worker.
-2. Select **Disable nightly rotation**.
+2. Select **Edit nightly rotation**, then **Disable nightly rotation**.
 3. Read the dialog and select **Disable nightly rotation**.
 4. Check for **Disabled** and a gray dot on the worker tile.
 

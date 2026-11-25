@@ -33,7 +33,7 @@ import {
 interface NightlySchedule {
   model_id: number; model_provider_id: number; provider_name: string;
   state: 'next' | 'queued' | 'recent' | 'blocked' | 'disabled' | 'waiting' | 'busy';
-  reason: string; last_run_date: string | null; recent_success: boolean;
+  reason: string; last_run_date: string | null; recent_success: boolean; next_date?: string | null;
 }
 
 const PROFILE_AXES = ['latency', 'quality', 'price'] as const;
@@ -76,7 +76,8 @@ export class Models implements OnInit, OnDestroy {
   }
 
   nightlyDetail(row: NightlySchedule): string {
-    return `${row.provider_name}: ${row.reason}${row.state === 'next' ? ' · ' + this.nightly()?.next_date : ''}`
+    const nextDate = row.next_date ?? this.nightly()?.next_date;
+    return `${row.provider_name}: ${row.reason}${row.state === 'next' && nextDate ? ' · ' + nextDate : ''}`
       + (row.last_run_date ? ` · Last attempt: ${row.last_run_date}` : '')
       + (row.recent_success ? ' · Successful measurement in the last 7 days' : '');
   }

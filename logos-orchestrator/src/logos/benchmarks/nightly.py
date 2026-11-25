@@ -13,6 +13,7 @@ from logos.benchmarks.configuration import BenchmarkRunSettings, ServingOverride
 from logos.maintenance_window import MaintenanceWindow
 
 NIGHTLY_CONTEXT: ContextVar[bool] = ContextVar("nightly_benchmark", default=False)
+NIGHTLY_WINDOW: ContextVar[MaintenanceWindow | None] = ContextVar("nightly_window", default=None)
 LEASE_CHECK: ContextVar[Callable[[], bool]] = ContextVar("nightly_lease_check", default=lambda: True)
 STALL_SECONDS = 300
 PREPARATION_SECONDS = 900
@@ -43,9 +44,17 @@ def local_now() -> datetime:
     return datetime.now(timezone.utc).astimezone(ZoneInfo(MaintenanceWindow.from_env().timezone))
 
 
+def schedule_window(schedule: dict) -> MaintenanceWindow:
+    default = MaintenanceWindow.from_env()
+    if schedule.get("window_start") is None:
+        return default
+    return MaintenanceWindow(schedule["window_start"], schedule["window_end"], default.timezone)
+
+
 def can_start(now: datetime) -> bool:
-    """Admit configurations throughout the shared maintenance window."""
-    return MaintenanceWindow.from_env().can_start_benchmark(now)
+    """Admit configurations through the end of their rotation window."""
+    window = NIGHTLY_WINDOW.get() or MaintenanceWindow.from_env()
+    return window.can_start_benchmark(now)
 
 
 @dataclass
@@ -101,7 +110,8 @@ async def supervise(
     still has the inactivity watchdog and the runner's existing total timeout.
     Cancellation is awaited before returning control to node cleanup.
     """
-    cutoff = MaintenanceWindow.from_env().bounds(local_now())[1]
+    window = NIGHTLY_WINDOW.get() or MaintenanceWindow.from_env()
+    cutoff = window.bounds(local_now())[1]
     task = asyncio.create_task(execute())
     cutoff_checked = False
     try:

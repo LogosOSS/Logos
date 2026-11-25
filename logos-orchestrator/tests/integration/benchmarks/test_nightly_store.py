@@ -3,7 +3,7 @@
 import copy
 import os
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, time
 from pathlib import Path
 from xml.etree import ElementTree
 
@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from logos.benchmarks import nightly_store as store
 from logos.benchmarks.nightly import CAPACITY_WAITING
+from logos.maintenance_window import MaintenanceWindow
 
 pytestmark = pytest.mark.integration
 
@@ -81,6 +82,10 @@ def database(monkeypatch):
             "{*}changeSet/{*}sql"
         ):
             connection.execute(text(sql.text))
+        for sql in ElementTree.parse(migration.with_name("100_nightly_rotation_window.xml")).findall(
+            "{*}changeSet/{*}sql"
+        ):
+            connection.execute(text(sql.text))
 
     class Database(store.DBManager):
         def __enter__(self):
@@ -97,6 +102,22 @@ def database(monkeypatch):
     with admin.begin() as connection:
         connection.execute(text(f"DROP SCHEMA {schema} CASCADE"))
     admin.dispose()
+
+
+def test_rotation_window_is_saved_per_pair_and_rejects_a_stale_editor(database):
+    default = MaintenanceWindow.from_env()
+    custom = MaintenanceWindow(time(11, 15), time(13), default.timezone)
+    stale = MaintenanceWindow(time(12), time(14), default.timezone)
+    store.set_enabled(31, enabled=True, expected=False)
+
+    assert store.set_window(31, custom, default)
+    assert not store.set_window(31, stale, default)
+    row = store.status(31)
+    assert row["enabled"]
+    assert (row["window_start"], row["window_end"]) == (custom.start, custom.end)
+    assert store.status(32).get("window_start") is None
+    assert not store.claim(31, date(2026, 11, 25), window=default)
+    assert store.claim(31, date(2026, 11, 25), window=custom)
 
 
 def test_frozen_inputs_survive_log_deletion_and_selection_is_compare_and_set(database, monkeypatch):

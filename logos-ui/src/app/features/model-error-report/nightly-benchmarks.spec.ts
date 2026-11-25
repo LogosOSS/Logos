@@ -35,6 +35,29 @@ describe('Nightly benchmark management', () => {
   });
   afterEach(() => { control.ngOnDestroy(); http.verify(); });
 
+  it('saves the selected pair window with its previous bounds and leaves rotation enabled', async () => {
+    control.state.update(state => ({ ...state!, enabled: true }));
+    control.openEditor();
+    expect(control.windowStart).toBe('05:00');
+    expect(control.windowEnd).toBe('08:00');
+    control.windowStart = '11:15';
+    control.windowEnd = '11:25';
+    expect(control.windowInvalid).toBe(true);
+    control.windowEnd = '13:00';
+    expect(control.windowInvalid).toBe(false);
+
+    const operation = control.saveWindow();
+    const request = http.expectOne('/api/logosdb/model_benchmarks/nightly/window');
+    expect(request.request.body).toEqual({
+      model_provider_id: 31, start: '11:15', end: '13:00', expected_start: '05:00', expected_end: '08:00',
+    });
+    request.flush({ window: { ...control.window, start: '11:15', end: '13:00', benchmark_start_cutoff: '13:00' } });
+    await operation;
+    expect(control.editing()).toBe(false);
+    expect(control.state()?.enabled).toBe(true);
+    expect(control.window?.start).toBe('11:15');
+  });
+
   it('labels the rotation status and distinguishes worker recovery', async () => {
     const fixture = TestBed.createComponent(NightlyBenchmarks);
     fixture.componentRef.setInput('pairId', control.pairId);

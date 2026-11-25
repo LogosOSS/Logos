@@ -31,11 +31,17 @@
         }
       </div>
       @if (state()) {
-        <button type="button" class="nightly__toggle" (click)="toggleNightly()" [disabled]="saving() || !!enableBlocker"
-          [attr.aria-haspopup]="state()?.enabled ? 'dialog' : null"
-          [attr.aria-describedby]="enableBlocker ? 'nightly-blocker-' + pairId : null">
-          {{ state()?.enabled ? 'Disable nightly rotation' : 'Enable nightly rotation' }}
-        </button>
+        <div class="nightly__actions">
+          <button type="button" (click)="openEditor()" [disabled]="saving() || !window" aria-haspopup="dialog">
+            Edit nightly rotation
+          </button>
+          @if (!state()?.enabled) {
+            <button type="button" class="nightly__toggle" (click)="toggleNightly()" [disabled]="saving() || !!enableBlocker"
+              [attr.aria-describedby]="enableBlocker ? 'nightly-blocker-' + pairId : null">
+              Enable nightly rotation
+            </button>
+          }
+        </div>
       }
     </div>
     @if (state()?.recovery_required) { <p role="alert">Worker recovery is pending. Nightly benchmarks are paused.</p> }
@@ -74,6 +80,28 @@
       </div>
     }
   </section>
+  <app-modal-form [visible]="editing()" (visibleChange)="!saving() && editing.set($event)" [dismissible]="!saving()"
+    title="Edit nightly rotation" size="sm">
+    <div class="nightly-editor">
+      <p>Daily window for {{ providerName }} and this model · {{ window?.timezone }}</p>
+      <div class="nightly-editor__times">
+        <label>Start time <input type="time" [(ngModel)]="windowStart" [disabled]="saving()" /></label>
+        <label>End time <input type="time" [(ngModel)]="windowEnd" [disabled]="saving()" /></label>
+      </div>
+      @if (windowChanged && windowInvalid) {
+        <p role="alert">End time must be more than 10 minutes after the start on the same day.</p>
+      }
+      @if (windowError()) { <p role="alert">{{ windowError() }}</p> }
+      @if (state()?.enabled) {
+        <button type="button" (click)="disableFromEditor()" [disabled]="saving()" aria-haspopup="dialog">Disable nightly rotation</button>
+      }
+    </div>
+    <div modal-footer class="nightly-editor__footer">
+      <button type="button" (click)="editing.set(false)" [disabled]="saving()">Cancel</button>
+      <button type="button" class="nightly-editor__save" (click)="saveWindow()"
+        [disabled]="saving() || !windowChanged || windowInvalid">{{ saving() ? 'Saving…' : 'Save window' }}</button>
+    </div>
+  </app-modal-form>
   <app-modal-confirm [visible]="confirming()" (visibleChange)="!saving() && confirming.set($event)"
     title="Disable nightly rotation?" message="This cancels any active nightly run and restores the worker’s previous lane setup."
     confirmLabel="Disable nightly rotation" [danger]="true" icon="pi-moon" [loading]="saving()" (confirmed)="confirmDisable()">
