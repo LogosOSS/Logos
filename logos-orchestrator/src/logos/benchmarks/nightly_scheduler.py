@@ -488,12 +488,19 @@ class NightlyScheduler:
         candidates = [
             lane
             for lane in snapshot["runtime"].get("lanes", [])
-            if lane.get("model") == model
-            and lane_is_serving(lane)
-            and (lane.get("lane_config") or {}).get("vllm")
-            and not self.planner.is_lane_locked(provider_id, lane["lane_id"])
+            if lane.get("model") == model and lane_is_serving(lane) and (lane.get("lane_config") or {}).get("vllm")
         ]
-        return min(candidates, key=lambda lane: (not lane.get("is_static"), lane["lane_id"]), default=None)
+        # A warm lane lock protects against idle eviction. Scheduled maintenance
+        # may reuse the lane when no unlocked replica is available.
+        return min(
+            candidates,
+            key=lambda lane: (
+                self.planner.is_lane_locked(provider_id, lane["lane_id"]),
+                not lane.get("is_static"),
+                lane["lane_id"],
+            ),
+            default=None,
+        )
 
     def _temporary_config(self, pair_id, provider_id, model, lanes):
         ids = {lane["lane_id"] for lane in lanes}

@@ -901,19 +901,19 @@ class CapacityPlanner:
         same settings. A lane of a locked worker that slept before is put to
         sleep again once it runs.
         """
-        registry = self._registry
-        snapshot = registry.peek_runtime_snapshot(provider_id) if registry is not None else None
-        if snapshot is None:
-            return []
-        runtime_lanes = (snapshot.get("runtime") or {}).get("lanes") or []
-        if not isinstance(runtime_lanes, list):
-            return []
         if not any(pid == provider_id and entry[0] for (pid, _), entry in self._lock_cache().peek().items()):
             return []
         await self._retry_unsettled_refusals(provider_id)
-        present = {str(lane.get("lane_id")) for lane in runtime_lanes if isinstance(lane, dict)}
         pending = self._restore_sleep_pending()
         async with self._restore_record_lock(provider_id):
+            registry = self._registry
+            snapshot = registry.peek_runtime_snapshot(provider_id) if registry is not None else None
+            if snapshot is None:
+                return []
+            runtime_lanes = (snapshot.get("runtime") or {}).get("lanes") or []
+            if not isinstance(runtime_lanes, list):
+                return []
+            present = {str(lane.get("lane_id")) for lane in runtime_lanes if isinstance(lane, dict)}
             # Read under the lock: a change waited for may have rewritten a record.
             locks = [
                 (lane_id, revision, record)
@@ -936,8 +936,13 @@ class CapacityPlanner:
             # other commands for a long time, so only a definite failure
             # (unload_refused) brings the lane back into the records.
             done = {lane_id for lane_id in unloading if lane_id not in present}
+            # Nightly owns recovery for its model. Keep its last serving
+            # config in the lock record until Nightly settles and releases it.
             observed = {
-                lane_id: entry for lane_id, entry in observed_lanes(runtime_lanes).items() if lane_id not in unloading
+                lane_id: entry
+                for lane_id, entry in observed_lanes(runtime_lanes).items()
+                if lane_id not in unloading
+                and not benchmark_reservations.is_nightly_reserved(provider_id, entry["lane_config"]["model"])
             }
             records = []
             for lock_id, revision, record in locks:
@@ -1045,6 +1050,10 @@ class CapacityPlanner:
             for lane_id, entry in missing:
                 if lane_id in planned or lane_id in busy:
                     continue
+                lane_config = dict(entry["lane_config"])
+                model_name = str(lane_config["model"])
+                if benchmark_reservations.is_nightly_reserved(provider_id, model_name):
+                    continue
                 if not entry.get("sleeping") and self._overlaps(self._parse_restore_gpus(entry), unsettled_gpus):
                     continue
                 if self._lane_is_in_load_failure_cooldown(provider_id, lane_id):
@@ -1052,13 +1061,12 @@ class CapacityPlanner:
                 planned.add(lane_id)
                 if cycle_reserved_lane_ids is not None:
                     cycle_reserved_lane_ids.setdefault(provider_id, set()).add(lane_id)
-                lane_config = dict(entry["lane_config"])
                 actions.append(
                     CapacityPlanAction(
                         action="load",
                         provider_id=provider_id,
                         lane_id=lane_id,
-                        model_name=str(lane_config["model"]),
+                        model_name=model_name,
                         params=lane_config,
                         reason="Restoring a locked lane as it was before the worker restarted",
                         restore=True,
