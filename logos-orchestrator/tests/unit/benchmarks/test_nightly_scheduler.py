@@ -1197,6 +1197,39 @@ def simulate_worker(scheduler, lanes, *, max_lanes=0, missing_delete_succeeds=Fa
     return runtime, events
 
 
+async def test_nightly_reuses_and_restores_the_only_warm_locked_lane(scheduler):
+    original = lane_status("lane")
+    runtime, events = simulate_worker(scheduler, [original], max_lanes=1)
+    scheduler.planner.is_lane_locked.side_effect = lambda _, lane_id: lane_id == "lane"
+    submitted = []
+
+    async def submit(_pair, settings):
+        assert benchmark_reservations.pinned_lane(20, "model") == "lane"
+        if not submitted:
+            assert runtime["lanes"] == [original]
+            assert settings.serving_overrides.max_num_seqs == 16
+            assert settings.serving_overrides.max_num_batched_tokens == 4096
+        else:
+            config = runtime["lanes"][0]["lane_config"]["vllm_config"]
+            config.update(settings.serving_overrides.model_dump(exclude_none=True))
+        submitted.append(settings)
+        job_id = len(submitted)
+        return job_id, asyncio.create_task(asyncio.sleep(0, result=job_id))
+
+    scheduler.submit = submit
+    assert await scheduler.run_schedule(31, MagicMock())
+
+    assert len(submitted) == 5
+    assert runtime["lanes"] == [original]
+    assert events == [
+        ("check_nightly_gpu_budget", "lane"),
+        ("reconfigure_lane", "lane"),
+        ("release_nightly_gpu_budget", "lane"),
+    ]
+    assert scheduler.saved[-1][1] == "continuing"
+    assert benchmark_reservations.allows(20, "model", "production")
+
+
 async def test_nightly_loads_a_temporary_lane_alongside_production(scheduler):
     initial = [lane_status("other", model="other-model")]
     initial[0]["active_requests"] = 3

@@ -199,6 +199,8 @@ An operator can lock a lane warm from the statistics page. Locks live in the `la
 
 `_execute_action_with_confirmation` refuses a planner-initiated `sleep_l1`, `sleep_l2` or `stop` on a locked lane as a last line of defence. Actions an operator asked for (`CapacityPlanAction.operator_initiated`, set by the panel's drain) still run, and the panel's direct sleep and unload buttons are not planner actions at all; a lane slept that way is woken again on the next cycle while the lock stands.
 
+An enabled Nightly schedule can benchmark an awake lane held warm during the maintenance window. The planner keeps the last serving configuration in the lane's restore record while Nightly owns the model. Nightly handles recovery until it releases the reservation.
+
 ### 6.3 Worker locks
 
 A lock with lane id `*` (`lane_restore.WORKER_LOCK_ID`) locks a whole worker; it travels through the same table, push and revisions as a lane lock. `is_worker_locked` reads it. On a locked worker:

@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock
 from tests.unit.pipeline.test_correcting_scheduler import MockAzureFacade, MockLogosNodeFacade, _make_view
 
 from logos import CapacityPlanner
+from logos.benchmarks.reservations import benchmark_reservations
 from logos.capacity.demand_tracker import DemandTracker
 from logos.capacity.lane_restore import WORKER_LOCK_ID, missing_lanes, observed_lanes, updated_record
 from logos.pipeline.correcting_scheduler import ClassificationCorrectingScheduler
@@ -165,6 +166,37 @@ def test_a_record_survives_an_orchestrator_restart():
     record = updated_record(None, observed_lanes([_runtime_lane(LANE, MODEL, "0,1")]), LANE)
     planner = _planner(_Registry([]), _Table([(PROVIDER, LANE, True, 5, record)]))
     assert [a.lane_id for a in _restore(planner)] == [LANE]
+
+
+def test_nightly_owns_recovery_and_leaves_the_warm_lock_record_on_serving_settings():
+    original = _runtime_lane(LANE, MODEL, "0,1")
+    other = _runtime_lane(EMBED_LANE, EMBED, "2")
+    registry = _Registry([original, other])
+    table = _Table([(PROVIDER, LANE, True, 5, None), (PROVIDER, EMBED_LANE, True, 6, None)])
+    planner = _planner(registry, table)
+    _restore(planner)
+    table.writes.clear()
+
+    trial = _runtime_lane(LANE, MODEL, "0,1")
+    trial["lane_config"]["vllm_config"]["max_model_len"] = 65536
+    other = _runtime_lane(EMBED_LANE, EMBED, "2")
+    other["lane_config"]["vllm_config"]["max_model_len"] = 16384
+    owner = -42
+    benchmark_reservations.reserve_nightly(PROVIDER, MODEL, owner)
+    try:
+        registry.lanes = [trial, other]
+        assert _restore(planner) == []
+        assert [write[1] for write in table.writes] == [EMBED_LANE]
+        assert table.rows[(PROVIDER, LANE)][4][LANE]["lane_config"] == original["lane_config"]
+
+        registry.lanes = [other]
+        assert _restore(planner) == []
+    finally:
+        benchmark_reservations.release(owner)
+
+    registry.lanes = [trial, other]
+    assert _restore(planner) == []
+    assert table.rows[(PROVIDER, LANE)][4][LANE]["lane_config"] == trial["lane_config"]
 
 
 def test_a_record_is_not_written_to_a_lock_taken_again_since():
