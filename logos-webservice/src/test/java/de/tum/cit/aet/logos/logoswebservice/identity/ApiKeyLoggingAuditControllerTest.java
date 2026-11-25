@@ -125,6 +125,8 @@ class ApiKeyLoggingAuditControllerTest {
                 // no-op from a stale BILLING snapshot instead of waiting.
                 long deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
                 while (!second.isDone() && System.nanoTime() < deadline) {
+                    // Refresh the statistics snapshot so a newly connected waiter is visible.
+                    jdbc.execute("SELECT pg_stat_clear_snapshot()");
                     if (Boolean.TRUE.equals(jdbc.queryForObject("""
                         SELECT EXISTS (
                             SELECT FROM pg_stat_activity WHERE ? = ANY(pg_blocking_pids(pid))
