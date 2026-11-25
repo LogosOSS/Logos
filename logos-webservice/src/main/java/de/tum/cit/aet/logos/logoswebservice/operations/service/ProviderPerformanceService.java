@@ -63,12 +63,12 @@ public class ProviderPerformanceService {
         return response;
     }
 
-    public Map<String, Object> getModelBenchmarks(Integer modelId) {
+    public Map<String, Object> getModelBenchmarks(Integer modelId, boolean summaryOnly) {
         if (modelId == null || modelId <= 0) {
             throw new IllegalArgumentException("model_id must be a positive integer");
         }
 
-        List<Map<String, Object>> benchmarks = modelProviderRepository.findBenchmarksForModel(modelId)
+        List<Map<String, Object>> benchmarks = modelProviderRepository.findBenchmarksForModel(modelId, summaryOnly)
             .stream()
             .map(this::benchmarkToMap)
             .toList();

@@ -206,6 +206,11 @@ can saturate the gateway or a configured I/O limit; measuring admission
 immediately afterwards mixes recovery from overload into the steady-load result. Budget measurement also
 uses a fixed 15-second warmup at its measured concurrency, recorded separately
 in `budget.warmup`, before opening the database measurement window.
+`budget.worker_start_interval_ms` records the spacing between initial requests.
+Each phase staggers worker starts over one idle round trip, capped at a tenth of
+the phase, to avoid synchronized request bursts against the fixed-delay
+provider. Each worker then sends requests back to back at the same configured
+concurrency.
 `LOGOS_BENCH_GW_BUDGET_WARMUP_S` controls this fixed preparation interval.
 Measured windows are not retried or filtered, and the p50/p99 thresholds are
 unchanged.

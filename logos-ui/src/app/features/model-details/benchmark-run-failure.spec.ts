@@ -4,17 +4,26 @@ import { BenchmarkRunFailure } from './benchmark-run-failure';
 describe('Benchmark failure details', () => {
   it('renders a scheduled cutoff as a neutral stop and keeps its technical reason in the disclosure', async () => {
     const fixture = TestBed.createComponent(BenchmarkRunFailure);
-    fixture.componentRef.setInput('run', { status: 'failed', error_message: 'window_closed_below_half', result: {} });
+    fixture.componentRef.setInput('run', {
+      status: 'failed', error_message: 'window_closed_below_half', result: { completed_samples: 12, total_samples: 50 },
+    });
     await fixture.whenStable();
     const section = fixture.nativeElement.querySelector('section');
     expect(section.getAttribute('role')).toBe('status');
     expect(section.getAttribute('aria-label')).toBe('Benchmark stopped');
     expect(section.classList.contains('window-stop')).toBe(true);
-    expect(fixture.componentInstance.summary()).toContain('nightly window ended');
-    expect(fixture.componentInstance.summary()).toContain('not used as a completed measurement');
+    expect(fixture.componentInstance.summary()).toContain('12 of 50 requests completed successfully before the window ended.');
+    expect(fixture.componentInstance.summary()).toContain('Completed measurements remain available in Benchmark runs.');
     expect(fixture.nativeElement.querySelector('summary').textContent).toContain('View stop details');
     expect(fixture.nativeElement.querySelector('pre').textContent).toBe('window_closed_below_half');
     expect(fixture.nativeElement.querySelector('details').open).toBe(false);
+  });
+
+  it('explains historical scheduled stops without inventing a request count', async () => {
+    const fixture = TestBed.createComponent(BenchmarkRunFailure);
+    fixture.componentRef.setInput('run', { status: 'failed', error_message: 'window_closed_below_half', result: {} });
+    await fixture.whenStable();
+    expect(fixture.componentInstance.summary()).toContain('Fewer than half of the requests completed successfully');
   });
 
   it.each(['stalled', 'preparation_timeout', 'lease_lost', 'GPU failed near window_closed_below_half'])(

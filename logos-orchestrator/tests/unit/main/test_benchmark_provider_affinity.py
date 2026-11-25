@@ -401,6 +401,7 @@ async def test_internal_benchmark_request_is_visible_in_request_logs(monkeypatch
                 "provider_id": 20,
                 "provider_type": "logosnode",
                 "model_name": "org/model",
+                "provider_name": "Benchmark Worker",
             }
 
         def log_usage(self, **kwargs):
@@ -436,6 +437,8 @@ async def test_internal_benchmark_request_is_visible_in_request_logs(monkeypatch
 
     assert response == "response"
     assert execute.await_args.kwargs["path"] == f"v1/{operation}"
+    deployment = execute.await_args.kwargs["deployments"][0]
+    assert (deployment["model_name"], deployment["provider_name"]) == ("org/model", "Benchmark Worker")
     assert logged == [
         {
             "api_key_id": None,

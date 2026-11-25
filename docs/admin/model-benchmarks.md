@@ -57,14 +57,14 @@ Each run preserves the source prompts, inference controls and output limits.
 The Hugging Face dataset, prompt column, seed and output-limit controls do not apply to these runs.
 Select **Concurrent** and set **Concurrent requests** to use the same load for each configuration.
 Batch configurations keep the selected saved dataset. They cannot vary its request count, seed or output limits.
-Under **Performance → Overview → Nightly rotation**, select the worker tile.
+Under **Performance → Overview → Automatic benchmarks**, select the worker tile.
 Create a saved dataset under **Request workload** before selecting it here.
 
 ![Manual benchmark with a saved request dataset](/img/roles/logos-admin-benchmark-saved-requests.png)
 
 ### Desktop Example
 
-**Performance → Overview** shows **Nightly rotation**, **Currently deployed** and **Timeline**.
+**Performance → Overview** shows **Automatic benchmarks**, **Currently deployed** and **Timeline**.
 If the model has more than one worker, then use **Worker** to change **Currently deployed** and **Timeline**.
 Select **Benchmarks** to configure a manual run.
 Select **Request measurements** for production request times, or **Analysis** for comparisons and saved configurations.

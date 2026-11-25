@@ -1,7 +1,7 @@
 import asyncio
 import copy
 from contextlib import nullcontext
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 from unittest.mock import DEFAULT, AsyncMock, MagicMock
 
 import pytest
@@ -15,6 +15,7 @@ from logos.benchmarks.nightly import (
     NightlyStopped,
 )
 from logos.benchmarks.reservations import benchmark_reservations
+from logos.maintenance_window import MaintenanceWindow
 
 GPU_BUDGET = {"0": 12_288.0}
 
@@ -445,7 +446,7 @@ def rotation(scheduler, monkeypatch):
     monkeypatch.setattr(module.store, "has_active_benchmarks", lambda **kwargs: False)
     monkeypatch.setattr(module.store, "claimed_today", lambda day: len(claimed))
 
-    def claim(pair, day):
+    def claim(pair, day, *, window):
         if pair in claimed:
             return False
         claimed.add(pair)
@@ -463,6 +464,37 @@ async def test_rotation_admits_two_pairs_sequentially_and_keeps_daily_cap(schedu
     await scheduler.tick()
     assert claimed == {31, 32}
     assert [call.args[0] for call in scheduler.run_schedule.await_args_list] == [31, 32]
+
+
+async def test_rotation_admits_only_the_pair_with_an_open_custom_window(scheduler, rotation, monkeypatch):
+    rows, claimed = rotation
+    rows[1].update(window_start=time(12), window_end=time(13))
+    monkeypatch.setattr(module, "local_now", lambda: datetime.fromisoformat("2026-11-25T12:05:00+01:00"))
+
+    await scheduler.tick()
+
+    assert claimed == {32}
+    assert scheduler.run_schedule.await_args.args[0] == 32
+
+
+async def test_rotation_can_claim_an_edited_window_after_a_failed_round_today(scheduler, rotation, monkeypatch):
+    rows, _ = rotation
+    now = datetime.fromisoformat("2026-11-25T13:10:00+01:00")
+    rows[0].update(
+        last_run_date=now.date(),
+        status="failed",
+        window_start=time(13, 10),
+        window_end=time(13, 30),
+        window_revision=2,
+        last_run_window_revision=1,
+    )
+    monkeypatch.setattr(module, "local_now", lambda: now)
+    monkeypatch.setattr(module.store, "claimed_today", lambda _: module.MAX_PAIRS_PER_NIGHT)
+
+    await scheduler.tick()
+
+    scheduler.run_schedule.assert_awaited_once()
+    assert scheduler.run_schedule.await_args.args[0] == 31
 
 
 async def test_metal_worker_does_not_claim_a_nightly_slot(scheduler, rotation):
@@ -504,7 +536,7 @@ async def test_capacity_deferral_retries_after_cooldown_during_the_same_window(s
 
     monkeypatch.setattr(module, "local_now", lambda: claimed_at + timedelta(seconds=CAPACITY_RETRY_SECONDS))
     await scheduler.tick()
-    claim.assert_called_once_with(31, claimed_at.date())
+    claim.assert_called_once_with(31, claimed_at.date(), window=MaintenanceWindow.from_env())
     assert scheduler.run_schedule.await_args.args[0] == 31
 
 
@@ -532,7 +564,7 @@ async def test_claimed_round_can_retry_after_worker_reconnects(scheduler, rotati
     now += timedelta(seconds=15)
     await scheduler.tick()
 
-    claim.assert_called_once_with(31, claimed_at.date())
+    claim.assert_called_once_with(31, claimed_at.date(), window=MaintenanceWindow.from_env())
     scheduler.run_schedule.assert_awaited_once()
 
 
@@ -1004,7 +1036,7 @@ async def test_restored_rounds_rotate_without_admitting_a_third_pair(scheduler, 
     rows, claimed = rotation
     day = module.local_now().date()
 
-    def claim(pair, date):
+    def claim(pair, date, *, window):
         row = next(item for item in rows if item["model_provider_id"] == pair)
         if pair in claimed and row.get("status") != "continuing":
             return False
@@ -1259,6 +1291,19 @@ async def test_nightly_loads_a_temporary_lane_alongside_production(scheduler):
     assert add.args[2]["nightly_gpu_budget"] is True
     assert benchmark_reservations.pinned_lane(20, "model") is None
     assert benchmark_reservations.allows(20, "other-model", "production")
+
+
+def test_nightly_can_place_a_temporary_lane_away_from_shared_production_gpus(scheduler):
+    original = lane_status("lane")
+    peer = lane_status("peer", model="other-model")
+    original["lane_config"]["gpu_devices"] = "0,1"
+    peer["occupied_gpu_devices"] = "1"
+    runtime, _ = simulate_worker(scheduler, [original, peer])
+
+    assert scheduler.target_lane(31)[2] is None
+    config = scheduler._temporary_config(31, 20, "model", runtime["lanes"])
+    assert config["gpu_devices"] == ""
+    assert config["vllm_config"] == original["lane_config"]["vllm_config"]
 
 
 async def test_nightly_defers_when_a_temporary_lane_does_not_fit(scheduler):

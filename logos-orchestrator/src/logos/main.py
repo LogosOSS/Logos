@@ -3380,6 +3380,11 @@ async def _execute_resource_mode(
     allowed_models = get_unique_models_from_deployments(deployments)
     # Extract policy
     policy = _extract_policy(headers, auth.key_value, body)
+    signed_benchmark = (
+        auth.key_type == "internal"
+        and auth.environment == "model-provider-benchmark"
+        and required_provider_id is not None
+    )
 
     # Create Pipeline Request
     pipeline_req = PipelineRequest(
@@ -3398,6 +3403,7 @@ async def _execute_resource_mode(
         team_priority=auth.team_priority,
         role_rank=queue_role_rank(auth.key_type, auth.user_role),
         api_key_id=auth.api_key_id,
+        internal_benchmark=signed_benchmark,
     )
 
     # Deferred logs must exist before the pipeline's enqueue identity UPDATE

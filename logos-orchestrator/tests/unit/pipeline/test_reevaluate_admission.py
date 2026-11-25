@@ -12,6 +12,8 @@ import asyncio
 from unittest.mock import MagicMock
 
 from logos.pipeline.correcting_scheduler import ClassificationCorrectingScheduler
+from logos.pipeline.ettft_estimator import EttftEstimate, ReadinessTier
+from logos.pipeline.scheduler_interface import SchedulingRequest
 from logos.queue import PriorityQueueManager
 from logos.queue.priority_queue import Priority
 from logos.sdi.logosnode_facade import LogosNodeSchedulingDataFacade
@@ -319,3 +321,44 @@ async def test_nightly_reservation_cannot_dequeue_matching_positive_production_k
     scheduler.reevaluate_model_queues("model-a")
     await asyncio.sleep(0)
     assert future.done()
+
+
+async def test_signed_benchmark_request_leaves_the_queue_when_capacity_returns():
+    from logos.benchmarks.reservations import benchmark_reservations
+
+    facade = _Facade(1, AdmissionDecision(can_admit=False, batch_limit=0))
+    facade.on_request_start = MagicMock()
+    facade.on_request_begin_processing = MagicMock()
+    facade.book_queued_warm_lane = MagicMock()
+    scheduler = _scheduler_with(facade)
+    job_id = 31
+    request = SchedulingRequest(
+        request_id="queued-benchmark",
+        payload={},
+        deployments=[{"model_id": MODEL_ID, "provider_id": PROVIDER_ID, "type": "logosnode"}],
+        required_provider_id=PROVIDER_ID,
+        api_key_id=-job_id,
+    )
+    estimate = EttftEstimate(expected_wait_s=1, tier=ReadinessTier.WARM, reasoning="busy")
+    benchmark_reservations.reserve(PROVIDER_ID, "model-a", job_id)
+    benchmark_reservations.register_request(PROVIDER_ID, "model-a", job_id, request.request_id)
+    task = asyncio.create_task(scheduler._queue_and_wait((MODEL_ID, PROVIDER_ID, "logosnode", 1, 1, estimate), request))
+    try:
+        await asyncio.sleep(0)
+        scheduler.reevaluate_model_queues("model-a")
+        assert scheduler.get_total_queue_depth() == 1
+        assert not task.done()
+
+        facade._admission = AdmissionDecision(can_admit=True, batch_limit=1)
+        scheduler.release(MODEL_ID, PROVIDER_ID, "logosnode", "finished-benchmark-request")
+
+        result = await asyncio.wait_for(task, timeout=1)
+        assert result.was_queued and result.provider_id == PROVIDER_ID
+        assert facade.on_request_start.call_args.kwargs["api_key_id"] == -job_id
+        assert scheduler.get_total_queue_depth() == 0
+    finally:
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        benchmark_reservations.finish_request(request.request_id)
+        benchmark_reservations.release(job_id)

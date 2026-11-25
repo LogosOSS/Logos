@@ -5,9 +5,14 @@ from contextlib import contextmanager
 
 from sqlalchemy import text
 
-from logos.benchmarks.nightly import CAPACITY_WAITING, MAX_PAIRS_PER_NIGHT
+from logos.benchmarks.nightly import (
+    CAPACITY_WAITING,
+    MAX_PAIRS_PER_NIGHT,
+    schedule_window,
+    window_changed_since_last_run,
+)
 from logos.dbutils.dbmanager import DBManager, _init_engine
-from logos.maintenance_window import maintenance_node_limit
+from logos.maintenance_window import MaintenanceWindow, maintenance_node_limit
 
 LOCK_ID = 125500301
 MAX_RECOVERY_RESUMES = 2
@@ -71,6 +76,7 @@ def status(pair_id: int) -> dict:
             db.session.execute(
                 text(
                     "SELECT model_provider_id, enabled, last_run_date, status, report, workload_id, optimizer, "
+                    "window_start, window_end, window_revision, last_run_window_revision, "
                     "recovery IS NOT NULL AS recovery_required FROM nightly_benchmarks WHERE model_provider_id = :id"
                 ),
                 {"id": pair_id},
@@ -91,6 +97,37 @@ def status(pair_id: int) -> dict:
                 "optimizer": {},
             }
         )
+
+
+def set_window(pair_id: int, window: MaintenanceWindow, expected: MaintenanceWindow) -> bool:
+    """Save only the requested pair's window if it still matches the editor."""
+    default = MaintenanceWindow.from_env()
+    with DBManager() as db:
+        db.session.execute(
+            text("INSERT INTO nightly_benchmarks(model_provider_id) VALUES (:id) ON CONFLICT DO NOTHING"),
+            {"id": pair_id},
+        )
+        changed = db.session.execute(
+            text(
+                "UPDATE nightly_benchmarks SET window_start = :start, window_end = :end, "
+                "window_revision = window_revision + CASE WHEN CAST(:start AS time) <> CAST(:expected_start AS time) "
+                "OR CAST(:end AS time) <> CAST(:expected_end AS time) THEN 1 ELSE 0 END "
+                "WHERE model_provider_id = :id "
+                "AND COALESCE(window_start, CAST(:default_start AS time)) = :expected_start "
+                "AND COALESCE(window_end, CAST(:default_end AS time)) = :expected_end"
+            ),
+            {
+                "id": pair_id,
+                "start": window.start,
+                "end": window.end,
+                "default_start": default.start,
+                "default_end": default.end,
+                "expected_start": expected.start,
+                "expected_end": expected.end,
+            },
+        ).rowcount
+        db.session.commit()
+        return bool(changed)
 
 
 def set_enabled(pair_id: int, enabled: bool, expected: bool, workload_id=UNCHANGED, expected_workload_id=None) -> dict:
@@ -129,19 +166,35 @@ def set_enabled(pair_id: int, enabled: bool, expected: bool, workload_id=UNCHANG
     return status(pair_id)
 
 
-def claim(pair_id: int, day) -> bool:
+def claim(pair_id: int, day, *, window: MaintenanceWindow | None = None) -> bool:
     """Claim a new pair or another restored round; only distinct pairs consume the daily quota."""
+    default = MaintenanceWindow.from_env()
     with DBManager() as db:
         claimed = bool(
             db.session.execute(
                 text(
-                    "UPDATE nightly_benchmarks SET last_run_date = :day, status = 'running', report = '[]'::jsonb "
+                    "UPDATE nightly_benchmarks SET last_run_date = :day, last_run_window_revision = window_revision, "
+                    "status = 'running', report = '[]'::jsonb "
                     "WHERE model_provider_id = :id AND enabled AND recovery IS NULL "
-                    "AND ((last_run_date = :day AND status IN ('continuing', :capacity_waiting)) OR "
+                    "AND (NOT :check_window OR ("
+                    "COALESCE(window_start, CAST(:default_start AS time)) = CAST(:start AS time) AND "
+                    "COALESCE(window_end, CAST(:default_end AS time)) = CAST(:end AS time))) "
+                    "AND ((last_run_date = :day AND (window_revision <> last_run_window_revision "
+                    "OR status IN ('continuing', :capacity_waiting))) OR "
                     "((last_run_date IS NULL OR last_run_date < :day) "
                     "AND (SELECT COUNT(*) FROM nightly_benchmarks WHERE last_run_date = :day) < :limit))"
                 ),
-                {"id": pair_id, "day": day, "limit": MAX_PAIRS_PER_NIGHT, "capacity_waiting": CAPACITY_WAITING},
+                {
+                    "id": pair_id,
+                    "day": day,
+                    "limit": MAX_PAIRS_PER_NIGHT,
+                    "capacity_waiting": CAPACITY_WAITING,
+                    "check_window": window is not None,
+                    "default_start": default.start,
+                    "default_end": default.end,
+                    "start": (window or default).start,
+                    "end": (window or default).end,
+                },
             ).rowcount
         )
 
@@ -622,7 +675,8 @@ def finish(pair_id, state, report, search=None, *, resume_after_recovery=False):
         row = (
             db.session.execute(
                 text(
-                    "SELECT n.last_run_date, n.status, n.optimizer, n.enabled, mp.model_id, p.name AS provider_name "
+                    "SELECT n.last_run_date, n.last_run_window_revision, n.status, n.optimizer, n.enabled, "
+                    "mp.model_id, p.name AS provider_name "
                     "FROM nightly_benchmarks n "
                     "JOIN model_provider mp ON mp.id = n.model_provider_id JOIN providers p ON p.id = mp.provider_id "
                     "WHERE n.model_provider_id = :id FOR UPDATE OF n"
@@ -634,9 +688,17 @@ def finish(pair_id, state, report, search=None, *, resume_after_recovery=False):
         )
         previous = row["optimizer"] or {}
         session = dict(previous.get("nightly_session") or {})
-        same_night = session.get("date") == str(row["last_run_date"])
-        if not same_night:
-            session = {"date": str(row["last_run_date"]), "rounds": 0, "successful_configurations": 0}
+        revision = row["last_run_window_revision"]
+        same_session = (
+            session.get("date") == str(row["last_run_date"]) and session.get("window_revision", 0) == revision
+        )
+        if not same_session:
+            session = {
+                "date": str(row["last_run_date"]),
+                "window_revision": revision,
+                "rounds": 0,
+                "successful_configurations": 0,
+            }
         optimizer = None
         if search:
             ids = [item["benchmark_id"] for item in report if item.get("benchmark_id")]
@@ -655,7 +717,7 @@ def finish(pair_id, state, report, search=None, *, resume_after_recovery=False):
             )
             optimizer = select_state(search, runs, report)
             optimizer["last_round_result"] = result(runs, report) or (
-                previous.get("last_round_result", {}) if same_night else {}
+                previous.get("last_round_result", {}) if same_session else {}
             )
             adopted = next((item for item in report if item.get("status") == "adopted"), None)
             if adopted:
@@ -688,7 +750,7 @@ def finish(pair_id, state, report, search=None, *, resume_after_recovery=False):
         if row["last_run_date"] is not None and row["status"] in {"running", "preparing", "recovery_required"}:
             if optimizer is None:
                 optimizer = dict(previous)
-                if not same_night:
+                if not same_session:
                     optimizer.pop("last_round_result", None)
             successful = sum(item.get("status") == "success" for item in report)
             if state != CAPACITY_WAITING or successful:
@@ -743,14 +805,16 @@ def finish(pair_id, state, report, search=None, *, resume_after_recovery=False):
                 "benchmark_id": None,
                 **event_optimizer.get("last_round_result", {}),
             }
-            _enqueue_completion_event(db, f"nightly:{pair_id}:{row['last_run_date']}", payload)
+            event_id = f"nightly:{pair_id}:{row['last_run_date']}"
+            # Keep the original identity for claims made before window revisions existed.
+            if revision:
+                event_id += f":{revision}"
+            _enqueue_completion_event(db, event_id, payload)
         db.session.commit()
 
 
 def finalize_continuations(now):
     """Publish the final result only after all restored rounds end, including after a restart."""
-    from logos.maintenance_window import MaintenanceWindow
-
     with cluster_lock() as connection:
         if connection is None:
             return
@@ -760,7 +824,8 @@ def finalize_continuations(now):
             if (
                 not row["enabled"]
                 or row["last_run_date"] != now.date()
-                or not MaintenanceWindow.from_env().contains(now)
+                or window_changed_since_last_run(row)
+                or now >= schedule_window(row).bounds(now)[1]
             ):
                 if not row["enabled"]:
                     state = "disabled"

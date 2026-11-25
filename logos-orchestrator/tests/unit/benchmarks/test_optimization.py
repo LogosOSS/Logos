@@ -135,6 +135,9 @@ def test_further_rounds_explore_new_radii_on_the_same_frozen_requests():
         )
     assert optimizer.round_index({"nightly_session": {"date": "2026-10-29", "rounds": 2}}, "2026-10-29") == 2
     assert optimizer.round_index({"nightly_session": {"date": "2026-10-28", "rounds": 7}}, "2026-10-29") == 0
+    saved = {"nightly_session": {"date": "2026-10-29", "window_revision": 1, "rounds": 2}}
+    assert optimizer.round_index(saved, "2026-10-29", 1) == 2
+    assert optimizer.round_index(saved, "2026-10-29", 2) == 0
 
 
 @pytest.mark.parametrize("throughput", [39, 40, 41])

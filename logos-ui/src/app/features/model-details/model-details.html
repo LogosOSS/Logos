@@ -1,4 +1,4 @@
-<div class="model-error-report">
+<div class="model-details">
 
   <!-- Navigation -->
   <a class="breadcrumb" routerLink="/models">
@@ -71,7 +71,9 @@
         <!-- Error Report -->
         @case ('error_report') {
 
-          @if (hasCompleteLogs() && !hasParseableCalibrationData()) {
+          @if (calibrationLoading()) {
+            <p class="performance-message" role="status">Loading calibration logs…</p>
+          } @else if (hasCompleteLogs() && !hasParseableCalibrationData()) {
 
             <div class="empty-state">
 
@@ -319,7 +321,9 @@
         <!-- Logs -->
         @case ('complete_logs') {
 
-          @if (hasAnyLogText()) {
+          @if (calibrationLoading()) {
+            <p class="performance-message" role="status">Loading calibration logs…</p>
+          } @else if (hasAnyLogText()) {
 
             <div class="logs-panel">
 
@@ -569,10 +573,11 @@
           }
 
           <section id="performance-results" class="performance-view" aria-label="Performance overview" [hidden]="performanceView() !== 'results'">
+          @if (!performanceLoading() && !performanceError()) {
           <div class="performance-overview">
           @if (deployedPairs().length) {
             <section class="nightly-overview" aria-labelledby="nightly-rotation-heading">
-              <h3 id="nightly-rotation-heading"><i class="pi pi-moon" aria-hidden="true"></i> Nightly rotation</h3>
+              <h3 id="nightly-rotation-heading"><i class="pi pi-moon" aria-hidden="true"></i> Automatic benchmarks</h3>
               <div class="nightly-overview__workers">
                 @for (pair of deployedPairs(); track pair.model_provider_id) {
                   <app-nightly-benchmarks [pairId]="pair.model_provider_id" [providerName]="pair.provider_name"
@@ -606,11 +611,14 @@
               [deployedBenchmarkIds]="deployedBenchmarkIds()" [lastAdoptionId]="deployedConfiguration()?.adoption()?.benchmark_id ?? null"
               [deploymentNote]="timelineDeploymentNote()" [showHistory]="false" />
           </div>
+          }
 
           <div class="performance-results">
           @if (performanceLoading()) {
 
-            <div class="performance-message">Loading performance…</div>
+            <div class="loading-state performance-loading" role="status" aria-label="Loading performance">
+              <i class="pi pi-spin pi-spinner" aria-hidden="true"></i>
+            </div>
 
           } @else if (performanceError()) {
 

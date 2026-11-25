@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+ xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+ xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.20.xsd">
+ <changeSet id="100-nightly-rotation-window" author="logos">
+  <sql>
+   ALTER TABLE nightly_benchmarks
+     ADD COLUMN window_start time(0),
+     ADD COLUMN window_end time(0),
+     ADD CONSTRAINT nightly_rotation_window_valid CHECK (
+       (window_start IS NULL AND window_end IS NULL) OR (
+         window_start IS NOT NULL AND window_end IS NOT NULL
+         AND window_start &lt; time '24:00' AND window_end &lt; time '24:00'
+         AND EXTRACT(SECOND FROM window_start) = 0 AND EXTRACT(SECOND FROM window_end) = 0
+         AND window_end - window_start &gt; interval '10 minutes'
+       )
+     );
+  </sql>
+  <rollback>
+   <sql>ALTER TABLE nightly_benchmarks DROP CONSTRAINT nightly_rotation_window_valid, DROP COLUMN window_start, DROP COLUMN window_end;</sql>
+  </rollback>
+ </changeSet>
+</databaseChangeLog>

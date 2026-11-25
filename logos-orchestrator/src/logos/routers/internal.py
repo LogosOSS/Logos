@@ -961,6 +961,8 @@ async def internal_model_benchmark_completion(job_id: int, path: str, request: R
             "model_id": int(target["model_id"]),
             "provider_id": int(target["provider_id"]),
             "type": "logosnode",
+            "model_name": target["model_name"],
+            "provider_name": target["provider_name"],
             "privacy_level": target.get("privacy_level"),
             "cloud_provider_type": target.get("cloud_provider_type"),
             "base_url": target.get("base_url"),

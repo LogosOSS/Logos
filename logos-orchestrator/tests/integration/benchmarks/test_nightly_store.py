@@ -3,7 +3,7 @@
 import copy
 import os
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, time
 from pathlib import Path
 from xml.etree import ElementTree
 
@@ -12,7 +12,8 @@ from sqlalchemy import bindparam, create_engine, text
 from sqlalchemy.orm import Session
 
 from logos.benchmarks import nightly_store as store
-from logos.benchmarks.nightly import CAPACITY_WAITING
+from logos.benchmarks.nightly import CAPACITY_WAITING, NIGHTLY_WINDOW
+from logos.maintenance_window import MaintenanceWindow
 
 pytestmark = pytest.mark.integration
 
@@ -81,6 +82,9 @@ def database(monkeypatch):
             "{*}changeSet/{*}sql"
         ):
             connection.execute(text(sql.text))
+        for name in ("100_nightly_rotation_window.xml", "101_nightly_window_revision.xml"):
+            for sql in ElementTree.parse(migration.with_name(name)).findall("{*}changeSet/{*}sql"):
+                connection.execute(text(sql.text))
 
     class Database(store.DBManager):
         def __enter__(self):
@@ -97,6 +101,42 @@ def database(monkeypatch):
     with admin.begin() as connection:
         connection.execute(text(f"DROP SCHEMA {schema} CASCADE"))
     admin.dispose()
+
+
+def test_rotation_window_is_saved_per_pair_and_rejects_a_stale_editor(database):
+    default = MaintenanceWindow.from_env()
+    custom = MaintenanceWindow(time(11, 15), time(13), default.timezone)
+    stale = MaintenanceWindow(time(12), time(14), default.timezone)
+    store.set_enabled(31, enabled=True, expected=False)
+
+    assert store.set_window(31, custom, default)
+    assert not store.set_window(31, stale, default)
+    row = store.status(31)
+    assert row["enabled"]
+    assert (row["window_start"], row["window_end"]) == (custom.start, custom.end)
+    assert store.status(32).get("window_start") is None
+    assert not store.claim(31, date(2026, 11, 25), window=default)
+    assert store.claim(31, date(2026, 11, 25), window=custom)
+
+
+def test_moving_the_window_can_run_the_same_pair_again_without_spending_another_daily_slot(database):
+    default = MaintenanceWindow.from_env()
+    afternoon = MaintenanceWindow(time(13, 10), time(13, 30), default.timezone)
+    day = date(2026, 11, 25)
+    store.set_enabled(31, enabled=True, expected=False)
+    assert store.claim(31, day, window=default)
+    store.finish(31, "failed", [], None)
+    assert not store.claim(31, day, window=default)
+    assert store.set_window(31, default, default)
+    assert not store.claim(31, day, window=default)
+
+    assert store.set_window(31, afternoon, default)
+    assert store.claim(31, day, window=afternoon)
+    store.finish(31, "completed", [], None)
+    assert not store.claim(31, day, window=afternoon)
+    assert store.set_window(31, default, afternoon)
+    assert store.claim(31, day, window=default)
+    assert store.claimed_today(day) == 1
 
 
 def test_frozen_inputs_survive_log_deletion_and_selection_is_compare_and_set(database, monkeypatch):
@@ -245,6 +285,68 @@ async def test_completion_event_survives_failed_delivery_and_deduplicates_finish
     await store.deliver_completion_events()
     assert delivery.await_count == 2
     assert delivery.call_args.kwargs["event_key"] == "nightly:31:2026-10-28"
+
+
+def test_moving_a_window_keeps_one_completion_per_claimed_revision(database):
+    engine, _ = database
+    day = date(2026, 11, 25)
+    default = MaintenanceWindow.from_env()
+    afternoon = MaintenanceWindow(time(13, 10), time(13, 30), default.timezone)
+    store.set_enabled(31, True, False)
+    assert store.claim(31, day, window=default)
+    store.finish(31, "continuing", [{"configuration": 1, "status": "success"}])
+
+    assert store.set_window(31, afternoon, default)
+    store.finalize_continuations(datetime.fromisoformat("2026-11-25T07:00:00+01:00"))
+    assert store.claim(31, day, window=afternoon)
+    report = [{"configuration": 1, "status": "failed", "reason": "The afternoon baseline failed"}]
+    store.finish(31, "failed", report)
+    store.finish(31, "failed", report)
+
+    with engine.connect() as connection:
+        events = dict(connection.execute(text("SELECT event_id, payload FROM benchmark_completion_events")).all())
+    morning = events["nightly:31:2026-11-25"]
+    later = events["nightly:31:2026-11-25:1"]
+    assert len(events) == 2
+    assert (morning["status"], morning["rounds"], morning["successful_configurations"]) == ("completed", 1, 1)
+    assert (later["status"], later["rounds"], later["successful_configurations"]) == ("failed", 1, 0)
+    assert later["interruption_reason"] == "The afternoon baseline failed"
+
+
+def test_earlier_custom_window_freezes_the_shared_source_before_the_default_window(database, monkeypatch):
+    from logos.benchmarks import recent_requests
+
+    engine, _ = database
+    monkeypatch.setenv("LOGOS_NIGHTLY_REQUEST_USERNAME", "source-user")
+    default = MaintenanceWindow.from_env()
+    early = MaintenanceWindow(time(4), time(4, 40), default.timezone)
+    now = datetime.fromisoformat("2026-11-25T04:15:00+01:00")
+    cutoff = early.bounds(now)[0]
+    assert recent_requests.freeze(default.bounds(now)[0]) is None
+    store.set_enabled(31, True, False)
+    assert store.set_window(31, early, default)
+    with engine.begin() as connection:
+        connection.execute(text("INSERT INTO users(id, username) VALUES (1, 'source-user')"))
+        connection.execute(
+            text(
+                "INSERT INTO log_entry(id, model_id, user_id, privacy_level, result_status, input_payload, "
+                "timestamp_request, timestamp_response) "
+                "SELECT i, 11, 1, 'FULL', 'success', "
+                '\'{"messages":[{"role":"user","content":"Synthetic example"}]}\'::jsonb, :cutoff, :cutoff '
+                "FROM generate_series(1, 50) i"
+            ),
+            {"cutoff": cutoff},
+        )
+    assert recent_requests.policy(now)["cutoff"] == cutoff
+    assert recent_requests.freeze(now) is None
+    token = NIGHTLY_WINDOW.set(early)
+    try:
+        workload = recent_requests.for_model({"model_id": 11, "model_name": "model-a"}, now)
+    finally:
+        NIGHTLY_WINDOW.reset(token)
+    assert workload["request_count"] == 50
+    assert recent_requests.policy(now)["ready"] is True
+    assert recent_requests.freeze(default.bounds(now)[0])["cutoff"] == cutoff
 
 
 @pytest.mark.parametrize("adopt", [False, True])

@@ -1,4 +1,5 @@
 from contextlib import nullcontext
+from datetime import time
 from importlib import import_module
 from unittest.mock import Mock
 
@@ -6,7 +7,8 @@ import pytest
 from fastapi import HTTPException, Request
 
 from logos.benchmarks.nightly import CAPACITY_WAITING
-from logos.dbutils.dbrequest import NightlySelectionStatusRequest, NightlyUpdateRequest
+from logos.dbutils.dbrequest import NightlySelectionStatusRequest, NightlyUpdateRequest, NightlyWindowRequest
+from logos.maintenance_window import MaintenanceWindow
 
 TARGET = {"provider_id": 20, "provider_type": "logosnode", "model_id": 11, "model_name": "model"}
 LIVE = {"max_num_seqs": 12, "max_num_batched_tokens": 2048}
@@ -106,3 +108,33 @@ async def test_only_gpu_budget_capable_workers_can_enable_nightly_rotation(route
     result = await router.configure_nightly(data, request)
     assert result["enabled"] is True
     set_enabled.assert_called_once_with(31, True, False)
+
+
+async def test_window_endpoint_reports_the_persisted_pair_window(routes, monkeypatch):
+    router, request, _, _ = routes
+    saved = Mock(return_value=True)
+    monkeypatch.setattr(router.store, "set_window", saved)
+    data = NightlyWindowRequest(
+        model_provider_id=31, start="13:10", end="13:30", expected_start="05:00", expected_end="08:00"
+    )
+    zone = MaintenanceWindow.from_env().timezone
+    window = MaintenanceWindow(time(13, 10), time(13, 30), zone)
+
+    assert await router.configure_nightly_window(data, request) == {"window": window.describe()}
+    saved.assert_called_once_with(31, window, MaintenanceWindow(time(5), time(8), zone))
+
+
+@pytest.mark.parametrize(("end", "status"), [("13:20", 400), ("13:30", 409)])
+async def test_window_endpoint_rejects_short_and_stale_updates(routes, monkeypatch, end, status):
+    router, request, _, _ = routes
+    saved = Mock(return_value=False)
+    monkeypatch.setattr(router.store, "set_window", saved)
+    data = NightlyWindowRequest(
+        model_provider_id=31, start="13:10", end=end, expected_start="05:00", expected_end="08:00"
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await router.configure_nightly_window(data, request)
+
+    assert exc.value.status_code == status
+    assert saved.call_count == (1 if status == 409 else 0)

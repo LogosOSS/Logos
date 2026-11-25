@@ -231,16 +231,17 @@ Select **Stop benchmark** to cancel the active batch.
 
 ![Running benchmark status and progress](../static/img/roles/logos-admin-benchmark-status.png)
 
-**Stopped · nightly window ended** means the schedule stopped a test before half of its requests completed.
+**Stopped · benchmark window ended** means fewer than half of the test's requests completed successfully before the scheduled end.
+The status card shows how many requests completed when that count is available.
 The unfinished test does not produce a completed measurement. Earlier completed measurements remain in **Benchmark runs**.
 Expand **View stop details & configuration** to read the technical reason.
 This stop alone does not confirm that the worker is ready. Actual worker errors remain errors.
 
-![Benchmark stopped at the end of the nightly window](../static/img/roles/logos-admin-benchmark-window-ended.png)
+![Benchmark stopped at the end of the benchmark window](../static/img/roles/logos-admin-benchmark-window-ended.png)
 
 The [Model Benchmarks guide](../admin/model-benchmarks.md) explains the confirmation dialog, single-run charts, batches and failed-model retries.
 
-The **Performance → Overview** section shows **Nightly rotation**, **Currently deployed** and **Timeline**.
+The **Performance → Overview** section shows **Automatic benchmarks**, **Currently deployed** and **Timeline**.
 Select **Benchmarks** for manual runs, **Request measurements** for request times, or **Analysis** for comparisons.
 Expand **Benchmark runs** to read saved runs grouped by dataset.
 Without a nightly series, expand **Benchmark runs** to find **Highest recorded throughput** for each provider's latest captured workload.
@@ -285,7 +286,7 @@ Select the same column again to reverse the order. Missing values stay at the en
 
 ![Performance overview with nightly rotation tiles, a worker selection, deployed settings and throughput timeline](../static/img/roles/logos-admin-nightly-results.png)
 
-Read **Currently deployed** below **Nightly rotation** in **Performance → Overview**.
+Read **Currently deployed** below **Automatic benchmarks** in **Performance → Overview**.
 The summary shows live batching limits above the benchmark measurement.
 Expand **Configuration & selection details** for **Serving settings** and **Run selection**.
 The view identifies measurements with matching settings and the same measurement environment.
@@ -333,9 +334,9 @@ See the [nightly benchmark guide](../admin/nightly-benchmarks.md) for rotation, 
 
 1. Open a model from **Models**.
 2. Select **Performance**.
-3. Under **Nightly rotation**, select the tile for the worker.
+3. Under **Automatic benchmarks**, select the tile for the worker.
 4. Check the time window and **Request workload**. Apply any dataset change.
-5. Select **Enable nightly rotation**. If the button is unavailable, then read the message.
+5. Select **Enable automatic benchmarks**. If the button is unavailable, then read the message.
 
 ![Nightly schedule ready to enable](../static/img/roles/logos-admin-nightly-enable.png)
 
@@ -354,7 +355,7 @@ Each night measures production settings and searches around the previous winner.
 Eligible improvements over the current baseline apply automatically after the worker confirms its configuration and model readiness.
 Otherwise, production settings return after each round. The pairs take turns until the window ends.
 The dataset keeps its original freeze date across runs. Its content hash remains in the configuration details.
-Logos sends one notification after the last round.
+Logos sends one notification after the last round of each scheduled run.
 The notification shows the result and the last interruption reason, if available.
 Select **View benchmark** with its number to open the benchmark dialog.
 The **Benchmark runs** table groups runs by dataset. Select a column heading to change the order.
@@ -372,6 +373,11 @@ Close the dialog to return to the same worker and timeline position.
 ![Enabled nightly rotation in the performance overview](../static/img/roles/logos-admin-nightly-benchmarks.png)
 
 Select the worker tile to see the workload and maintenance window.
+Select **Edit schedule** to set the daily start and end time for this model and worker.
+The default is 05:00–08:00 in Europe/Berlin. Select **Save window** to apply the change to future rounds.
+
+![Editor with the daily start and end time for the selected worker](../static/img/roles/logos-admin-nightly-edit.png)
+
 Logos checks GPU memory for the benchmark lane and its warm-up before the round.
 If the worker needs more GPU memory, then the schedule shows **Waiting for GPU capacity**.
 Other models on the same worker continue to serve requests.
@@ -387,9 +393,9 @@ See [deployment-specific request sources](../admin/nightly-benchmarks.md#deploym
 
 To remove the pair from the nightly rotation:
 
-1. Under **Nightly rotation**, select the tile for the worker.
-2. Select **Disable nightly rotation**.
-3. Read the dialog and select **Disable nightly rotation**.
+1. Under **Automatic benchmarks**, select the tile for the worker.
+2. Select **Edit schedule**, then **Disable automatic benchmarks**.
+3. Read the dialog and select **Disable automatic benchmarks**.
 4. Check for **Disabled** and a gray dot on the worker tile.
 
 Select **Cancel** to keep the schedule active.

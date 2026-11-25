@@ -4,6 +4,7 @@ import asyncio
 import copy
 import json
 import logging
+from contextvars import copy_context
 
 from starlette.requests import Request
 
@@ -19,12 +20,15 @@ from logos.benchmarks.nightly import (
     MAX_PAIRS_PER_NIGHT,
     NIGHTLY_CONTEXT,
     NIGHTLY_GPU_BUDGET_REASON,
+    NIGHTLY_WINDOW,
     NightlyCapacityDeferred,
     NightlyStopped,
     can_start,
     configured_lane_id,
     local_now,
     parameter_plan,
+    schedule_window,
+    window_changed_since_last_run,
 )
 from logos.benchmarks.reservations import benchmark_reservations
 from logos.benchmarks.worker_limits import validate_worker_overrides, worker_limits
@@ -97,7 +101,8 @@ class NightlyScheduler:
 
     async def _tick(self):
         schedules = store.rows()
-        if not any(row["recovery"] for row in schedules) and not can_start(local_now()):
+        now = local_now()
+        if not any(row["recovery"] or (row["enabled"] and schedule_window(row).contains(now)) for row in schedules):
             return
         with store.cluster_lock() as connection:
             if connection is None:
@@ -125,20 +130,20 @@ class NightlyScheduler:
                 deferred = []
                 for row in remaining:
                     pair_id = row["model_provider_id"]
-                    day = local_now().date()
-                    if (
-                        not can_start(local_now())
-                        or store.has_active_benchmarks()
-                        or (self.calibration and self.calibration.benchmarks_must_wait())
-                    ):
+                    now = local_now()
+                    day = now.date()
+                    if store.has_active_benchmarks() or (self.calibration and self.calibration.benchmarks_must_wait()):
                         break
                     if not row["enabled"]:
                         continue
+                    window = schedule_window(row)
+                    if not window.contains(now):
+                        continue
                     claimed_today = row["last_run_date"] == day
-                    if claimed_today:
+                    if claimed_today and not window_changed_since_last_run(row):
                         if row.get("status") == CAPACITY_WAITING:
                             updated = row.get("updated_at")
-                            if updated and (local_now() - updated).total_seconds() < CAPACITY_RETRY_SECONDS:
+                            if updated and (now - updated).total_seconds() < CAPACITY_RETRY_SECONDS:
                                 continue
                         elif row.get("status") != "continuing":
                             continue
@@ -164,14 +169,18 @@ class NightlyScheduler:
                         continue
                     if not store.lock_held(connection):
                         return
-                    if store.claim(pair_id, day):
-                        selected.append(pair_id)
+                    if store.claim(pair_id, day, window=window):
+                        selected.append((pair_id, window))
                         providers.add(provider_id)
                 if not selected:
                     return
                 # TaskGroup cancels and awaits every sibling's restoration on failure or shutdown.
                 async with asyncio.TaskGroup() as group:
-                    tasks = [group.create_task(self.run_schedule(pair, connection)) for pair in selected]
+                    tasks = []
+                    for pair, window in selected:
+                        context = copy_context()
+                        context.run(NIGHTLY_WINDOW.set, window)
+                        tasks.append(group.create_task(self.run_schedule(pair, connection), context=context))
                 if not all(task.result() for task in tasks):
                     return
                 remaining = deferred
@@ -485,10 +494,24 @@ class NightlyScheduler:
         return target, snapshot, lane
 
     def _select_lane(self, provider_id, model, snapshot):
+        lanes = snapshot["runtime"].get("lanes", [])
+        gpu_groups = {}
+        for lane in lanes:
+            if lane.get("runtime_state") in {"starting", "loaded", "running", "sleeping"}:
+                selector = lane.get("occupied_gpu_devices") or (lane.get("lane_config") or {}).get("gpu_devices") or ""
+                gpu_groups[lane["lane_id"]] = {int(gpu) for gpu in selector.split(",") if gpu.strip().isdigit()}
+
+        def shares_gpu(lane_id):
+            group = gpu_groups.get(lane_id, set())
+            return any(group & other_group for other_id, other_group in gpu_groups.items() if other_id != lane_id)
+
         candidates = [
             lane
-            for lane in snapshot["runtime"].get("lanes", [])
-            if lane.get("model") == model and lane_is_serving(lane) and (lane.get("lane_config") or {}).get("vllm")
+            for lane in lanes
+            if lane.get("model") == model
+            and lane_is_serving(lane)
+            and (lane.get("lane_config") or {}).get("vllm")
+            and not shares_gpu(lane["lane_id"])
         ]
         # A warm lane lock protects against idle eviction. Scheduled maintenance
         # may reuse the lane when no unlocked replica is available.
@@ -517,7 +540,7 @@ class NightlyScheduler:
         )
         if saved:
             # The worker assigns a port to the temporary identifier.
-            return {**copy.deepcopy(saved), "lane_id": lane_id}
+            return {**copy.deepcopy(saved), "lane_id": lane_id, "gpu_devices": ""}
         profile = self.planner._safe_get_profiles(provider_id).get(model)
         if profile and profile.engine != "vllm":
             raise RuntimeError("Nightly tuning requires a vLLM model")
@@ -618,7 +641,11 @@ class NightlyScheduler:
                     "interrupted_recovered",
                     row["report"],
                     recovery.get("search"),
-                    resume_after_recovery=row.get("last_run_date") == now.date() and can_start(now),
+                    resume_after_recovery=(
+                        row.get("last_run_date") == now.date()
+                        and not window_changed_since_last_run(row)
+                        and schedule_window(row).contains(now)
+                    ),
                 )
                 benchmark_reservations.release(-pair_id)
                 return True
@@ -772,7 +799,11 @@ class NightlyScheduler:
                 search = optimization.context(current, snapshot, workload, schedule.get("optimizer") or {})
                 recovery["search"] = search
                 plan = optimization.plan(
-                    current, search, round_index=optimization.round_index(search["state"], local_now().date())
+                    current,
+                    search,
+                    round_index=optimization.round_index(
+                        search["state"], local_now().date(), schedule.get("last_run_window_revision", 0)
+                    ),
                 )
             for index, settings in enumerate(plan):
                 if self.calibration and self.calibration.benchmarks_must_wait():

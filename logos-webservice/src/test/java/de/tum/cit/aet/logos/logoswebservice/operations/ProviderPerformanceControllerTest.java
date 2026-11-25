@@ -71,6 +71,22 @@ class ProviderPerformanceControllerTest {
     }
 
     @Test
+    void nightlyWindow_requiresLogosAdminAndForwardsThePairAndTimes() throws Exception {
+        Map<String, Object> body = Map.of("model_provider_id", 31, "start", "13:10", "end", "13:30",
+            "expected_start", "05:00", "expected_end", "08:00");
+        when(orchestratorWorkerAdminClient.nightlyBenchmark("window", body))
+            .thenReturn(ResponseEntity.ok(Map.of("window", Map.of("start", "13:10", "end", "13:30"))));
+        String payload = """
+            {"model_provider_id":31,"start":"13:10","end":"13:30","expected_start":"05:00","expected_end":"08:00"}
+            """;
+        mvc.perform(post("/logosdb/model_benchmarks/nightly/window").with(TestJwt.testUser())
+                .contentType("application/json").content(payload)).andExpect(status().isForbidden());
+        mvc.perform(post("/logosdb/model_benchmarks/nightly/window").with(TestJwt.logosAdmin())
+                .contentType("application/json").content(payload))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.window.start").value("13:10"));
+    }
+
+    @Test
     void requestWorkloads_requireLogosAdmin() throws Exception {
         String payload = "{\"name\":\"Pilot\",\"log_ids\":[7],\"provenance\":\"synthetic\"}";
         Map<String, Object> body = Map.of("name", "Pilot", "log_ids", java.util.List.of(7), "provenance", "synthetic");
