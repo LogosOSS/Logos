@@ -54,13 +54,13 @@ class MeasurementOrderTest(unittest.TestCase):
 
 
 class BudgetWarmupTest(unittest.IsolatedAsyncioTestCase):
-    async def test_fixed_warmup_precedes_database_window_and_is_reported_separately(self):
+    async def test_staggered_warmup_precedes_database_window_and_is_reported_separately(self):
         budget = benchmark.budget_admission
         calls = []
 
-        async def worker(client, url, headers, start, deadline, rows):
+        async def worker(client, url, headers, start, deadline, rows, *, start_delay_s):
             phase = "warmup" if len(calls) < 2 else "measured"
-            calls.append(phase)
+            calls.append((phase, start_delay_s, deadline - start))
             rows.append(
                 {
                     "sent_at_s": 0,
@@ -72,7 +72,7 @@ class BudgetWarmupTest(unittest.IsolatedAsyncioTestCase):
             )
 
         def clock():
-            self.assertEqual(calls, ["warmup", "warmup"])
+            self.assertEqual(calls, [("warmup", 0, 15), ("warmup", 0.6, 15)])
             return "2026-01-01T00:00:00Z"
 
         with ExitStack() as stack:
@@ -83,13 +83,18 @@ class BudgetWarmupTest(unittest.IsolatedAsyncioTestCase):
                         "LOGOS_BENCH_GW_BUDGET_CONCURRENCY": "2",
                         "LOGOS_BENCH_GW_BUDGET_BASELINE": "0",
                         "LOGOS_BENCH_GW_BUDGET_WARMUP_S": "15",
+                        "LOGOS_BENCH_GW_BUDGET_DURATION_S": "40",
                         "LOGOS_BENCH_GW_BUDGET_LOGOS_P50_MAX_MS": "5",
                         "LOGOS_BENCH_GW_BUDGET_LOGOS_P99_MAX_MS": "50",
                     },
                 )
             )
             stack.enter_context(
-                patch.object(budget.gw, "post_chat_completion", AsyncMock(return_value=Mock(status_code=200)))
+                patch.object(
+                    budget.gw,
+                    "post_chat_completion",
+                    AsyncMock(return_value=Mock(status_code=200, ok=True, total_ms=1200)),
+                )
             )
             stack.enter_context(patch.object(budget, "budget_query_snapshot", return_value={}))
             stack.enter_context(patch.object(budget, "_worker", side_effect=worker))
@@ -100,9 +105,10 @@ class BudgetWarmupTest(unittest.IsolatedAsyncioTestCase):
             result = await budget.run()
         self.assertEqual(result["warmup"], {"duration_s": 15, "requests": 2, "failed": 0})
         self.assertEqual(result["requests"], 2)
+        self.assertEqual(result["worker_start_interval_ms"], 600)
         self.assertEqual(result["load"]["max_ms"], 2)
         self.assertTrue(result["threshold"]["exceeded"])
-        self.assertEqual(calls, ["warmup", "warmup", "measured", "measured"])
+        self.assertEqual(calls[2:], [("measured", 0, 40), ("measured", 0.6, 40)])
 
 
 if __name__ == "__main__":
