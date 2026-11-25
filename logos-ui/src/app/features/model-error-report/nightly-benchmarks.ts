@@ -109,11 +109,19 @@ export class NightlyBenchmarks implements OnChanges, OnDestroy {
   get enableBlocker(): string | null {
     const state = this.state();
     if (!state || state.enabled) return null;
-    if (state.recovery_required) return 'Wait for worker recovery to finish.';
+    if (state.recovery_required) {
+      return this.showRecoveryWarning ? 'Wait for worker recovery to finish.' : 'Wait for the current benchmark to stop.';
+    }
     if (!state.worker_ready) return 'Connect a worker that supports nightly benchmarks.';
     if (!state.window) return 'Waiting for the maintenance window settings.';
     if (this.sourceEdited) return 'Apply your dataset to enable automatic benchmarks.';
     return null;
+  }
+
+  get showRecoveryWarning(): boolean {
+    const state = this.state();
+    // Active rounds save the lane configuration before changing it.
+    return !!state?.recovery_required && state.status !== 'preparing' && state.status !== 'running';
   }
 
   get window() {

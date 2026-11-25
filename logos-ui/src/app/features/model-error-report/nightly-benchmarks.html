@@ -5,13 +5,13 @@
   <span class="nightly-tile__content">
     <span class="nightly-tile__name">{{ providerName }}</span>
     <span class="nightly__status">
-      <span class="status-dot" [class.status-dot--gray]="!state()?.enabled && !state()?.recovery_required"
-        [class.status-dot--warn]="state()?.recovery_required" aria-hidden="true"></span>
+      <span class="status-dot" [class.status-dot--gray]="!state()?.enabled && !showRecoveryWarning"
+        [class.status-dot--warn]="showRecoveryWarning" aria-hidden="true"></span>
       <span>
         @if (state(); as status) {
           {{ status.enabled ? 'Enabled' : 'Disabled' }}
           @if (status.deployment?.status === 'offline') { · Offline }
-          @if (status.recovery_required) { · Recovery pending }
+          @if (showRecoveryWarning) { · Recovery pending }
         } @else {
           {{ error() ? 'Status unavailable' : 'Loading…' }}
         }
@@ -45,11 +45,11 @@
         </div>
       }
     </div>
-    @if (state()?.recovery_required) { <p role="alert">Worker recovery is pending. Nightly benchmarks are paused.</p> }
+    @if (showRecoveryWarning) { <p role="alert">Worker recovery is pending. Nightly benchmarks are paused.</p> }
     @if (enableBlocker; as reason) { <p class="nightly__summary" id="nightly-blocker-{{ pairId }}" role="status">{{ reason }}</p> }
     @if (error() && !confirming()) { <p role="alert">{{ error() }}</p> }
     @if (state(); as status) {
-      @if (status.enabled && status.status !== 'scheduled' && !status.recovery_required) {
+      @if (status.enabled && status.status !== 'scheduled' && !showRecoveryWarning) {
         <p class="nightly__summary" role="status">{{ statusLabel(status.status) }}</p>
       }
       <div class="nightly__workload">

@@ -103,10 +103,9 @@ describe('Nightly benchmark management', () => {
   });
 
   it('labels the rotation status and distinguishes worker recovery', async () => {
-    const fixture = TestBed.createComponent(NightlyBenchmarks);
-    fixture.componentRef.setInput('pairId', control.pairId);
-    fixture.componentRef.setInput('providerName', control.providerName);
+    const fixture = TestBed.createComponent(NightlySettingsHost);
     fixture.detectChanges();
+    const worker = fixture.componentInstance.worker();
     const ready = control.state()!;
     http.expectOne('/api/logosdb/model_benchmarks/nightly/status').flush(ready);
     await fixture.whenStable();
@@ -116,15 +115,26 @@ describe('Nightly benchmark management', () => {
     expect(status.textContent.trim()).toBe('Disabled');
     expect(status.querySelector('.status-dot--gray')).not.toBeNull();
 
-    fixture.componentInstance.state.set({ ...ready, enabled: true, status: 'scheduled' });
+    worker.state.set({ ...ready, enabled: true, status: 'scheduled' });
     fixture.detectChanges();
     expect(status.textContent.trim()).toBe('Enabled');
     expect(status.querySelector('.status-dot--gray, .status-dot--warn')).toBeNull();
 
-    fixture.componentInstance.state.update(current => ({ ...current!, recovery_required: true }));
+    const details: HTMLElement = fixture.nativeElement.querySelector('section.nightly');
+    for (const [phase, label] of [['preparing', 'Preparing benchmark lane'], ['running', 'Benchmark in progress']]) {
+      worker.state.set({ ...ready, enabled: true, status: phase, recovery_required: true });
+      fixture.detectChanges();
+      expect(status.textContent.trim()).toBe('Enabled');
+      expect(status.querySelector('.status-dot--warn')).toBeNull();
+      expect(details.querySelector('[role="alert"]')).toBeNull();
+      expect(details.querySelector('[role="status"]')?.textContent).toContain(label);
+    }
+
+    worker.state.set({ ...ready, enabled: true, status: 'recovery_required', recovery_required: true });
     fixture.detectChanges();
     expect(status.textContent).toMatch(/Enabled\s*· Recovery pending/);
     expect(status.querySelector('.status-dot--warn')).not.toBeNull();
+    expect(details.querySelector('[role="alert"]')?.textContent).toContain('Worker recovery is pending');
   });
 
   it('shows the workload inline and enables scheduling after applying the selection', async () => {
