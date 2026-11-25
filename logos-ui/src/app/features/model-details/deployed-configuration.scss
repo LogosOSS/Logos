@@ -38,6 +38,10 @@ h4 { margin: 0; font-size: 1.125rem; font-weight: 500; }
   font-weight: 500;
 }
 .deployment-benchmark__link:focus-visible { outline: 2px solid currentColor; outline-offset: 4px; }
+.parameter-changes { display: flex; flex-wrap: wrap; gap: 8px 24px; margin: 0; }
+.parameter-changes dt { font-size: .875rem; }
+.parameter-changes dd { font-weight: 600; font-variant-numeric: tabular-nums; }
+.parameter-changes dd > span[aria-hidden] { color: rgb(var(--color-typography-500)); }
 .deployment-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 0; }
 .deployment-metrics dd, .adoption-throughput { font-size: 1.25rem; font-weight: 600; font-variant-numeric: tabular-nums; }
 .deployment-metrics small, .adoption-throughput small { color: rgb(var(--color-typography-500)); font-size: .875rem; font-weight: 400; }
@@ -56,6 +60,9 @@ details { @include disclosure.section; }
   padding: 16px;
 }
 .deployment-details h5 { display: flex; align-items: center; gap: 8px; margin: 0 0 12px; font-size: 1rem; font-weight: 600; }
+.serving-settings { align-self: start; }
+.serving-settings > summary { margin: 0; padding: 0; }
+.serving-settings[open] > summary { margin-bottom: 8px; }
 .deployment-details i { flex: none; }
 .detail-note { display: flex; align-items: baseline; gap: 8px; margin: 0 0 8px; color: rgb(var(--color-typography-500)); font-size: .875rem; }
 .deployment-details .parameters { grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 16px 0 0; }

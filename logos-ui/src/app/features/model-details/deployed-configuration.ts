@@ -6,7 +6,9 @@ import { firstValueFrom } from 'rxjs';
 import { ModelProviderBenchmark } from '../../shared/models/provider.model';
 import { NightlyStatus } from './nightly-benchmarks';
 import { benchmarkDatasetLabel, servingConfigurationItems } from './benchmark-configuration';
-import { benchmarkResultRow } from './benchmark-result-row';
+import {
+  benchmarkResultRow, displayParameterChange, NightlyParameterChange, recordedNightlyChanges, SavedNightlyComparison,
+} from './benchmark-result-row';
 import { benchmarkProgress, recordConfiguration } from './benchmark-progress';
 import { comparisonValue } from './benchmark-comparison';
 
@@ -27,7 +29,11 @@ interface SelectionComparison {
 }
 
 type AnswerLengthDetails = AnswerLengthChange[] | 'loading' | 'error';
-interface DeploymentStatus extends NightlyStatus { deployment?: DeploymentSnapshot; selection?: { best_observed: SelectionComparison | null; best_eligible: SelectionComparison | null; comparisons: SelectionComparison[] }; }
+interface DeploymentStatus extends NightlyStatus {
+  deployment?: DeploymentSnapshot;
+  selection?: { best_observed: SelectionComparison | null; best_eligible: SelectionComparison | null; comparisons: SelectionComparison[] };
+  active_trial?: { baseline_id: number | null; changes: NightlyParameterChange[] } | null;
+}
 
 export interface DeploymentSnapshot {
   available: boolean;
@@ -117,6 +123,26 @@ export class DeployedConfiguration implements OnDestroy {
   readonly historicalMeasurement = computed(() => this.measurement() ?? deployedMeasurement(this.deployment(),
     this.runs().filter(run => run.model_provider_id === this.pairId()), false));
   readonly result = computed(() => this.historicalMeasurement() ? deployedResult(this.historicalMeasurement()!, this.runs()) : null);
+  readonly benchmarkParameterChanges = computed(() => {
+    const state = this.state();
+    if (!state) return null;
+    if (state.active_trial) return {
+      baselineId: state.active_trial.baseline_id,
+      run: null,
+      changes: state.active_trial.changes.map(displayParameterChange),
+    };
+
+    const runs = this.runs().filter(run => run.model_provider_id === this.pairId())
+      .sort((a, b) => Date.parse(b.recorded_at) - Date.parse(a.recorded_at) || b.id - a.id);
+    for (const run of runs) {
+      const nightly = run.configuration['nightly'] as SavedNightlyComparison | undefined;
+      const baselineId = nightly?.baseline_id;
+      if (!baselineId || baselineId === run.id) continue;
+      const changes = recordedNightlyChanges(run);
+      if (changes.length) return { baselineId, run, changes };
+    }
+    return null;
+  });
   private readonly servingParameters = computed(() => servingConfigurationItems({
     configuration: { serving: this.deployment()?.configuration },
   }).map(item => item.key === 'max_num_seqs' && item.value === '0' ? { ...item, value: 'Auto' } : item));

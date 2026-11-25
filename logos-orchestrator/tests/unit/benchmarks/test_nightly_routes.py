@@ -25,6 +25,7 @@ def routes(monkeypatch):
     registry = Mock()
     registry.is_provider_online.return_value = True
     registry.peek_runtime_snapshot.return_value = {
+        "session_id": "worker-session",
         "runtime": {
             "supports_benchmark_restart": True,
             "supports_nightly_gpu_budget": True,
@@ -35,7 +36,7 @@ def routes(monkeypatch):
                     "lane_config": {"vllm_config": LIVE},
                 }
             ],
-        }
+        },
     }
     scheduler = Mock()
     scheduler.preview_configuration.return_value = PREVIEW
@@ -82,6 +83,7 @@ async def test_status_uses_a_future_plan_without_presenting_it_as_the_live_deplo
     assert result["deployment"]["maintenance"] is not use_preview
     assert bool(result["deployment"]["series_key"]) is not use_preview
     assert result["worker_ready"] is True
+    assert result["active_trial"] is None
     selection.assert_called_once_with(31, WORKLOAD["id"], length_comparison_id=42)
     if use_preview:
         scheduler.preview_configuration.assert_called_once_with(
@@ -89,6 +91,32 @@ async def test_status_uses_a_future_plan_without_presenting_it_as_the_live_deplo
         )
     else:
         scheduler.preview_configuration.assert_not_called()
+
+
+@pytest.mark.parametrize(("job_id", "reserved"), [(41, True), (41, False), (-31, True)])
+async def test_status_only_exposes_an_active_trial_from_the_nightly_reservation(routes, monkeypatch, job_id, reserved):
+    router, request, _, _ = routes
+    monkeypatch.setattr(
+        router.store,
+        "status",
+        Mock(return_value={"status": "running", "recovery_required": True}),
+    )
+    monkeypatch.setattr(router.workloads, "list_for_model", Mock(return_value=[]))
+    monkeypatch.setattr(router.store, "selection_summary", Mock(return_value={}))
+    active = {"baseline_id": 71, "changes": [{"parameter": "max_num_seqs", "before": 12, "after": 6}]}
+    trial = Mock(return_value=active)
+    monkeypatch.setattr(router.store, "active_trial", trial)
+    monkeypatch.setattr(router.benchmark_reservations, "owner", Mock(return_value=job_id))
+    monkeypatch.setattr(router.benchmark_reservations, "is_nightly_reserved", Mock(return_value=reserved))
+
+    result = await router.nightly_status(NightlySelectionStatusRequest(model_provider_id=31), request)
+
+    if job_id > 0 and reserved:
+        trial.assert_called_once_with(31, 20, 41, "worker-session")
+        assert result["active_trial"] == active
+    else:
+        trial.assert_not_called()
+        assert result["active_trial"] is None
 
 
 async def test_only_gpu_budget_capable_workers_can_enable_nightly_rotation(routes, monkeypatch):

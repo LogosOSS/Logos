@@ -66,6 +66,7 @@ Create a saved dataset under **Request workload** before selecting it here.
 
 **Performance → Overview** shows **Automatic benchmarks**, **Currently deployed** and **Timeline**.
 If the model has more than one worker, then use **Worker** to change **Currently deployed** and **Timeline**.
+Read **Parameter changes** under **Currently deployed** to compare the trial settings with the baseline.
 Select **Benchmarks** to configure a manual run.
 Select **Request measurements** for production request times, or **Analysis** for comparisons and saved configurations.
 Expand **Overview → Benchmark runs** for the history. Active jobs remain visible in every section.
