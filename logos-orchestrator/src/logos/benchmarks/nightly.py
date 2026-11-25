@@ -13,6 +13,7 @@ from logos.benchmarks.configuration import BenchmarkRunSettings, ServingOverride
 from logos.maintenance_window import MaintenanceWindow
 
 NIGHTLY_CONTEXT: ContextVar[bool] = ContextVar("nightly_benchmark", default=False)
+NIGHTLY_BASELINE_CONFIG: ContextVar[dict | None] = ContextVar("nightly_baseline_config", default=None)
 NIGHTLY_WINDOW: ContextVar[MaintenanceWindow | None] = ContextVar("nightly_window", default=None)
 LEASE_CHECK: ContextVar[Callable[[], bool]] = ContextVar("nightly_lease_check", default=lambda: True)
 STALL_SECONDS = 300
@@ -146,38 +147,19 @@ async def supervise(
         await asyncio.gather(task, return_exceptions=True)
 
 
-def parameter_plan(current: dict) -> list[BenchmarkRunSettings]:
-    """Compare current settings with at most four explicit batching configurations."""
-    baseline = {
-        key: int(current[key])
-        for key in ("max_num_seqs", "max_num_batched_tokens")
-        if isinstance(current.get(key), int) and current[key] > 0
-    }
-    values = [baseline]
-    if len(baseline) < 2:
-        # Auto values are not effective limits. Keep the baseline unchanged,
-        # then set both limits explicitly so variants cannot inherit each other.
-        seqs = [baseline["max_num_seqs"]] if "max_num_seqs" in baseline else [4, 8]
-        tokens = [baseline["max_num_batched_tokens"]] if "max_num_batched_tokens" in baseline else [2048, 4096]
-        values = [{}] + [
-            {"max_num_seqs": seq, "max_num_batched_tokens": token} for seq in seqs for token in tokens if token >= seq
-        ]
-    for key, value in baseline.items() if len(baseline) == 2 else []:
-        for factor in (0.75, 1.25):
-            candidate = {**baseline, key: max(1, int(value * factor))}
-            if key == "max_num_seqs" and candidate[key] > 65536:
-                continue
-            if candidate.get("max_num_batched_tokens", 65536) < candidate.get("max_num_seqs", 1):
-                continue
-            if candidate not in values:
-                values.append(candidate)
-    return [
-        BenchmarkRunSettings(
-            samples=50,
-            max_output_tokens=512,
-            profile="concurrent",
-            concurrency=4,
-            serving_overrides=ServingOverrides(**value),
-        )
-        for value in values
-    ]
+def baseline_settings(current: dict, workload: dict | None = None) -> BenchmarkRunSettings:
+    """Describe an unchanged lane and the workload shared by all configurations."""
+    return BenchmarkRunSettings(
+        samples=workload["request_count"] if workload else 50,
+        workload_id=workload["id"] if workload else None,
+        max_output_tokens=512,
+        profile="concurrent",
+        concurrency=4,
+        serving_overrides=ServingOverrides(
+            **{
+                key: current[key]
+                for key in ("max_num_seqs", "max_num_batched_tokens")
+                if type(current.get(key)) is int and current[key] > 0
+            }
+        ),
+    )

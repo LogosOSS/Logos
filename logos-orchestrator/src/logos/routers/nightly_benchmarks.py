@@ -11,7 +11,7 @@ from logos.benchmarks import nightly_store as store
 from logos.benchmarks import optimization, recent_requests, workloads
 from logos.benchmarks.deployment import deployment_snapshot
 from logos.benchmarks.guidellm_runner import extract_serving_configuration
-from logos.benchmarks.nightly import local_now, parameter_plan, schedule_window
+from logos.benchmarks.nightly import baseline_settings, local_now, schedule_window
 from logos.benchmarks.nightly_overview import overview
 from logos.dbutils.dbmanager import DBManager
 from logos.dbutils.dbrequest import (
@@ -64,20 +64,8 @@ async def nightly_status(data: NightlySelectionStatusRequest, request: Request):
         if source and source.get("username") == recent_requests.username():
             workload["source_selection"] = source
         search = optimization.context(baseline, snapshot or {}, workload, result.get("optimizer") or {})
-    result["plan"] = [
-        run.model_dump()
-        for run in (
-            optimization.plan(
-                baseline,
-                search,
-                round_index=optimization.round_index(
-                    search["state"], local_now().date(), result.get("window_revision", 0)
-                ),
-            )
-            if search
-            else parameter_plan(baseline)
-        )
-    ]
+    # Later configurations depend on measurements and are recorded in the report as they run.
+    result["plan"] = [baseline_settings(baseline, workload if search else None).model_dump()]
     result["workloads"] = workloads.list_for_model(target["model_id"]) if "model_id" in target else []
     if search and not any(item["id"] == workload["id"] for item in result["workloads"]):
         result["workloads"].append(workloads.metadata(workload))

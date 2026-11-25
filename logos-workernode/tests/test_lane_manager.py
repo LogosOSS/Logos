@@ -205,7 +205,11 @@ async def test_reconfigure_lane_rejects_change_without_nvidia_smi() -> None:
         (["-pp", "2"], ["--pipeline-parallel-size=3", "-pp=4"], 4),
     ],
 )
-async def test_build_lane_status_includes_vllm_runtime_fields(global_args, lane_args, pipeline_size) -> None:
+async def test_build_lane_status_includes_vllm_runtime_fields(
+    global_args, lane_args, pipeline_size, monkeypatch
+) -> None:
+    monkeypatch.setattr("logos_worker_node.lane_manager.is_metal_backend", lambda: False)
+    monkeypatch.setattr("logos_worker_node.lane_manager.cached_vllm_version", lambda _: "0.34.0")
     manager = LaneManager(
         WorkerConfig(gpu_devices="all"),
         vllm_engine_config=VllmEngineConfig(global_extra_args=global_args),
@@ -254,10 +258,22 @@ async def test_build_lane_status_includes_vllm_runtime_fields(global_args, lane_
     assert status.runtime_state == "sleeping"
     assert status.backend_metrics["tensor_parallel_size"] == 2
     assert status.backend_metrics["pipeline_parallel_size"] == pipeline_size
+    assert status.nightly_vllm_version == "0.34.0"
     assert status.reported_vram_mb == pytest.approx(1.0)
     assert status.pid_vram_mb == pytest.approx(7680.0)
     assert status.vram_source == "pid"
     assert status.effective_vram_mb == pytest.approx(7680.0)
+
+
+def test_nightly_tuning_conflicts_detect_global_and_lane_flags():
+    manager = LaneManager(
+        WorkerConfig(),
+        vllm_engine_config=VllmEngineConfig(global_extra_args=["--kv_cache_dtype=auto"]),
+    )
+    assert manager._nightly_blocked_vllm_fields(VllmConfig()) == ["kv_cache_dtype"]  # noqa: SLF001
+    assert manager._nightly_blocked_vllm_fields(  # noqa: SLF001
+        VllmConfig(extra_args=["--speculative-config", "{}"])
+    ) == ["kv_cache_dtype", "speculative_config"]
 
 
 @pytest.mark.asyncio

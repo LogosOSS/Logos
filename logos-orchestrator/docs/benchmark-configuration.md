@@ -70,11 +70,11 @@ same Performance tab.
 | Behavior | Manual runner | Nightly rotation |
 |---|---|---|
 | Selection | Admin selects a pair and starts a run or batch | Up to 2 enabled, available pairs per night; oldest attempts first |
-| Workload | Editable dataset, sample count and request settings | GSM8K main/test, 50 requests, 512 max output tokens, concurrency 4, seed 42 |
-| Parameter search | Admin's overrides or batch sweep | Baseline and ±25% variants of known sequence/batch-token limits |
+| Workload | Editable dataset, sample count and request settings | Saved request dataset or GSM8K main/test, with concurrency 4 |
+| Parameter search | Admin's overrides or batch sweep | Production baseline and up to 4 adaptive trials per round. A separate ready Logos worker can select the next option. |
 | Admission window | Explicit admin start | 05:00–07:50 Europe/Berlin, including retries |
 | Failure handling | Failed batch stops its remaining runs | One retry after a stall; skip the configuration after another stall |
-| After the run | Applied serving overrides remain active | Restore the original production configuration |
+| After the run | Applied serving overrides remain active | Apply a confirmed improvement for a saved workload on one existing replica, or restore production settings |
 
 The dataset editor and its question previews do not configure nightly runs.
 During nightly execution or pending worker recovery, the orchestrator rejects

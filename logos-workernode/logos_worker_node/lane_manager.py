@@ -35,6 +35,7 @@ from logos_worker_node.models import (
     VllmEngineConfig,
     WorkerConfig,
 )
+from logos_worker_node.profile_fingerprint import cached_vllm_version
 from logos_worker_node.resource_lock import Claim, ResourceLock
 from logos_worker_node.vllm_process import VllmProcessHandle, effective_gmu
 
@@ -4794,6 +4795,8 @@ class LaneManager:
         context_length = 0
         flash_attention = False
         gpu_devices = ""
+        nightly_vllm_version = None
+        nightly_blocked_vllm_fields = []
 
         if lc is not None:
             model = lc.model
@@ -4820,6 +4823,11 @@ class LaneManager:
                 parallel_sizes = self._launch_parallel_sizes(lc.vllm_config, self._vllm_engine_config.global_extra_args)
                 if parallel_sizes:
                     backend_metrics["pipeline_parallel_size"] = parallel_sizes["pp"]
+                if collect_telemetry and not is_metal_backend():
+                    nightly_vllm_version = (
+                        await asyncio.to_thread(cached_vllm_version, lc.vllm_config.vllm_binary) or None
+                    )
+                    nightly_blocked_vllm_fields = self._nightly_blocked_vllm_fields(lc.vllm_config)
         if collect_telemetry and hasattr(handle, "get_backend_metrics"):
             try:
                 backend_metrics.update(await handle.get_backend_metrics())
@@ -4928,6 +4936,8 @@ class LaneManager:
             active_requests=active_requests,
             loaded_models=loaded_models,
             lane_config=lc,
+            nightly_vllm_version=nightly_vllm_version,
+            nightly_blocked_vllm_fields=nightly_blocked_vllm_fields,
             backend_metrics=backend_metrics,
             reported_vram_mb=vram_reported_mb,
             pid_vram_mb=vram_by_pid_mb,
@@ -4939,6 +4949,18 @@ class LaneManager:
             last_cold_load_s=getattr(handle, "last_cold_load_s", None),
             last_wake_from_sleep_s=getattr(handle, "last_wake_from_sleep_s", None),
         )
+
+    def _nightly_blocked_vllm_fields(self, config: VllmConfig) -> list[str]:
+        # Raw flags are appended after the typed settings and can silently
+        # override them. Publish names only, since flags may contain secrets.
+        flags = {
+            arg.partition("=")[0].replace("_", "-")
+            for arg in (*self._vllm_engine_config.global_extra_args, *config.extra_args)
+        }
+        fields = {"kv_cache_dtype", "speculative_config"}
+        if flags & {"--config", "--kv-transfer-config", "--attention-config", "--attention-backend"}:
+            return sorted(fields)
+        return sorted(field for field in fields if "--" + field.replace("_", "-") in flags)
 
     async def _query_process_vram_map(self, pids: list[int]) -> dict[int, float]:
         """Query per-process VRAM from nvidia-smi for the given PIDs."""

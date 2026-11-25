@@ -5,9 +5,11 @@ import copy
 import json
 import logging
 from contextvars import copy_context
+from time import monotonic
 
 from starlette.requests import Request
 
+from logos.benchmarks import adaptive_plan, nightly_proposer
 from logos.benchmarks import nightly_store as store
 from logos.benchmarks import optimization, recent_requests, workloads
 from logos.benchmarks.configuration import ServingOverrides
@@ -18,28 +20,30 @@ from logos.benchmarks.nightly import (
     CAPACITY_WAITING,
     LEASE_CHECK,
     MAX_PAIRS_PER_NIGHT,
+    NIGHTLY_BASELINE_CONFIG,
     NIGHTLY_CONTEXT,
     NIGHTLY_GPU_BUDGET_REASON,
     NIGHTLY_WINDOW,
     NightlyCapacityDeferred,
     NightlyStopped,
+    baseline_settings,
     can_start,
     configured_lane_id,
     local_now,
-    parameter_plan,
     schedule_window,
     window_changed_since_last_run,
 )
 from logos.benchmarks.reservations import benchmark_reservations
-from logos.benchmarks.worker_limits import validate_worker_overrides, worker_limits
+from logos.benchmarks.worker_limits import nightly_variation_values, validate_worker_overrides, worker_limits
 from logos.dbutils.dbmanager import DBManager
 from logos.dbutils.dbrequest import InternalBenchmarkRequest
 from logos.logosnode_registry import LogosNodeCommandError
-from logos.maintenance_window import maintenance_node_limit
+from logos.maintenance_window import MaintenanceWindow, maintenance_node_limit
 
 logger = logging.getLogger(__name__)
 # After add/reconfigure succeeds, wait for fresh worker status confirming the expected lane config is ready.
 LANE_READY_STATUS_TIMEOUT_SECONDS = 15 * 60
+TRIALS_PER_ROUND = 4
 
 
 class NightlyScheduler:
@@ -487,7 +491,7 @@ class NightlyScheduler:
         if lane is not None:
             try:
                 limits = worker_limits(snapshot, model, lane=lane)
-                baseline = parameter_plan(limits["current"])[0]
+                baseline = baseline_settings(limits["current"])
                 validate_worker_overrides(baseline.serving_overrides, limits)
             except ValueError as exc:
                 raise RuntimeError(str(exc)) from exc
@@ -701,11 +705,36 @@ class NightlyScheduler:
             finally:
                 LEASE_CHECK.reset(token)
 
+    async def _next_trial(self, provider_id, current, limits, choices, attempted, leading, observations):
+        incumbent = leading["parameters"] if leading else {}
+        options = adaptive_plan.options(current, incumbent, attempted, limits, extra_choices=choices)
+        if not options:
+            return None, None
+        remaining = self._remaining_seconds()
+        self._require_lease()
+        index = await nightly_proposer.propose(
+            excluded_worker_id=provider_id,
+            candidates=options,
+            observations=observations,
+            remaining_seconds=remaining,
+            limits=limits,
+        )
+        if type(index) is int and 0 <= index < len(options):
+            return options[index], "agent"
+        return options[0], "rule"
+
+    @staticmethod
+    def _remaining_seconds():
+        now = local_now()
+        _, end = (NIGHTLY_WINDOW.get() or MaintenanceWindow.from_env()).bounds(now)
+        return end.timestamp() - now.timestamp()
+
     async def _run_schedule(self, pair_id, connection):
         report = []
         recovery = None
         search = None
         can_adopt = False
+        baseline_token = None
         state = "completed"
         try:
             target, _, _ = self.target_lane(pair_id)
@@ -784,9 +813,12 @@ class NightlyScheduler:
                     raise RuntimeError("Worker did not report the original lane's GPU budget")
                 recovery["required_mib_by_gpu"] = required_mib
                 store.save(pair_id, "preparing", report, recovery)
-            current = lane_serving_configuration(lane)
             limits = worker_limits(snapshot, model, lane=lane)
-            plan = parameter_plan(current)
+            current = limits["current"]
+            choices = nightly_variation_values(limits)
+            baseline_token = NIGHTLY_BASELINE_CONFIG.set(recovery["vllm_config"])
+            workload = None
+            attempted = [{}]
             schedule = store.status(pair_id)
             if recent_requests.username() or schedule.get("workload_id"):
                 workload = (
@@ -797,18 +829,53 @@ class NightlyScheduler:
                 if recent_requests.username():
                     store.bind_workload(pair_id, workload["id"])
                 search = optimization.context(current, snapshot, workload, schedule.get("optimizer") or {})
+                original = {key: current.get(key) for key in sorted(optimization.VARIED_KEYS)}
+                if search["state"].get("adaptive_baseline") == original:
+                    attempted.extend(search["state"].get("attempted_parameters", []))
+                search["adaptive_baseline"] = original
+                search["attempted"] = attempted.copy()
                 recovery["search"] = search
-                plan = optimization.plan(
-                    current,
-                    search,
-                    round_index=optimization.round_index(
-                        search["state"], local_now().date(), schedule.get("last_run_window_revision", 0)
-                    ),
-                )
-            for index, settings in enumerate(plan):
+            baseline_settings_for_round = baseline_settings({}, workload)
+            baseline = None
+            observations = []
+            leading = None
+            measurement_seconds = 0.0
+            for index in range(TRIALS_PER_ROUND + 2):
                 if self.calibration and self.calibration.benchmarks_must_wait():
                     state = "calibration_pending"
                     break
+                confirming = bool(
+                    search
+                    and can_adopt
+                    and leading
+                    and (index > TRIALS_PER_ROUND or self._remaining_seconds() <= 2 * measurement_seconds)
+                )
+                if index == 0:
+                    parameters, source = {}, "baseline"
+                elif not can_start(local_now()):
+                    raise NightlyStopped("window_closed")
+                elif confirming:
+                    parameters, source = leading["parameters"], "confirmation"
+                elif index <= TRIALS_PER_ROUND:
+                    parameters, source = await self._next_trial(
+                        pid, current, limits, choices, attempted, leading, observations
+                    )
+                    if parameters is None and search and can_adopt and leading:
+                        confirming = True
+                        parameters, source = leading["parameters"], "confirmation"
+                else:
+                    break
+                if parameters is None:
+                    break
+                kind = "confirmation" if confirming else "trial" if index else "baseline"
+                details = {"kind": kind, "selection_source": source, "parameters": parameters}
+                if confirming:
+                    details["confirms_benchmark_id"] = leading["benchmark_id"]
+                settings = baseline_settings_for_round.model_copy(
+                    update={"serving_overrides": ServingOverrides(**parameters)}
+                )
+                attempted.append(parameters)
+                started = monotonic()
                 for attempt in range(2):
                     if self.calibration and self.calibration.benchmarks_must_wait():
                         state = "calibration_pending"
@@ -821,7 +888,7 @@ class NightlyScheduler:
                     if not LEASE_CHECK.get()():
                         raise NightlyStopped("lease_lost")
                     try:
-                        validate_worker_overrides(settings.serving_overrides, limits)
+                        validate_worker_overrides(settings.serving_overrides, limits, nightly=True)
                         recovery["mutated"] = True
                         recovery["benchmark_lane_mutated"] = True
                         store.save(pair_id, "running", report, recovery)
@@ -842,36 +909,39 @@ class NightlyScheduler:
                                     None,
                                 )
                             )
-                            comparison_args = (
+                            store.record_comparison(
                                 result,
                                 baseline_id,
-                                settings.serving_overrides.model_dump(exclude_none=True),
+                                parameters,
                                 current,
+                                search=search,
+                                selection_source=source,
+                                confirms_benchmark_id=details.get("confirms_benchmark_id"),
                             )
-                            if search:
-                                store.record_comparison(*comparison_args, search=search)
-                            else:
-                                store.record_comparison(*comparison_args)
                         outcome = {
                             "configuration": index + 1,
                             "attempt": attempt + 1,
                             "job_id": job_id,
                             "benchmark_id": result,
                             "status": "success" if result else "failed",
-                            "parameters": settings.serving_overrides.model_dump(exclude_none=True),
+                            **details,
                         }
                         report.append(outcome)
-                        if search and can_adopt:
+                        if confirming and result:
                             adoption = store.adoption_candidate(pair_id, search, report)
                             if adoption:
-                                validate_worker_overrides(ServingOverrides(**adoption["parameters"]), limits)
+                                validate_worker_overrides(
+                                    ServingOverrides(**adoption["parameters"]), limits, nightly=True
+                                )
                                 recovery["adoption"] = adoption
                         store.save(pair_id, "running", report, recovery)
                         break
                     except NightlyCapacityDeferred:
                         raise
                     except NightlyStopped as exc:
-                        report.append({"configuration": index + 1, "attempt": attempt + 1, "status": exc.reason})
+                        report.append(
+                            {"configuration": index + 1, "attempt": attempt + 1, "status": exc.reason, **details}
+                        )
                         store.save(pair_id, "running", report, recovery)
                         if exc.reason != "stalled":
                             state = exc.reason
@@ -879,15 +949,42 @@ class NightlyScheduler:
                         # Reset the lane before one bounded retry, even with identical settings.
                         await self._restore_lane(recovery, force_restart=True)
                     except (ValueError, RuntimeError) as exc:
-                        report.append({"configuration": index + 1, "status": "failed", "reason": str(exc)[:1000]})
+                        report.append(
+                            {"configuration": index + 1, "status": "failed", "reason": str(exc)[:1000], **details}
+                        )
                         store.save(pair_id, "running", report, recovery)
                         break
-                if index == 0 and not any(
-                    item.get("configuration") == 1 and item.get("status") == "success" for item in report
-                ):
-                    if state == "completed":
-                        state = "failed"
+                if confirming or state == "calibration_pending":
                     break
+                outcome = report[-1]
+                result = outcome.get("benchmark_id")
+                run = next(iter(store.round_measurements(pair_id, [result])), None) if result else None
+                if index == 0:
+                    if run is None or optimization.rate(run) is None:
+                        if state == "completed":
+                            state = "failed"
+                        break
+                    baseline = run
+                measurement_seconds = max(measurement_seconds, monotonic() - started)
+                rate = optimization.rate(run) if run else None
+                eligible = bool(
+                    run and index and optimization.trial_eligible(run, baseline, frozen_workload=bool(search))
+                )
+                observation = {
+                    "parameters": parameters,
+                    "status": outcome["status"],
+                    "throughput": rate,
+                    "baseline": index == 0,
+                    "p95_latency_ms": optimization.p95_latency(run) if run else None,
+                    "eligible": eligible if index else True,
+                }
+                observations.append(observation)
+                if (
+                    eligible
+                    and rate > optimization.rate(baseline)
+                    and (leading is None or rate > leading["throughput"])
+                ):
+                    leading = {**observation, "benchmark_id": result}
         except NightlyCapacityDeferred as exc:
             state = CAPACITY_WAITING
             report.append({"status": state, "reason": exc.detail[:1000]})
@@ -905,6 +1002,8 @@ class NightlyScheduler:
             state = "failed"
             report.append({"status": "failed", "reason": str(exc)[:1000]})
         finally:
+            if baseline_token is not None:
+                NIGHTLY_BASELINE_CONFIG.reset(baseline_token)
             settled = recovery is None
             if recovery:
                 try:
@@ -912,17 +1011,6 @@ class NightlyScheduler:
                         raise RuntimeError("Maintenance lock lost; worker recovery remains pending")
                     if state == CAPACITY_WAITING and recovery.pop("adoption", None):
                         store.save(pair_id, "running", report, recovery)
-                    if (
-                        search
-                        and can_adopt
-                        and state in {"completed", "window_closed"}
-                        and store.status(pair_id)["enabled"]
-                    ):
-                        adoption = store.adoption_candidate(pair_id, search, report)
-                        if adoption:
-                            validate_worker_overrides(ServingOverrides(**adoption["parameters"]), limits)
-                            recovery["adoption"] = adoption
-                            store.save(pair_id, "running", report, recovery)
                     await self.settle(pair_id, recovery, report)
                     settled = True
                 except Exception as exc:
