@@ -732,6 +732,8 @@ export class ModelErrorReport implements OnInit, OnDestroy {
   readonly modelId = signal<number | null>(null);
 
   readonly loading = signal(true);
+  readonly calibrationLoading = signal(false);
+  private modelRequestVersion = 0;
   readonly loadError = signal(false);
 
   readonly activeTab = signal<ModelErrorTab>('performance');
@@ -1297,7 +1299,12 @@ export class ModelErrorReport implements OnInit, OnDestroy {
       }
       if (modelChanged) {
         this.modelId.set(id);
+        ++this.performanceRequestVersion;
+        this.clearPerformancePoll();
         this.performance.set([]);
+        this.benchmarkPairs.set([]);
+        this.benchmarkRuns.set([]);
+        this.benchmarkAvailability.set(new Map());
         void this.fetchModel(id);
       }
     });
@@ -1318,55 +1325,43 @@ export class ModelErrorReport implements OnInit, OnDestroy {
   // ==========================================================================
 
   async fetchModel(id: number): Promise<void> {
+    const version = ++this.modelRequestVersion;
     this.loading.set(true);
     this.loadError.set(false);
+    this.priceProviders.set([]);
+    this.pricesLoaded.set(false);
+    this.selectedLogProviderId.set(null);
 
     try {
-      const models =
-        await this.modelService.getModels();
-      if (this.destroyed || this.modelId() !== id) return;
-
-      const foundModel = models.find(
-        model => model.id === id
-      );
-
-      if (!foundModel) {
-        this.loadError.set(true);
-        return;
-      }
-
+      const foundModel = await this.modelService.getModel(id);
+      if (this.destroyed || version !== this.modelRequestVersion) return;
       this.model.set(foundModel);
 
-      // loadPrices runs alongside the other tab loaders: the tab bar needs
-      // the provider list to decide whether the Prices tab exists at all.
-      await Promise.all([
-        this.loadCalibrationLogs(foundModel.name),
+      const sections = Promise.all([
+        this.loadCalibrationLogs(id, foundModel.name, version),
         this.loadPerformance(id),
-        this.loadPrices(id),
+        this.loadPrices(id, version),
       ]);
-
-      const logs = this.availableLogs();
-
-      if (logs.length > 0) {
-        this.selectedLogProviderId.set(logs[0].providerId);
-      }
-
+      this.loading.set(false);
+      await sections;
     } catch {
-      this.loadError.set(true);
+      if (!this.destroyed && version === this.modelRequestVersion) this.loadError.set(true);
     } finally {
-      if (this.modelId() === id) this.loading.set(false);
+      if (!this.destroyed && version === this.modelRequestVersion) this.loading.set(false);
     }
   }
 
-  private async loadCalibrationLogs(modelName: string): Promise<void> {
+  private async loadCalibrationLogs(modelId: number, modelName: string, version: number): Promise<void> {
+    this.calibrationLoading.set(true);
     try {
       const response =
         await firstValueFrom(
           this.http.post<{ logs: BackendCalibrationLog[] }>(
             '/api/logosdb/get_model_calibration_logs',
-            { id: this.modelId() }
+            { id: modelId }
           )
         );
+      if (this.destroyed || version !== this.modelRequestVersion) return;
 
       const logs = response.logs ?? [];
 
@@ -1403,28 +1398,33 @@ export class ModelErrorReport implements OnInit, OnDestroy {
           )
         )
       );
-
+      this.selectedLogProviderId.set(this.availableLogs()[0]?.providerId ?? null);
     } catch {
+      if (this.destroyed || version !== this.modelRequestVersion) return;
       this.modelLogs.set([]);
       this.rawLogsByProviderId.set(new Map());
       this.summaryByProviderId.set(new Map());
       this.calibrationResults.set([]);
+    } finally {
+      if (!this.destroyed && version === this.modelRequestVersion) this.calibrationLoading.set(false);
     }
   }
 
-  private async loadPrices(modelId: number): Promise<void> {
+  private async loadPrices(modelId: number, version: number): Promise<void> {
     this.pricesLoading.set(true);
     this.pricesError.set(false);
 
     try {
       const response = await this.modelService.getModelPrices(modelId);
+      if (this.destroyed || version !== this.modelRequestVersion) return;
       this.priceProviders.set(response.providers ?? []);
       this.pricesLoaded.set(true);
     } catch {
+      if (this.destroyed || version !== this.modelRequestVersion) return;
       this.priceProviders.set([]);
       this.pricesError.set(true);
     } finally {
-      this.pricesLoading.set(false);
+      if (!this.destroyed && version === this.modelRequestVersion) this.pricesLoading.set(false);
     }
   }
 
@@ -1446,6 +1446,7 @@ export class ModelErrorReport implements OnInit, OnDestroy {
       this.performance.set(response.benchmarks);
       this.benchmarkPairs.set(response.pairs ?? []);
       this.benchmarkRuns.set(response.runs ?? []);
+      this.performanceLoading.set(false);
       const pairs = response.pairs ?? [];
       if (!silent || Date.now() - this.availabilityCheckedAt >= 30000
         || pairs.some(pair => pair.provider_type === 'logosnode' && !this.benchmarkAvailability().has(pair.model_provider_id))) {

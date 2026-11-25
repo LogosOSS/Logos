@@ -131,6 +131,7 @@ export class Models implements OnInit, OnDestroy {
   // ── List state ──────────────────────────────────────────────────────────
   models = signal<Model[]>([]);
   capabilities = signal<Record<number, ModelCapability>>({});
+  private modelListVersion = 0;
   loading = signal(true);
   search = signal('');
   loadError = signal(false);
@@ -284,27 +285,31 @@ export class Models implements OnInit, OnDestroy {
   }
 
   async fetchModels(): Promise<void> {
-  this.loading.set(true);
-  this.loadError.set(false);
+    const version = ++this.modelListVersion;
+    this.loading.set(true);
+    this.loadError.set(false);
 
-  try {
-    const models = await this.modelService.getModels();
-    this.models.set(models);
+    let models: Model[];
+    try {
+      models = await this.modelService.getModels();
+      if (version !== this.modelListVersion) return;
+      this.models.set(models);
+    } catch {
+      if (version === this.modelListVersion) this.loadError.set(true);
+      return;
+    } finally {
+      if (version === this.modelListVersion) this.loading.set(false);
+    }
 
-    // The capabilities endpoint rejects empty id lists with a 400, so an
-    // empty catalogue must not trigger the call — and must not read as a
-    // failed load.
-    this.capabilities.set(
-      models.length > 0
-        ? await this.modelService.getModelCapabilities(models.map((model) => model.id))
-        : {},
-    );
-  } catch {
-    this.loadError.set(true);
-  } finally {
-    this.loading.set(false);
+    try {
+      const capabilities = models.length
+        ? await this.modelService.getModelCapabilities(models.map(model => model.id))
+        : {};
+      if (version === this.modelListVersion) this.capabilities.set(capabilities);
+    } catch {
+      if (version === this.modelListVersion) this.capabilities.set({});
+    }
   }
-}
       
   getCapabilities(modelId: number): ModelCapability | undefined {
     return this.capabilities()[modelId];

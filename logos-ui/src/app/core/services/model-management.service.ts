@@ -16,6 +16,10 @@ export class ModelManagementService {
     return firstValueFrom(this.http.post<Model[]>('/api/logosdb/get_models', {}));
   }
 
+  getModel(modelId: number): Promise<Model> {
+    return firstValueFrom(this.http.post<Model>('/api/logosdb/get_model', { id: modelId }));
+  }
+
   /**
    * Current and historic catalogue prices for one model, grouped per
    * linked provider. Only logos admins may read it (model details page).
@@ -33,7 +37,7 @@ export class ModelManagementService {
     return firstValueFrom(
       this.http.post<ModelBenchmarkResponse>(
         '/api/logosdb/model_benchmarks',
-        { model_id: modelId },
+        { model_id: modelId, summary_only: true },
       ),
     );
   }

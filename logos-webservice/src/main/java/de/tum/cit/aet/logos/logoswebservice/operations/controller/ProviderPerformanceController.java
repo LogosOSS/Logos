@@ -53,7 +53,9 @@ public class ProviderPerformanceController {
     @PreAuthorize("hasAuthority('" + Role.Names.LOGOS_ADMIN + "')")
     public ResponseEntity<?> modelBenchmarks(@RequestBody ModelBenchmarkRequestDTO request) {
         try {
-            return ResponseEntity.ok(providerPerformanceService.getModelBenchmarks(request.modelId()));
+            return ResponseEntity.ok(providerPerformanceService.getModelBenchmarks(
+                request.modelId(), Boolean.TRUE.equals(request.summaryOnly())
+            ));
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         }

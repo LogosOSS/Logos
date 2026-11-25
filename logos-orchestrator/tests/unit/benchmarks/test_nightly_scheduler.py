@@ -1261,6 +1261,19 @@ async def test_nightly_loads_a_temporary_lane_alongside_production(scheduler):
     assert benchmark_reservations.allows(20, "other-model", "production")
 
 
+def test_nightly_can_place_a_temporary_lane_away_from_shared_production_gpus(scheduler):
+    original = lane_status("lane")
+    peer = lane_status("peer", model="other-model")
+    original["lane_config"]["gpu_devices"] = "0,1"
+    peer["occupied_gpu_devices"] = "1"
+    runtime, _ = simulate_worker(scheduler, [original, peer])
+
+    assert scheduler.target_lane(31)[2] is None
+    config = scheduler._temporary_config(31, 20, "model", runtime["lanes"])
+    assert config["gpu_devices"] == ""
+    assert config["vllm_config"] == original["lane_config"]["vllm_config"]
+
+
 async def test_nightly_defers_when_a_temporary_lane_does_not_fit(scheduler):
     initial = [lane_status("other", model="other-model")]
     runtime, events = simulate_worker(scheduler, initial, max_lanes=1)

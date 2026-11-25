@@ -45,7 +45,7 @@ def _manager(free: dict[int, float]) -> LaneManager:
         calibrated_footprint_mb=20_000,
         calibrated_kv_mb=4096,
     )
-    return LaneManager(
+    manager = LaneManager(
         WorkerConfig(gpu_devices="all"),
         model_profiles=profiles,
         gpu_device_count=lambda: len(free),
@@ -53,15 +53,17 @@ def _manager(free: dict[int, float]) -> LaneManager:
         gpu_snapshot=snapshot,
         gpu_force_poll=AsyncMock(),
     )
+    manager._nightly_gpu_process_usage = AsyncMock(return_value=({}, set()))
+    return manager
 
 
-def _config(model: str = MODEL, gpu: str = "0", cache: str = "2G") -> LaneConfig:
+def _config(model: str = MODEL, gpu: str = "0", cache: str = "2G", tp: int = 1) -> LaneConfig:
     return LaneConfig(
         lane_id="benchmark",
         model=model,
         gpu_devices=gpu,
         vllm=True,
-        vllm_config=VllmConfig(kv_cache_memory_bytes=cache, gpu_memory_utilization=0.16),
+        vllm_config=VllmConfig(kv_cache_memory_bytes=cache, gpu_memory_utilization=0.16, tensor_parallel_size=tp),
     )
 
 
@@ -78,7 +80,8 @@ async def test_cold_nightly_launch_includes_warmup_margin_and_skips_without_room
 
 @pytest.mark.asyncio
 async def test_cold_nightly_launch_selects_only_a_gpu_that_can_cover_warmup(monkeypatch) -> None:
-    manager = _manager({0: EXPECTED_MIB - 1, 1: EXPECTED_MIB + 128})
+    manager = _manager({0: EXPECTED_MIB - 1, 1: EXPECTED_MIB + 128, 2: TOTAL_MIB})
+    manager._nightly_gpu_process_usage.return_value = ({}, {"gpu2"})
     new = MagicMock(
         init=AsyncMock(),
         spawn=AsyncMock(return_value=ProcessStatus(state=ProcessState.RUNNING, pid=15)),
@@ -97,15 +100,41 @@ async def test_existing_lane_uses_only_its_own_measured_gpu_memory_for_credit() 
     manager._handles["benchmark"] = MagicMock(
         lane_config=_config(), status=MagicMock(return_value=ProcessStatus(state=ProcessState.RUNNING, pid=15))
     )
-    manager._nightly_process_gpu_vram = AsyncMock(return_value={"gpu1": 20_000})
+    manager._nightly_gpu_process_usage.return_value = ({"gpu1": 20_000}, set())
     with pytest.raises(NightlyGpuBudgetUnavailable, match=r"GPU 0 .*needs"):
         await manager.check_nightly_gpu_budget("benchmark")
-    manager._nightly_process_gpu_vram.return_value = {"gpu0": 1500}
+    manager._nightly_gpu_process_usage.return_value = ({"gpu0": 1500}, set())
     assert await manager.check_nightly_gpu_budget("benchmark") == {0: EXPECTED_MIB}
-    manager._nightly_process_gpu_vram.assert_awaited_with(15)
+    manager._nightly_gpu_process_usage.assert_awaited_with(15)
     assert manager._gpu_reservations == {("nightly", "benchmark"): frozenset({0})}
     await manager.release_nightly_gpu_budget("benchmark")
     assert not manager._gpu_reservations
+
+
+@pytest.mark.asyncio
+async def test_nightly_reserves_the_full_tensor_parallel_group_only_when_every_gpu_fits() -> None:
+    free = {0: TOTAL_MIB - 20_000, 1: 0, 2: TOTAL_MIB}
+    manager = _manager(free)
+    manager._handles["benchmark"] = MagicMock(
+        lane_config=_config(gpu="0,1", tp=2),
+        status=MagicMock(return_value=ProcessStatus(state=ProcessState.RUNNING, pid=15)),
+    )
+    manager._nightly_gpu_process_usage.return_value = ({"gpu0": 20_000, "gpu1": 20_000}, {"gpu1"})
+    with pytest.raises(NightlyGpuBudgetUnavailable, match=r"GPU\(s\) \[1\] have other compute processes"):
+        await manager.check_nightly_gpu_budget("benchmark")
+    assert not manager._gpu_reservations
+
+    manager._nightly_gpu_process_usage.return_value = ({"gpu0": 20_000, "gpu1": 20_000}, {"gpu2"})
+    with pytest.raises(NightlyGpuBudgetUnavailable, match=r"GPU 1 .*needs"):
+        await manager.check_nightly_gpu_budget("benchmark")
+    assert not manager._gpu_reservations
+
+    free[1] = TOTAL_MIB - 20_000
+    assert set(await manager.check_nightly_gpu_budget("benchmark")) == {0, 1}
+    assert manager._gpu_reservations == {("nightly", "benchmark"): frozenset({0, 1})}
+    assert manager._blocked_gpus("other") == {0, 1}
+    await manager.release_nightly_gpu_budget("benchmark")
+    assert not manager._blocked_gpus("other")
 
 
 @pytest.mark.asyncio
@@ -115,7 +144,6 @@ async def test_reconfigure_defers_before_stopping_original_lane() -> None:
     manager._handles["benchmark"] = MagicMock(
         lane_config=original, status=MagicMock(return_value=ProcessStatus(state=ProcessState.RUNNING, pid=15))
     )
-    manager._nightly_process_gpu_vram = AsyncMock(return_value={})
     manager._restart_lane_unlocked = AsyncMock()
     updates = {"vllm_config": {**original.vllm_config.model_dump(), "max_num_seqs": 16}}
     with pytest.raises(NightlyGpuBudgetUnavailable, match=r"GPU 0 .*needs"):
@@ -190,7 +218,7 @@ async def test_replacement_is_checked_against_live_memory_after_shutdown(monkeyp
         close=AsyncMock(),
     )
     manager._port_alloc.allocate("benchmark")
-    manager._nightly_process_gpu_vram = AsyncMock(return_value={"gpu0": 2_000})
+    manager._nightly_gpu_process_usage.side_effect = lambda pid: ({"gpu0": 2_000} if pid else {}, set())
     create = MagicMock()
     monkeypatch.setattr("logos_worker_node.lane_manager._create_handle", create)
     updates = {"vllm_config": {**original.vllm_config.model_dump(), "max_num_seqs": 16}}
@@ -221,7 +249,7 @@ async def test_measured_lane_can_be_restored_after_failed_restart_without_calibr
         close=AsyncMock(),
     )
     manager._port_alloc.allocate("benchmark")
-    manager._nightly_process_gpu_vram = AsyncMock(return_value={"gpu0": measured_mib})
+    manager._nightly_gpu_process_usage.side_effect = lambda pid: ({"gpu0": measured_mib} if pid else {}, set())
     minimum_by_gpu = await manager.check_nightly_gpu_budget("benchmark")
     assert minimum_by_gpu == {0: minimum_mib}
 
@@ -260,15 +288,14 @@ async def test_nvidia_process_query_only_credits_the_lane_and_its_children(monke
             b"gpu0, 21, inf",
             b"gpu0, 21, -2",
             b"gpu0, invalid, 900",
-            b"malformed",
         ]
     )
     process = SimpleNamespace(returncode=0, communicate=AsyncMock(return_value=(result, None)))
     execute = AsyncMock(return_value=process)
     monkeypatch.setattr("logos_worker_node.lane_manager.asyncio.create_subprocess_exec", execute)
     monkeypatch.setattr(LaneManager, "_read_parent_pid", staticmethod(lambda pid, _cache: 21 if pid == 22 else None))
-    assert await manager._nightly_process_gpu_vram(None) == {}
-    assert await manager._nightly_process_gpu_vram(21) == {"gpu0": 2_700, "gpu1": 1200}
+    assert await LaneManager._nightly_gpu_process_usage(manager, None) == ({}, {"gpu0", "gpu1"})
+    assert await LaneManager._nightly_gpu_process_usage(manager, 21) == ({"gpu0": 2_700, "gpu1": 1200}, {"gpu0"})
     assert "--query-compute-apps=gpu_uuid,pid,used_memory" in execute.await_args.args
 
 
@@ -281,7 +308,8 @@ async def test_nvidia_process_query_timeout_reaps_subprocess(monkeypatch) -> Non
     monkeypatch.setattr(
         "logos_worker_node.lane_manager.asyncio.create_subprocess_exec", AsyncMock(return_value=process)
     )
-    assert await manager._nightly_process_gpu_vram(21) == {}
+    with pytest.raises(NightlyGpuBudgetUnavailable, match="GPU compute processes could not be checked"):
+        await LaneManager._nightly_gpu_process_usage(manager, 21)
     process.kill.assert_called_once_with()
     process.wait.assert_awaited_once_with()
 

@@ -485,10 +485,24 @@ class NightlyScheduler:
         return target, snapshot, lane
 
     def _select_lane(self, provider_id, model, snapshot):
+        lanes = snapshot["runtime"].get("lanes", [])
+        gpu_groups = {}
+        for lane in lanes:
+            if lane.get("runtime_state") in {"starting", "loaded", "running", "sleeping"}:
+                selector = lane.get("occupied_gpu_devices") or (lane.get("lane_config") or {}).get("gpu_devices") or ""
+                gpu_groups[lane["lane_id"]] = {int(gpu) for gpu in selector.split(",") if gpu.strip().isdigit()}
+
+        def shares_gpu(lane_id):
+            group = gpu_groups.get(lane_id, set())
+            return any(group & other_group for other_id, other_group in gpu_groups.items() if other_id != lane_id)
+
         candidates = [
             lane
-            for lane in snapshot["runtime"].get("lanes", [])
-            if lane.get("model") == model and lane_is_serving(lane) and (lane.get("lane_config") or {}).get("vllm")
+            for lane in lanes
+            if lane.get("model") == model
+            and lane_is_serving(lane)
+            and (lane.get("lane_config") or {}).get("vllm")
+            and not shares_gpu(lane["lane_id"])
         ]
         # A warm lane lock protects against idle eviction. Scheduled maintenance
         # may reuse the lane when no unlocked replica is available.
@@ -517,7 +531,7 @@ class NightlyScheduler:
         )
         if saved:
             # The worker assigns a port to the temporary identifier.
-            return {**copy.deepcopy(saved), "lane_id": lane_id}
+            return {**copy.deepcopy(saved), "lane_id": lane_id, "gpu_devices": ""}
         profile = self.planner._safe_get_profiles(provider_id).get(model)
         if profile and profile.engine != "vllm":
             raise RuntimeError("Nightly tuning requires a vLLM model")

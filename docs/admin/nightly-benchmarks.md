@@ -324,16 +324,16 @@ local-date claim limits distinct pairs after an application restart. Restored ro
 Existing manual benchmarks finish before nightly admission.
 
 The selected worker must be online, healthy and not calibrating. Logos measures one vLLM lane.
-If the model has no ready lane, then Logos can start a temporary lane.
+If the model has no ready lane with its own GPUs, then Logos can start a temporary lane.
 If the model has several replicas on the worker, then Logos directs benchmark requests to the selected lane.
 The scheduler lets requests already accepted for that model finish before the round starts.
-Other models on the same worker and other workers continue to serve requests.
 
-The worker reserves the selected GPU group for the benchmark lane. It checks the estimated GPU memory for the lane and its warm-up.
+The worker reserves all GPUs that the benchmark lane needs for its configured parallelism.
+It checks the estimated GPU memory for the lane and its warm-up.
 The check uses live NVIDIA memory telemetry, an explicit KV-cache budget, and a calibrated or measured lane footprint.
-Existing production lanes can continue to serve on those GPUs. New loads and other changes that increase memory use on the group wait.
-If the benchmark cannot fit alongside existing lanes, then Logos waits for capacity and can retry within the maintenance window.
-Logos preserves existing production lanes when a temporary lane needs more capacity.
+If another compute process uses a selected GPU, then Logos waits and can retry within the maintenance window.
+The worker prevents other Logos lanes from starting or waking on the reserved GPUs.
+Other models can continue to serve on GPUs outside that group.
 
 Logos saves the benchmark lane configuration before it changes the lane. After testing, it restores that configuration or removes the temporary lane.
 Automatic adoption applies to rounds that use one existing serving replica.

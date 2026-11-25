@@ -71,7 +71,9 @@
         <!-- Error Report -->
         @case ('error_report') {
 
-          @if (hasCompleteLogs() && !hasParseableCalibrationData()) {
+          @if (calibrationLoading()) {
+            <p class="performance-message" role="status">Loading calibration logs…</p>
+          } @else if (hasCompleteLogs() && !hasParseableCalibrationData()) {
 
             <div class="empty-state">
 
@@ -319,7 +321,9 @@
         <!-- Logs -->
         @case ('complete_logs') {
 
-          @if (hasAnyLogText()) {
+          @if (calibrationLoading()) {
+            <p class="performance-message" role="status">Loading calibration logs…</p>
+          } @else if (hasAnyLogText()) {
 
             <div class="logs-panel">
 
@@ -569,6 +573,7 @@
           }
 
           <section id="performance-results" class="performance-view" aria-label="Performance overview" [hidden]="performanceView() !== 'results'">
+          @if (!performanceLoading() && !performanceError()) {
           <div class="performance-overview">
           @if (deployedPairs().length) {
             <section class="nightly-overview" aria-labelledby="nightly-rotation-heading">
@@ -606,6 +611,7 @@
               [deployedBenchmarkIds]="deployedBenchmarkIds()" [lastAdoptionId]="deployedConfiguration()?.adoption()?.benchmark_id ?? null"
               [deploymentNote]="timelineDeploymentNote()" [showHistory]="false" />
           </div>
+          }
 
           <div class="performance-results">
           @if (performanceLoading()) {

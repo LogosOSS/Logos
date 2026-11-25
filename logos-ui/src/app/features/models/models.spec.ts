@@ -34,6 +34,7 @@ const tick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0
 
 /** The model-list fetch started in ngOnInit; reassigned per test. */
 let getModels: ReturnType<typeof vi.fn>;
+let getModelCapabilities: ReturnType<typeof vi.fn>;
 
 async function boot() {
   await TestBed.configureTestingModule({
@@ -44,7 +45,7 @@ async function boot() {
         provide: ModelManagementService,
         useValue: {
           getModels,
-          getModelCapabilities: vi.fn().mockResolvedValue({}),
+          getModelCapabilities,
         },
       },
       {
@@ -75,6 +76,7 @@ describe('Models tabs', () => {
 
   beforeEach(() => {
     getModels = vi.fn().mockResolvedValue([]);
+    getModelCapabilities = vi.fn().mockResolvedValue({});
   });
 
   afterEach(() => {
@@ -92,6 +94,21 @@ describe('Models tabs', () => {
     expect([...tabs].map((tab) => tab.textContent?.trim())).toEqual(['Active models', 'Model requests']);
     expect(page.fx.nativeElement.querySelector('app-data-table')).not.toBeNull();
     expect(page.fx.nativeElement.querySelector('app-model-requests')).toBeNull();
+  });
+
+  it('shows model rows while their capabilities are still pending', async () => {
+    getModels.mockResolvedValue([{ id: 1, name: 'Local model' }]);
+    let resolveCapabilities!: (result: unknown) => void;
+    getModelCapabilities.mockReturnValue(new Promise(resolve => { resolveCapabilities = resolve; }));
+    const page = await boot();
+    fixture = page.fx;
+    page.fx.detectChanges();
+
+    expect(page.fx.componentInstance.loading()).toBe(false);
+    expect(page.fx.nativeElement.querySelector('.model-name')?.textContent).toContain('Local model');
+    resolveCapabilities({ 1: { supports_vision: true } });
+    await page.fx.whenStable();
+    expect(page.fx.componentInstance.getCapabilities(1)?.supports_vision).toBe(true);
   });
 
   it('switches to Model requests on tab click and mirrors it into ?tab=', async () => {
