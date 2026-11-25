@@ -306,6 +306,7 @@ After the final configuration check, Logos stores the final state and completion
 The event includes the outcome, completed round count, total successful configuration count, reference and winner IDs.
 Logos retries failed notification delivery, including outside the maintenance window.
 A stable event key prevents duplicate notifications after a retry or application restart.
+When a changed window runs again on the same day, that run has its own completion notification and round counts.
 Logos Admins receive a notification with the nightly outcome.
 The notification shows the last interruption reason and the number of retry rounds.
 Select **View benchmark** with its number to open the measurement in **Model Details → Performance**.

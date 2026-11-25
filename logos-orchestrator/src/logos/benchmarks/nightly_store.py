@@ -5,7 +5,12 @@ from contextlib import contextmanager
 
 from sqlalchemy import text
 
-from logos.benchmarks.nightly import CAPACITY_WAITING, MAX_PAIRS_PER_NIGHT, schedule_window
+from logos.benchmarks.nightly import (
+    CAPACITY_WAITING,
+    MAX_PAIRS_PER_NIGHT,
+    schedule_window,
+    window_changed_since_last_run,
+)
 from logos.dbutils.dbmanager import DBManager, _init_engine
 from logos.maintenance_window import MaintenanceWindow, maintenance_node_limit
 
@@ -71,7 +76,7 @@ def status(pair_id: int) -> dict:
             db.session.execute(
                 text(
                     "SELECT model_provider_id, enabled, last_run_date, status, report, workload_id, optimizer, "
-                    "window_start, window_end, "
+                    "window_start, window_end, window_revision, last_run_window_revision, "
                     "recovery IS NOT NULL AS recovery_required FROM nightly_benchmarks WHERE model_provider_id = :id"
                 ),
                 {"id": pair_id},
@@ -670,7 +675,8 @@ def finish(pair_id, state, report, search=None, *, resume_after_recovery=False):
         row = (
             db.session.execute(
                 text(
-                    "SELECT n.last_run_date, n.status, n.optimizer, n.enabled, mp.model_id, p.name AS provider_name "
+                    "SELECT n.last_run_date, n.last_run_window_revision, n.status, n.optimizer, n.enabled, "
+                    "mp.model_id, p.name AS provider_name "
                     "FROM nightly_benchmarks n "
                     "JOIN model_provider mp ON mp.id = n.model_provider_id JOIN providers p ON p.id = mp.provider_id "
                     "WHERE n.model_provider_id = :id FOR UPDATE OF n"
@@ -682,9 +688,17 @@ def finish(pair_id, state, report, search=None, *, resume_after_recovery=False):
         )
         previous = row["optimizer"] or {}
         session = dict(previous.get("nightly_session") or {})
-        same_night = session.get("date") == str(row["last_run_date"])
-        if not same_night:
-            session = {"date": str(row["last_run_date"]), "rounds": 0, "successful_configurations": 0}
+        revision = row["last_run_window_revision"]
+        same_session = (
+            session.get("date") == str(row["last_run_date"]) and session.get("window_revision", 0) == revision
+        )
+        if not same_session:
+            session = {
+                "date": str(row["last_run_date"]),
+                "window_revision": revision,
+                "rounds": 0,
+                "successful_configurations": 0,
+            }
         optimizer = None
         if search:
             ids = [item["benchmark_id"] for item in report if item.get("benchmark_id")]
@@ -703,7 +717,7 @@ def finish(pair_id, state, report, search=None, *, resume_after_recovery=False):
             )
             optimizer = select_state(search, runs, report)
             optimizer["last_round_result"] = result(runs, report) or (
-                previous.get("last_round_result", {}) if same_night else {}
+                previous.get("last_round_result", {}) if same_session else {}
             )
             adopted = next((item for item in report if item.get("status") == "adopted"), None)
             if adopted:
@@ -736,7 +750,7 @@ def finish(pair_id, state, report, search=None, *, resume_after_recovery=False):
         if row["last_run_date"] is not None and row["status"] in {"running", "preparing", "recovery_required"}:
             if optimizer is None:
                 optimizer = dict(previous)
-                if not same_night:
+                if not same_session:
                     optimizer.pop("last_round_result", None)
             successful = sum(item.get("status") == "success" for item in report)
             if state != CAPACITY_WAITING or successful:
@@ -791,7 +805,11 @@ def finish(pair_id, state, report, search=None, *, resume_after_recovery=False):
                 "benchmark_id": None,
                 **event_optimizer.get("last_round_result", {}),
             }
-            _enqueue_completion_event(db, f"nightly:{pair_id}:{row['last_run_date']}", payload)
+            event_id = f"nightly:{pair_id}:{row['last_run_date']}"
+            # Keep the original identity for claims made before window revisions existed.
+            if revision:
+                event_id += f":{revision}"
+            _enqueue_completion_event(db, event_id, payload)
         db.session.commit()
 
 
@@ -803,7 +821,12 @@ def finalize_continuations(now):
         for row in rows():
             if row["status"] not in {"continuing", CAPACITY_WAITING} or row["recovery"] is not None:
                 continue
-            if not row["enabled"] or row["last_run_date"] != now.date() or now >= schedule_window(row).bounds(now)[1]:
+            if (
+                not row["enabled"]
+                or row["last_run_date"] != now.date()
+                or window_changed_since_last_run(row)
+                or now >= schedule_window(row).bounds(now)[1]
+            ):
                 if not row["enabled"]:
                     state = "disabled"
                 else:

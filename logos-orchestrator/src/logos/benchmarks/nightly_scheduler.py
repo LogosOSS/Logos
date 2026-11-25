@@ -641,7 +641,11 @@ class NightlyScheduler:
                     "interrupted_recovered",
                     row["report"],
                     recovery.get("search"),
-                    resume_after_recovery=row.get("last_run_date") == now.date() and schedule_window(row).contains(now),
+                    resume_after_recovery=(
+                        row.get("last_run_date") == now.date()
+                        and not window_changed_since_last_run(row)
+                        and schedule_window(row).contains(now)
+                    ),
                 )
                 benchmark_reservations.release(-pair_id)
                 return True
@@ -795,7 +799,11 @@ class NightlyScheduler:
                 search = optimization.context(current, snapshot, workload, schedule.get("optimizer") or {})
                 recovery["search"] = search
                 plan = optimization.plan(
-                    current, search, round_index=optimization.round_index(search["state"], local_now().date())
+                    current,
+                    search,
+                    round_index=optimization.round_index(
+                        search["state"], local_now().date(), schedule.get("last_run_window_revision", 0)
+                    ),
                 )
             for index, settings in enumerate(plan):
                 if self.calibration and self.calibration.benchmarks_must_wait():

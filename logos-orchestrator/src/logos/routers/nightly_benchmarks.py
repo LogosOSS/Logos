@@ -68,7 +68,11 @@ async def nightly_status(data: NightlySelectionStatusRequest, request: Request):
         run.model_dump()
         for run in (
             optimization.plan(
-                baseline, search, round_index=optimization.round_index(search["state"], local_now().date())
+                baseline,
+                search,
+                round_index=optimization.round_index(
+                    search["state"], local_now().date(), result.get("window_revision", 0)
+                ),
             )
             if search
             else parameter_plan(baseline)

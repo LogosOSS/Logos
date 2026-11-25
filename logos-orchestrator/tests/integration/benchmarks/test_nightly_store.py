@@ -287,6 +287,32 @@ async def test_completion_event_survives_failed_delivery_and_deduplicates_finish
     assert delivery.call_args.kwargs["event_key"] == "nightly:31:2026-10-28"
 
 
+def test_moving_a_window_keeps_one_completion_per_claimed_revision(database):
+    engine, _ = database
+    day = date(2026, 11, 25)
+    default = MaintenanceWindow.from_env()
+    afternoon = MaintenanceWindow(time(13, 10), time(13, 30), default.timezone)
+    store.set_enabled(31, True, False)
+    assert store.claim(31, day, window=default)
+    store.finish(31, "continuing", [{"configuration": 1, "status": "success"}])
+
+    assert store.set_window(31, afternoon, default)
+    store.finalize_continuations(datetime.fromisoformat("2026-11-25T07:00:00+01:00"))
+    assert store.claim(31, day, window=afternoon)
+    report = [{"configuration": 1, "status": "failed", "reason": "The afternoon baseline failed"}]
+    store.finish(31, "failed", report)
+    store.finish(31, "failed", report)
+
+    with engine.connect() as connection:
+        events = dict(connection.execute(text("SELECT event_id, payload FROM benchmark_completion_events")).all())
+    morning = events["nightly:31:2026-11-25"]
+    later = events["nightly:31:2026-11-25:1"]
+    assert len(events) == 2
+    assert (morning["status"], morning["rounds"], morning["successful_configurations"]) == ("completed", 1, 1)
+    assert (later["status"], later["rounds"], later["successful_configurations"]) == ("failed", 1, 0)
+    assert later["interruption_reason"] == "The afternoon baseline failed"
+
+
 @pytest.mark.parametrize("adopt", [False, True])
 def test_finish_persists_winner_reference_and_chart_eligibility_atomically(database, adopt):
     import json

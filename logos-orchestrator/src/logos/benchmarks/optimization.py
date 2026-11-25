@@ -58,10 +58,12 @@ def context(current, snapshot, workload, previous):
     }
 
 
-def round_index(state, day):
+def round_index(state, day, window_revision=0):
     session = state.get("nightly_session") or {}
     rounds = session.get("rounds", 0)
-    return rounds if session.get("date") == str(day) and type(rounds) is int and rounds >= 0 else 0
+    if session.get("date") == str(day) and session.get("window_revision", 0) == window_revision:
+        return rounds if type(rounds) is int and rounds >= 0 else 0
+    return 0
 
 
 def plan(current, search, *, round_index=0):

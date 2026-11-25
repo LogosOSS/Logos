@@ -354,7 +354,7 @@ Each night measures production settings and searches around the previous winner.
 Eligible improvements over the current baseline apply automatically after the worker confirms its configuration and model readiness.
 Otherwise, production settings return after each round. The pairs take turns until the window ends.
 The dataset keeps its original freeze date across runs. Its content hash remains in the configuration details.
-Logos sends one notification after the last round.
+Logos sends one notification after the last round of each scheduled run.
 The notification shows the result and the last interruption reason, if available.
 Select **View benchmark** with its number to open the benchmark dialog.
 The **Benchmark runs** table groups runs by dataset. Select a column heading to change the order.
