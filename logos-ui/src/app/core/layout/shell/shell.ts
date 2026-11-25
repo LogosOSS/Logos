@@ -3,6 +3,7 @@ import { Router, RouterModule } from '@angular/router';
 import { A11yModule } from '@angular/cdk/a11y';
 import { AuthService } from '../../auth/services/auth.service';
 import { MENU_ITEMS, NAV_GROUP_LABELS } from '../../../shared/constants/nav-items';
+import { ROLE_LABELS } from '../../../shared/constants/roles';
 import { MenuItem } from '../../../shared/models/nav.model';
 import { UserRole } from '../../auth/models/user.model';
 import { Logo } from '../../../shared/components/logo/logo';
@@ -102,6 +103,11 @@ export class Shell {
     if (!user) return '';
     const full = `${user.prename ?? ''} ${user.name ?? ''}`.trim();
     return full || user.username;
+  });
+
+  readonly roleLabel = computed(() => {
+    const role = this.auth.role();
+    return role ? ROLE_LABELS[role] : '';
   });
 
   userInitials = computed(() => {
