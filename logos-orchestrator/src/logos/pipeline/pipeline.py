@@ -505,8 +505,7 @@ class RequestPipeline:
                 try:
                     api_key_id = pipeline_request.api_key_id if pipeline_request else None
                     if (
-                        pipeline_request
-                        and pipeline_request.internal_benchmark
+                        getattr(pipeline_request, "internal_benchmark", False)
                         and pipeline_request.required_provider_id == scheduling_result.provider_id
                     ):
                         # The synthetic job ID admits queued benchmark requests
