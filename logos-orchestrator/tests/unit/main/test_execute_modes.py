@@ -158,7 +158,8 @@ async def test_signed_benchmark_uses_its_authorized_deployment_without_a_user_ke
             required_provider_id=1,
         )
     request = process.await_args.args[0]
-    assert request.api_key_id is None
+    assert request.api_key_id == -1
+    assert request.internal_benchmark
     assert request.required_provider_id == 1
     assert request.deployments == [deployment]
 

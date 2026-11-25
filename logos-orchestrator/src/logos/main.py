@@ -3402,9 +3402,8 @@ async def _execute_resource_mode(
         default_priority=auth.default_priority,
         team_priority=auth.team_priority,
         role_rank=queue_role_rank(auth.key_type, auth.user_role),
-        # Signed benchmark jobs already authorize one deployment. Their
-        # synthetic ID has no user key or deployment permissions in the DB.
-        api_key_id=None if signed_benchmark else auth.api_key_id,
+        api_key_id=auth.api_key_id,
+        internal_benchmark=signed_benchmark,
     )
 
     # Deferred logs must exist before the pipeline's enqueue identity UPDATE

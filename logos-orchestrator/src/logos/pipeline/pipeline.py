@@ -128,6 +128,8 @@ class PipelineRequest:
     # Calling API key. Seeds the prefix-affinity hash so two keys never share
     # a stream identity, and so one key's parallel agent loops stay separate.
     api_key_id: Optional[int] = None
+    # Set only for a signed benchmark after validating the active job and provider affinity.
+    internal_benchmark: bool = False
 
 
 @dataclass
@@ -501,6 +503,15 @@ class RequestPipeline:
                         error="Deployment is outside request permissions",
                     )
                 try:
+                    api_key_id = pipeline_request.api_key_id if pipeline_request else None
+                    if (
+                        pipeline_request
+                        and pipeline_request.internal_benchmark
+                        and pipeline_request.required_provider_id == scheduling_result.provider_id
+                    ):
+                        # The synthetic job ID admits queued benchmark requests
+                        # but has no user key or deployment permissions in the DB.
+                        api_key_id = None
                     exec_context = await self._context_resolver.resolve_context(
                         model_id=scheduling_result.model_id,
                         provider_id=scheduling_result.provider_id,
@@ -508,10 +519,10 @@ class RequestPipeline:
                         request_id=request_id,
                         deployment_info=deployment_info,
                         wait_for_lane=False,
-                        api_key_id=pipeline_request.api_key_id if pipeline_request else None,
+                        api_key_id=api_key_id,
                         privacy_threshold=(
                             (pipeline_request.policy or {}).get("threshold_privacy")
-                            if pipeline_request is not None and pipeline_request.api_key_id is not None
+                            if pipeline_request is not None and api_key_id is not None
                             else None
                         ),
                     )
