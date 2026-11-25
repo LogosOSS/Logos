@@ -277,13 +277,15 @@ async def test_measured_lane_can_be_restored_after_failed_restart_without_calibr
 
 @pytest.mark.asyncio
 async def test_nvidia_process_query_only_credits_the_lane_and_its_children(monkeypatch) -> None:
-    manager = _manager({0: TOTAL_MIB, 1: TOTAL_MIB})
+    manager = _manager({0: TOTAL_MIB, 1: TOTAL_MIB, 2: TOTAL_MIB})
     result = b"\n".join(
         [
             b"gpu0, 21, 2500",
             b"gpu0, 22, 200",
             b"gpu1, 22, 1200",
             b"gpu0, 31, 8000",
+            b"gpu0, 41, 138",
+            b"gpu2, 41, 138",
             b"gpu0, 22, N/A",
             b"gpu0, 21, inf",
             b"gpu0, 21, -2",
@@ -293,6 +295,7 @@ async def test_nvidia_process_query_only_credits_the_lane_and_its_children(monke
     process = SimpleNamespace(returncode=0, communicate=AsyncMock(return_value=(result, None)))
     execute = AsyncMock(return_value=process)
     monkeypatch.setattr("logos_worker_node.lane_manager.asyncio.create_subprocess_exec", execute)
+    monkeypatch.setattr("logos_worker_node.lane_manager.os.getpid", lambda: 41)
     monkeypatch.setattr(LaneManager, "_read_parent_pid", staticmethod(lambda pid, _cache: 21 if pid == 22 else None))
     assert await LaneManager._nightly_gpu_process_usage(manager, None) == ({}, {"gpu0", "gpu1"})
     assert await LaneManager._nightly_gpu_process_usage(manager, 21) == ({"gpu0": 2_700, "gpu1": 1200}, {"gpu0"})

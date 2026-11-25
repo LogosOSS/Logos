@@ -3421,6 +3421,7 @@ class LaneManager:
         measured: dict[str, float] = {}
         occupied: set[str] = set()
         parents: dict[int, int | None] = {}
+        worker_pid = str(os.getpid())
         for line in stdout.decode(errors="replace").splitlines():
             if not line.strip() or line.strip() == "No running processes found":
                 continue
@@ -3428,6 +3429,10 @@ class LaneManager:
             if len(parts) != 3 or not parts[0]:
                 raise NightlyGpuBudgetUnavailable("Invalid GPU compute process telemetry")
             gpu_uuid, pid, raw = parts
+            # The worker can have its own CUDA context. Its memory stays included
+            # in GPU usage and never counts as reclaimable lane memory.
+            if pid == worker_pid:
+                continue
             if (
                 root_pid is None
                 or not pid.isdigit()
