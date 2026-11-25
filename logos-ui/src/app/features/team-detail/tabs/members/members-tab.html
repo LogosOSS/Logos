@@ -533,6 +533,14 @@
 </app-modal-confirm>
 
 <!-- ── Dev Key modal ───────────────────────────────────────────────────── -->
+@if (loggingPrompt(); as prompt) {
+  <app-logging-onboarding
+    [team]="prompt.team"
+    (completed)="finishLoggingOnboarding(true)"
+    (dismissed)="finishLoggingOnboarding(false)"
+  />
+}
+
 <app-api-key-modal
   [visible]="keyModalOpen()"
   [key]="selectedKey()"

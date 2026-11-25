@@ -917,6 +917,16 @@ const SHOTS = [
   { file: "roles/app-developer-models.png", user: DEVELOPER, go: (p) => p.goto(BASE + "/models") },
   { file: "roles/app-developer-my-workspace.png", user: DEVELOPER, go: (p) => p.goto(BASE + "/my-workspace") },
   {
+    file: "roles/my-workspace-logging-choice.png",
+    user: DEVELOPER,
+    go: async (p) => {
+      await p.goto(BASE + "/my-workspace");
+      const team = p.locator(".team-card").filter({ has: p.getByText("Logos", { exact: true }) });
+      await team.getByRole("button", { name: "Expand models", exact: true }).click();
+      await p.getByRole("heading", { name: "Choose your logging level", exact: true }).waitFor();
+    },
+  },
+  {
     file: "roles/ai-tools-step-connect.png",
     user: DEVELOPER,
     full: true,

@@ -56,6 +56,8 @@ key or a member has no individual limit.
 
 ### Members
 
+When you open your own developer key, Logos can ask you to [choose a logging level](app-developer.md#choose-a-logging-level).
+
 Open **Members → Import CSV** to add people to this team. **Add Member** remains available for a single account. The tab also shows owners and each person’s budget and rate-limit overrides.
 
 ![Team members and the Import CSV action](/img/roles/team-detail-members.png)
