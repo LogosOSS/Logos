@@ -8,6 +8,8 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 
+import jakarta.persistence.EntityManager;
+
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -35,15 +37,18 @@ public class ApiKeyAdminService {
     private final TeamRepository teamRepository;
     private final TeamMemberRepository teamMemberRepository;
     private final AuditLogService auditLog;
+    private final EntityManager entityManager;
 
     public ApiKeyAdminService(ApiKeyRepository apiKeyRepository,
                               TeamRepository teamRepository,
                               TeamMemberRepository teamMemberRepository,
-                              AuditLogService auditLog) {
+                              AuditLogService auditLog,
+                              EntityManager entityManager) {
         this.apiKeyRepository = apiKeyRepository;
         this.teamRepository = teamRepository;
         this.teamMemberRepository = teamMemberRepository;
         this.auditLog = auditLog;
+        this.entityManager = entityManager;
     }
 
     /**
@@ -140,8 +145,7 @@ public class ApiKeyAdminService {
         if (!"BILLING".equals(level) && !"FULL".equals(level)) {
             throw new IllegalArgumentException("set_log must be BILLING or FULL");
         }
-        ApiKey k = apiKeyRepository.findByIdForUpdate(keyId)
-            .orElseThrow(() -> new IllegalArgumentException("API key not found: " + keyId));
+        ApiKey k = loadKeyForUpdate(keyId);
         String previous = k.getLog() == null ? null : k.getLog().name();
         k.setLog(LogLevel.valueOf(level));
         apiKeyRepository.save(k);
@@ -161,8 +165,7 @@ public class ApiKeyAdminService {
 
     @Transactional
     public Map<String, Object> updateKey(int keyId, UpdateApiKeyRequestDTO req) {
-        ApiKey k = apiKeyRepository.findByIdForUpdate(keyId)
-            .orElseThrow(() -> new IllegalArgumentException("API key not found: " + keyId));
+        ApiKey k = loadKeyForUpdate(keyId);
         Map<String, Object> settings = parseJsonToMap(k.getSettings());
         Map<String, Object> before = keySettingsSnapshot(k, settings);
 
@@ -180,6 +183,15 @@ public class ApiKeyAdminService {
         apiKeyRepository.save(k);
         auditLog.record("api_key.updated", "api_key", keyId, k.getTeamId(), before, keySettingsSnapshot(k, settings));
         return Map.of("result", "API Key updated successfully");
+    }
+
+    private ApiKey loadKeyForUpdate(int keyId) {
+        ApiKey k = apiKeyRepository.findByIdForUpdate(keyId)
+            .orElseThrow(() -> new IllegalArgumentException("API key not found: " + keyId));
+        // The controller may already have loaded this key into the persistence context.
+        // Refresh after taking the row lock so the audit starts from the committed level.
+        entityManager.refresh(k);
+        return k;
     }
 
     /** Budget, rate-limit and logging fields only; never the key value. */

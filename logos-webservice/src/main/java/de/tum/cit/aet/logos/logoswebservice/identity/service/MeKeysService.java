@@ -12,6 +12,8 @@ import java.util.Optional;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import jakarta.persistence.EntityManager;
+
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -48,12 +50,14 @@ public class MeKeysService {
     private final ApiKeyRepository apiKeyRepository;
     private final OrchestratorModelWindowClient modelWindowClient;
     private final AuditLogService auditLog;
+    private final EntityManager entityManager;
 
     public MeKeysService(ApiKeyRepository apiKeyRepository, OrchestratorModelWindowClient modelWindowClient,
-                         AuditLogService auditLog) {
+                         AuditLogService auditLog, EntityManager entityManager) {
         this.apiKeyRepository = apiKeyRepository;
         this.modelWindowClient = modelWindowClient;
         this.auditLog = auditLog;
+        this.entityManager = entityManager;
     }
 
     public List<Map<String, Object>> getKeysForUser(int userId) {
@@ -92,6 +96,8 @@ public class MeKeysService {
             return Optional.empty();
         }
         ApiKey key = keyOpt.get();
+        // The ownership check in the controller may have cached the pre-lock state.
+        entityManager.refresh(key);
         if (!Integer.valueOf(userId).equals(key.getUserId())) {
             // Deliberately collapse "exists but not owned" into the same outcome as
             // "not found" so callers can return a uniform 404 and avoid key

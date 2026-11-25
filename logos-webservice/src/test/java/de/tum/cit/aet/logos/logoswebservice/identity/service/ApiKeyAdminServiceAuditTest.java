@@ -12,6 +12,8 @@ import static org.mockito.Mockito.when;
 import java.util.Map;
 import java.util.Optional;
 
+import jakarta.persistence.EntityManager;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -44,7 +46,8 @@ class ApiKeyAdminServiceAuditTest {
         jdbc = mock(NamedParameterJdbcTemplate.class);
         keys = mock(ApiKeyRepository.class);
         AuditLogService audit = new AuditLogService(jdbc, mock(UserRepository.class));
-        service = new ApiKeyAdminService(keys, mock(TeamRepository.class), mock(TeamMemberRepository.class), audit);
+        service = new ApiKeyAdminService(keys, mock(TeamRepository.class), mock(TeamMemberRepository.class), audit,
+            mock(EntityManager.class));
         key = new ApiKey();
         key.setTeamId(3);
         key.setLog(LogLevel.BILLING);
