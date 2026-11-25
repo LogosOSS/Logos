@@ -620,7 +620,7 @@ See [deployment-specific request sources](admin/nightly-benchmarks.md#deployment
 This setting reads the deployment's own database. It does not copy Prod requests to Dev.
 
 Nightly benchmarks require updates to the webservice, orchestrator, web application and selected workers.
-The webservice applies the schema changelogs through `101_nightly_window_revision.xml` before the scheduler starts.
+Deploy the webservice before the orchestrator so the database schema is ready for the scheduler.
 Workers report `supports_benchmark_restart` and `supports_nightly_gpu_budget` in their runtime status.
 These capabilities allow Logos to reserve the benchmark lane's GPUs and check capacity before each restart.
 All schedules default to disabled.

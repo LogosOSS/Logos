@@ -58,7 +58,7 @@ import {
 // Types
 // ==========================================================================
 
-type ModelErrorTab =
+type ModelDetailsTab =
   | 'error_report'
   | 'complete_logs'
   | 'performance'
@@ -678,7 +678,7 @@ const GENERIC_CALIBRATION_ERROR_DETAIL_MAX_LINES = 80;
 
 
 @Component({
-  selector: 'app-model-error-report',
+  selector: 'app-model-details',
   standalone: true,
 
   imports: [
@@ -703,16 +703,16 @@ const GENERIC_CALIBRATION_ERROR_DETAIL_MAX_LINES = 80;
     TimeRangeBarComponent,
   ],
 
-  templateUrl: './model-error-report.html',
+  templateUrl: './model-details.html',
   styleUrls: [
-    './model-error-report.scss',
+    './model-details.scss',
     './model-performance-details.scss',
     './benchmark-start-action.scss',
   ],
 
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
-export class ModelErrorReport implements OnInit, OnDestroy {
+export class ModelDetails implements OnInit, OnDestroy {
 
   // ==========================================================================
   // Dependencies
@@ -736,7 +736,7 @@ export class ModelErrorReport implements OnInit, OnDestroy {
   private modelRequestVersion = 0;
   readonly loadError = signal(false);
 
-  readonly activeTab = signal<ModelErrorTab>('performance');
+  readonly activeTab = signal<ModelDetailsTab>('performance');
 
   private readonly expandedErrors = signal<ReadonlySet<string>>(new Set());
 
@@ -980,7 +980,7 @@ export class ModelErrorReport implements OnInit, OnDestroy {
   // Tabs
   // ==========================================================================
 
-  readonly tabs: readonly ModelErrorTab[] = [
+  readonly tabs: readonly ModelDetailsTab[] = [
     'performance',
     'error_report',
     'complete_logs',
@@ -988,7 +988,7 @@ export class ModelErrorReport implements OnInit, OnDestroy {
     'prices',
   ];
 
-  readonly tabLabel: Record<ModelErrorTab, string> = {
+  readonly tabLabel: Record<ModelDetailsTab, string> = {
     error_report: 'Error Report',
     complete_logs: 'Complete Logs',
     performance: 'Performance',
@@ -1012,7 +1012,7 @@ export class ModelErrorReport implements OnInit, OnDestroy {
    * response proves that, the tab stays visible so its loading and error
    * states remain reachable. Request measurements cover local and cloud providers alike.
    */
-  readonly visibleTabs = computed<readonly ModelErrorTab[]>(() => {
+  readonly visibleTabs = computed<readonly ModelDetailsTab[]>(() => {
     const hasCloudProvider = this.priceProviders().some(
       provider => provider.provider_type === 'cloud'
     );
@@ -1274,7 +1274,7 @@ export class ModelErrorReport implements OnInit, OnDestroy {
       const id = Number(params.get('id'));
       const modelChanged = this.modelId() !== id;
       const requestedTab = query.get('tab');
-      const tab = (requestedTab === 'delays' || requestedTab === 'improvement' ? 'performance' : requestedTab) as ModelErrorTab | null;
+      const tab = (requestedTab === 'delays' || requestedTab === 'improvement' ? 'performance' : requestedTab) as ModelDetailsTab | null;
       const benchmark = Number(query.get('benchmark'));
       const linked = Number.isSafeInteger(benchmark) && benchmark > 0 ? benchmark : null;
       if (modelChanged) {
@@ -1636,7 +1636,7 @@ export class ModelErrorReport implements OnInit, OnDestroy {
   // Navigation
   // ==========================================================================
 
-  setTab(tab: ModelErrorTab): void {
+  setTab(tab: ModelDetailsTab): void {
     this.activeTab.set(tab);
     if (tab === 'performance') {
       void this.loadPerformance(this.modelId(), true);
@@ -1992,8 +1992,7 @@ export class ModelErrorReport implements OnInit, OnDestroy {
   // Backend-supplied stage-by-stage checklist for the deciding failed
   // probe (see _classify_calibration_stages, calibration.py) — when
   // present, the worker is authoritative and no log_text parsing is
-  // needed at all. Only ever set for failed calibrations (see the
-  // scope note in model-error-report's implementation plan).
+  // needed. Only failed calibrations include these stages.
   private buildProbeResultFromBackendStages(
     backendStages: readonly BackendStageResult[],
     success: boolean,

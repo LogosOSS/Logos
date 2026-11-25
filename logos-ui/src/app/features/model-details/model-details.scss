@@ -4,7 +4,7 @@
 // Model Error Report
 // ==========================================================================
 
-.model-error-report {
+.model-details {
   // Match the summary cards in Complete Logs on Dev; reserve monospace for code.
   --model-detail-font-family: sans-serif;
   --model-detail-font-size: var(--font-size-sm);
@@ -968,7 +968,7 @@
 // ==========================================================================
 
 @media (max-width: 768px) {
-  .model-error-report {
+  .model-details {
     padding: 24px 16px 32px;
   }
 

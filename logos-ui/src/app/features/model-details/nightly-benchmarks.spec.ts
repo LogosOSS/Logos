@@ -7,7 +7,7 @@ import { provideRouter } from '@angular/router';
 import { ModelManagementService } from '../../core/services/model-management.service';
 import { Model } from '../../shared/models/model.model';
 import { ModelProviderBenchmark } from '../../shared/models/provider.model';
-import { ModelErrorReport } from './model-error-report';
+import { ModelDetails } from './model-details';
 import { NightlyBenchmarks, NightlyStatus } from './nightly-benchmarks';
 
 @Component({
@@ -320,8 +320,8 @@ describe('Nightly worker selection', () => {
       } },
     ] });
     const http = TestBed.inject(HttpTestingController);
-    const init = vi.spyOn(ModelErrorReport.prototype, 'ngOnInit').mockResolvedValue();
-    const fixture = TestBed.createComponent(ModelErrorReport);
+    const init = vi.spyOn(ModelDetails.prototype, 'ngOnInit').mockResolvedValue();
+    const fixture = TestBed.createComponent(ModelDetails);
     const component = fixture.componentInstance;
     component.model.set({ id: 1, name: 'Test model' } as Model);
     component.loading.set(false);
