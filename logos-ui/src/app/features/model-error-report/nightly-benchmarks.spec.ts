@@ -58,6 +58,50 @@ describe('Nightly benchmark management', () => {
     expect(control.window?.start).toBe('11:15');
   });
 
+  it('refreshes a conflicting schedule and keeps the draft until the editor is reopened', async () => {
+    control.openEditor();
+    control.windowEnd = '09:00';
+    const operation = control.saveWindow();
+    http.expectOne('/api/logosdb/model_benchmarks/nightly/window').flush({ detail: 'Window changed' }, {
+      status: 409, statusText: 'Conflict',
+    });
+    await operation;
+    const newer = { ...control.window!, end: '10:00', benchmark_start_cutoff: '10:00' };
+    http.expectOne('/api/logosdb/model_benchmarks/nightly/status').flush({ ...control.state()!, window: newer });
+    await Promise.resolve();
+    expect(control.editing()).toBe(true);
+    expect(control.windowEnd).toBe('09:00');
+    expect(control.windowError()).toBe('Window changed');
+    control.openEditor();
+    expect(control.windowEnd).toBe('10:00');
+    expect(control.windowError()).toBeNull();
+  });
+
+  it('keeps the editor open on a server failure and waits for confirmation before disabling', async () => {
+    control.state.update(state => ({ ...state!, enabled: true }));
+    control.openEditor();
+    await control.saveWindow();
+    http.expectNone('/api/logosdb/model_benchmarks/nightly/window');
+    control.windowEnd = '09:00';
+    const operation = control.saveWindow();
+    http.expectOne('/api/logosdb/model_benchmarks/nightly/window').flush(null, {
+      status: 500, statusText: 'Server Error',
+    });
+    await operation;
+    expect(control.editing()).toBe(true);
+    expect(control.windowError()).toContain('Could not save');
+    control.disableFromEditor();
+    expect(control.editing()).toBe(false);
+    expect(control.confirming()).toBe(true);
+    http.expectNone('/api/logosdb/model_benchmarks/nightly/configure');
+    const disable = control.confirmDisable();
+    const request = http.expectOne('/api/logosdb/model_benchmarks/nightly/configure');
+    expect(request.request.body).toEqual({ model_provider_id: 31, enabled: false, expected_enabled: true });
+    request.flush({ ...control.state()!, enabled: false, status: 'disabled' });
+    await disable;
+    expect(control.state()?.enabled).toBe(false);
+  });
+
   it('labels the rotation status and distinguishes worker recovery', async () => {
     const fixture = TestBed.createComponent(NightlyBenchmarks);
     fixture.componentRef.setInput('pairId', control.pairId);

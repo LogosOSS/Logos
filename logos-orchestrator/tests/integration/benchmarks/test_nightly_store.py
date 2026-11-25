@@ -12,7 +12,7 @@ from sqlalchemy import bindparam, create_engine, text
 from sqlalchemy.orm import Session
 
 from logos.benchmarks import nightly_store as store
-from logos.benchmarks.nightly import CAPACITY_WAITING
+from logos.benchmarks.nightly import CAPACITY_WAITING, NIGHTLY_WINDOW
 from logos.maintenance_window import MaintenanceWindow
 
 pytestmark = pytest.mark.integration
@@ -311,6 +311,42 @@ def test_moving_a_window_keeps_one_completion_per_claimed_revision(database):
     assert (morning["status"], morning["rounds"], morning["successful_configurations"]) == ("completed", 1, 1)
     assert (later["status"], later["rounds"], later["successful_configurations"]) == ("failed", 1, 0)
     assert later["interruption_reason"] == "The afternoon baseline failed"
+
+
+def test_earlier_custom_window_freezes_the_shared_source_before_the_default_window(database, monkeypatch):
+    from logos.benchmarks import recent_requests
+
+    engine, _ = database
+    monkeypatch.setenv("LOGOS_NIGHTLY_REQUEST_USERNAME", "source-user")
+    default = MaintenanceWindow.from_env()
+    early = MaintenanceWindow(time(4), time(4, 40), default.timezone)
+    now = datetime.fromisoformat("2026-11-25T04:15:00+01:00")
+    cutoff = early.bounds(now)[0]
+    assert recent_requests.freeze(default.bounds(now)[0]) is None
+    store.set_enabled(31, True, False)
+    assert store.set_window(31, early, default)
+    with engine.begin() as connection:
+        connection.execute(text("INSERT INTO users(id, username) VALUES (1, 'source-user')"))
+        connection.execute(
+            text(
+                "INSERT INTO log_entry(id, model_id, user_id, privacy_level, result_status, input_payload, "
+                "timestamp_request, timestamp_response) "
+                "SELECT i, 11, 1, 'FULL', 'success', "
+                '\'{"messages":[{"role":"user","content":"Synthetic example"}]}\'::jsonb, :cutoff, :cutoff '
+                "FROM generate_series(1, 50) i"
+            ),
+            {"cutoff": cutoff},
+        )
+    assert recent_requests.policy(now)["cutoff"] == cutoff
+    assert recent_requests.freeze(now) is None
+    token = NIGHTLY_WINDOW.set(early)
+    try:
+        workload = recent_requests.for_model({"model_id": 11, "model_name": "model-a"}, now)
+    finally:
+        NIGHTLY_WINDOW.reset(token)
+    assert workload["request_count"] == 50
+    assert recent_requests.policy(now)["ready"] is True
+    assert recent_requests.freeze(default.bounds(now)[0])["cutoff"] == cutoff
 
 
 @pytest.mark.parametrize("adopt", [False, True])
