@@ -2712,7 +2712,7 @@ class LaneManager:
 
         # Calibrated base_residency_mb already includes KV (measured under the
         # configured cap; see calibration.py). Adding KV again double-counts.
-        # "measured" source is weights-only — legacy add-KV stays correct there.
+        # Every other source is weights-only: the add-KV path below applies.
         #
         # BUT base_residency is frequently the calibration-time FULL GPU
         # reservation (gpu_memory_utilization × device VRAM) — every model

@@ -36,8 +36,8 @@ def _seed_disk_size(registry: ModelProfileRegistry, model_name: str, disk_size_b
     registry._profiles[model_name] = ModelProfileRecord(disk_size_bytes=disk_size_bytes)
 
 
-def test_record_loaded_vram_with_kv_derives_base_residency():
-    """When kv_cache_sent_mb is known, base_residency = loaded - kv_cache."""
+def test_record_loaded_vram_with_kv_tracks_the_budget_but_not_the_base():
+    """A live load records VRAM and the pinned KV cache; the base is not derived."""
     registry = ModelProfileRegistry()
     registry.record_loaded_vram(
         "org/model-7b",
@@ -49,9 +49,9 @@ def test_record_loaded_vram_with_kv_derives_base_residency():
     profile = registry.get_profile("org/model-7b")
     assert profile is not None
     assert profile.loaded_vram_mb == 8000.0
-    assert profile.base_residency_mb == pytest.approx(8000.0 - 2048.0)
+    assert profile.base_residency_mb is None
     assert profile.kv_budget_mb == pytest.approx(2048.0)
-    assert profile.residency_source == "measured"
+    assert profile.residency_source is None
     assert profile.measurement_count == 1
 
 
@@ -97,15 +97,14 @@ def test_record_loaded_vram_subsequent_uses_ema():
     assert profile is not None
     # EMA loaded: 0.3 * 9000 + 0.7 * 8000 = 8300
     assert abs(profile.loaded_vram_mb - 8300.0) < 1.0
-    # EMA base: first=6000, second EMA(6000, 7000)=6300
-    assert abs(profile.base_residency_mb - 6300.0) < 1.0
+    assert profile.kv_budget_mb == pytest.approx(2000.0)
+    assert profile.base_residency_mb is None
     assert profile.measurement_count == 2
 
 
-def test_record_loaded_vram_after_hf_precheck_uses_measurement_exactly():
-    """residency_source="hf" is a best-effort guess, not a prior real
-    measurement — the first live load must replace it exactly, not blend
-    through _ema() and keep 70% weight on a guess that could be badly off."""
+def test_record_loaded_vram_after_hf_precheck_keeps_the_estimate():
+    """A live load never replaces an HF estimate: only calibration does, and
+    the model stays a calibration candidate until then."""
     registry = ModelProfileRegistry()
     registry.apply_hf_precheck("org/model", disk_size_bytes=4_000_000_000, base_residency_mb=4200.0)
     profile = registry.get_profile("org/model")
@@ -114,8 +113,9 @@ def test_record_loaded_vram_after_hf_precheck_uses_measurement_exactly():
     registry.record_loaded_vram("org/model", 9000.0, engine="vllm", kv_cache_sent_mb=2000.0)
 
     profile = registry.get_profile("org/model")
-    assert profile.residency_source == "measured"
-    assert profile.base_residency_mb == pytest.approx(9000.0 - 2000.0)
+    assert profile.residency_source == "hf"
+    assert profile.base_residency_mb == pytest.approx(4200.0)
+    assert profile.loaded_vram_mb == pytest.approx(9000.0)
 
 
 def test_record_loaded_vram_ignores_zero():
@@ -268,13 +268,12 @@ def test_persist_and_reload():
     llama = registry2.get_profile("llama3:8b")
     assert llama is not None
     assert llama.loaded_vram_mb == 8000.0
-    assert llama.base_residency_mb == pytest.approx(8000.0 - 2048.0)
+    assert llama.kv_budget_mb == pytest.approx(2048.0)
     assert llama.sleeping_residual_mb == 512.0
     assert llama.engine == "vllm"
     assert llama.observed_gpu_memory_utilization == 0.75
     assert llama.min_gpu_memory_utilization_to_load == 0.72
     assert llama.tensor_parallel_size == 2
-    assert llama.residency_source == "measured"
 
     qwen = registry2.get_profile("qwen3:8b")
     assert qwen is not None
@@ -319,7 +318,7 @@ def test_calibrated_profile_survives_restart():
 
 
 def test_calibrated_profile_not_overwritten_by_subsequent_load():
-    """After calibration, first real load updates via EMA but source becomes 'measured'."""
+    """After calibration, a real load leaves the base and its source alone."""
 
     calibrated_data = {
         "model_profiles": {
@@ -549,14 +548,13 @@ def test_apply_hf_precheck_sets_fields_on_fresh_profile():
 
 
 def test_apply_hf_precheck_does_not_downgrade_a_real_measurement():
-    """A calibrated/measured base_residency_mb must survive an HF precheck
+    """A calibrated base_residency_mb must survive an HF precheck
     run afterward (e.g. a later session re-checking an already-calibrated
     model) — only kv_per_token_bytes/max_context_length/disk_size_bytes,
     which calibration never measures, should still update."""
-    registry = ModelProfileRegistry()
-    registry.record_loaded_vram("org/model", 9000.0, engine="vllm", kv_cache_sent_mb=2000.0)
+    registry = _registry_with({"org/model": {"base_residency_mb": 7000.0, "residency_source": "calibrated"}})
     profile = registry.get_profile("org/model")
-    assert profile.residency_source == "measured"
+    assert profile.residency_source == "calibrated"
 
     changed = registry.apply_hf_precheck(
         "org/model",
@@ -568,8 +566,8 @@ def test_apply_hf_precheck_does_not_downgrade_a_real_measurement():
 
     assert changed is True
     profile = registry.get_profile("org/model")
-    assert profile.residency_source == "measured"
-    assert profile.base_residency_mb == pytest.approx(9000.0 - 2000.0)
+    assert profile.residency_source == "calibrated"
+    assert profile.base_residency_mb == pytest.approx(7000.0)
     assert profile.disk_size_bytes == 4_000_000_000
     assert profile.kv_per_token_bytes == 1024
     assert profile.max_context_length == 8192
@@ -1243,7 +1241,7 @@ def test_a_local_calibration_awaits_its_snapshot_until_logos_links_it():
 
 def test_a_new_record_field_reaches_the_dict_and_comes_back():
     record = ModelProfileRecord(
-        base_residency_mb=5.0, residency_source="measured", calibration_max_model_len=4096, host_ram_mb=7.0
+        base_residency_mb=5.0, residency_source="override", calibration_max_model_len=4096, host_ram_mb=7.0
     )
     echoed = record.to_dict()
     assert set(echoed) == {field.name for field in fields(ModelProfileRecord)}
@@ -1319,7 +1317,7 @@ def test_a_removed_override_is_cleared_when_logos_could_not_be_asked():
     assert registry.get_profile("m").host_ram_mb is None
 
 
-def test_a_removed_residency_override_restores_the_measured_source_too():
+def test_a_removed_residency_override_restores_the_stored_source_too():
     registry = ModelProfileRegistry()
     registry._profiles["m"] = ModelProfileRecord(
         base_residency_mb=9000.0, residency_source="calibrated"

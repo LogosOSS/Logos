@@ -1416,7 +1416,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     if has_profile:
                         src_icon = {
                             "calibrated": "\033[32m●\033[0m",  # green  — calibrated
-                            "measured": "\033[32m●\033[0m",  # green  — observed
                             "override": "\033[36m●\033[0m",  # cyan   — manual
                         }.get(
                             src, "\033[33m●\033[0m"
