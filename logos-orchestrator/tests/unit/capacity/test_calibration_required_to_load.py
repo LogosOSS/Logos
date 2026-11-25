@@ -48,8 +48,8 @@ class TestLoadRequiresCalibration:
     def test_calibrated_never_requires_it(self):
         assert _planner()._load_requires_calibration(_profile("calibrated"), 1) is False
 
-    def test_measured_never_requires_it(self):
-        assert _planner()._load_requires_calibration(_profile("measured"), 1) is False
+    def test_a_stored_measured_source_requires_it(self):
+        assert _planner()._load_requires_calibration(_profile("measured"), 1) is True
 
     def test_override_requires_it_on_cuda(self):
         assert _planner()._load_requires_calibration(_profile("override"), 1) is True

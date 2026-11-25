@@ -262,7 +262,7 @@ class CapacityPlanner:
     #
     #   ESTIMATION_SLACK_RATIO — multiplicative slack on disk-size → memory
     #     estimates for non-calibrated profiles. Applied at the *size estimation*
-    #     site, not the gate. Calibrated/measured profiles skip it because their
+    #     site, not the gate. Calibrated profiles skip it because their
     #     base_residency was observed empirically.
     #
     #   VRAM_SAFETY_MARGIN — aggregate (whole-provider) multiplier; left at 1.0
@@ -5461,10 +5461,7 @@ class CapacityPlanner:
             if profile and profile.tensor_parallel_size and int(profile.tensor_parallel_size) > 1:
                 tp = int(profile.tensor_parallel_size)
             load_cost = self._estimate_model_loaded_vram(profile) if profile else 4096.0
-            is_calibrated = profile is not None and profile.residency_source in (
-                "calibrated",
-                "measured",
-            )
+            is_calibrated = profile is not None and profile.residency_source == "calibrated"
             if tp > 1 and not is_calibrated:
                 # Calibrated base_residency already includes TP overhead from
                 # the actual measured run.  Only add the estimate for unknown models.
@@ -6425,7 +6422,7 @@ class CapacityPlanner:
                 per_gpu_total = self._get_per_gpu_total(provider_id) or {}
                 if target_gpu_ids and per_gpu_free is not None and all(dev in per_gpu_free for dev in target_gpu_ids):
                     tp = len(target_gpu_ids)
-                    is_calibrated = profile is not None and profile.residency_source in ("calibrated", "measured")
+                    is_calibrated = profile is not None and profile.residency_source == "calibrated"
                     if tp > 1:
                         if is_calibrated:
                             # Calibrated base_residency is the measured total across
@@ -6511,7 +6508,7 @@ class CapacityPlanner:
                         inferred = self._infer_tensor_parallel(profile, capacity, provider_id)
                         if inferred and inferred > 1:
                             tp = inferred
-                    is_calibrated_tp = profile is not None and profile.residency_source in ("calibrated", "measured")
+                    is_calibrated_tp = profile is not None and profile.residency_source == "calibrated"
                     if tp > 1:
                         if is_calibrated_tp:
                             footprint_per_gpu = needed / tp
@@ -7537,7 +7534,7 @@ class CapacityPlanner:
         """
         if profile is None:
             return True
-        if profile.residency_source in ("calibrated", "measured"):
+        if profile.residency_source == "calibrated":
             return False
         return not (profile.residency_source == "override" and self._provider_is_metal(provider_id))
 
@@ -7595,10 +7592,7 @@ class CapacityPlanner:
             )
             return False
 
-        is_calibrated = profile is not None and profile.residency_source in (
-            "calibrated",
-            "measured",
-        )
+        is_calibrated = profile is not None and profile.residency_source == "calibrated"
 
         if is_calibrated:
             # Use the realistic loaded footprint — min(base_residency, observed
@@ -9229,7 +9223,7 @@ class CapacityPlanner:
     def _estimate_model_loaded_vram(self, profile: ModelProfile) -> float:
         """Total GPU memory (MB) used by a model when fully loaded and awake.
 
-        For calibrated/measured vLLM profiles: prefer the live-observed
+        For calibrated vLLM profiles: prefer the live-observed
         loaded_vram_mb over base_residency_mb. Calibration measures
         base_residency from total nvidia-smi VRAM while vLLM holds its
         gpu_memory_utilization KV pool, so base_residency comes out ≈ a whole
@@ -9251,7 +9245,7 @@ class CapacityPlanner:
         """
         if profile.engine == "vllm":
             base = float(profile.estimate_base_residency_mb() or 0.0)
-            if profile.residency_source in ("calibrated", "measured"):
+            if profile.residency_source == "calibrated":
                 observed = float(profile.loaded_vram_mb or 0.0)
                 if observed > 0.0:
                     return min(base, observed) if base > 0.0 else observed
@@ -9290,7 +9284,7 @@ class CapacityPlanner:
         """
         if profile is not None and profile.engine == "vllm":
             base_residency = float(profile.estimate_base_residency_mb() or 0.0)
-            is_calibrated = profile.residency_source in ("calibrated", "measured")
+            is_calibrated = profile.residency_source == "calibrated"
 
             if is_calibrated:
                 # Prefer the live-observed footprint over the inflated calibrated
