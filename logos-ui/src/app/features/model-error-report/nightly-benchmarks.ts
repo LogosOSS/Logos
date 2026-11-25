@@ -172,7 +172,7 @@ export class NightlyBenchmarks implements OnChanges, OnDestroy {
     } catch (error) {
       if (version !== this.version || this.destroyed) return;
       const detail = error instanceof HttpErrorResponse ? error.error?.detail ?? error.error?.error : null;
-      this.windowError.set(typeof detail === 'string' ? detail : 'Could not save the nightly window. Try again.');
+      this.windowError.set(typeof detail === 'string' ? detail : 'Could not save the benchmark window. Try again.');
       refreshWindow = error instanceof HttpErrorResponse && error.status === 409;
     } finally {
       if (version === this.version && !this.destroyed) {
@@ -236,7 +236,7 @@ export class NightlyBenchmarks implements OnChanges, OnDestroy {
       waiting_for_capacity: 'Waiting for GPU capacity', capacity_deferred: 'Deferred until another maintenance window',
       continuing: 'Ready for another optimization round', completed: 'Finished — see results', disabled: 'Deactivated', success: 'Successful', failed: 'Failed',
       stalled: 'Stopped after five minutes without progress', preparation_timeout: 'Preparation timed out',
-      window_closed: this.window ? `No new runs after ${this.window.benchmark_start_cutoff}` : 'Benchmark start window closed', window_closed_below_half: this.window ? `Stopped at ${this.window.end} below 50% complete` : 'Stopped below 50% at the maintenance cutoff',
+      window_closed: this.window ? `No new runs after ${this.window.benchmark_start_cutoff}` : 'Benchmark start window closed', window_closed_below_half: 'Stopped · benchmark window ended',
       calibration_pending: 'Waiting for calibration', adopted: 'Applied to production', adoption_failed: 'Adoption failed; restoring original settings',
       recovery_required: 'Worker recovery required', interrupted_recovered: 'Interrupted; worker restored',
       interrupted: 'Interrupted', cancelled: 'Cancelled', lease_lost: 'Maintenance ownership lost',

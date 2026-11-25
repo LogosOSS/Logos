@@ -158,7 +158,7 @@ describe('Benchmark runner', () => {
 
   it('labels scheduled cutoffs as stopped while preserving real failures', () => {
     const stopped = { ...run, status: 'failed' as const, error_message: 'window_closed_below_half', updated_at: '2026-11-11T07:00:01Z' };
-    expect(component.benchmarkStatusLabel(stopped)).toContain('Stopped · nightly window ended');
+    expect(component.benchmarkStatusLabel(stopped)).toContain('Stopped · benchmark window ended');
     expect(component.isBenchmarkWindowStop(stopped)).toBe(true);
     const failed = { ...stopped, error_message: 'stalled' };
     expect(component.benchmarkStatusLabel(failed)).toContain('Failed');

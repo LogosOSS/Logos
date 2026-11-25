@@ -297,7 +297,7 @@ describe('Nightly benchmark management', () => {
 
   it('uses the server cutoff in status labels', () => {
     expect(control.statusLabel('window_closed')).toContain('08:00');
-    expect(control.statusLabel('window_closed_below_half')).toContain('08:00');
+    expect(control.statusLabel('window_closed_below_half')).toBe('Stopped · benchmark window ended');
   });
 
   it('distinguishes waiting for GPU capacity from a round deferred to another window', () => {

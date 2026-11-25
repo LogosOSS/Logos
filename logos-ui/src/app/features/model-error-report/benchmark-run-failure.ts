@@ -39,7 +39,13 @@ export class BenchmarkRunFailure {
     return typeof backend === 'string' ? backend : null;
   });
   readonly summary = computed(() => {
-    if (this.stopped()) return 'The nightly window ended before this test was halfway complete. The schedule stopped the unfinished test; it is not used as a completed measurement. Completed measurements remain available in Benchmark runs.';
+    if (this.stopped()) {
+      const { completed_samples: completed, total_samples: total } = this.run().result;
+      const progress = typeof completed === 'number' && typeof total === 'number'
+        ? `${completed} of ${total} requests`
+        : 'Fewer than half of the requests';
+      return `${progress} completed successfully before the window ended. Completed measurements remain available in Benchmark runs.`;
+    }
     const message = this.run().result.failure?.details || this.run().error_message || 'Benchmark failed.';
     const cause = message.match(/Cause: ([\s\S]*?)(?: Recent logs:|$)/)?.[1];
     if (cause) return cause;

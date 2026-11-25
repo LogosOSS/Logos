@@ -1547,7 +1547,7 @@ export class ModelErrorReport implements OnInit, OnDestroy {
   readonly isBenchmarkWindowStop = isBenchmarkWindowStop;
 
   benchmarkStatusLabel(run: ModelBenchmarkRun): string {
-    if (isBenchmarkWindowStop(run)) return `Stopped · nightly window ended ${this.formatBenchmarkTimestamp(run.updated_at)}`;
+    if (isBenchmarkWindowStop(run)) return `Stopped · benchmark window ended ${this.formatBenchmarkTimestamp(run.updated_at)}`;
     if (run.status === 'pending') return 'Queued';
     if (run.status === 'running') {
       if (run.result.stage === 'preparing_worker') return 'Preparing worker';
