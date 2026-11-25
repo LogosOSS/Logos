@@ -35,7 +35,7 @@
         <app-icon-tile [label]="userInitials()" [size]="38" />
         <div class="user-text">
           <p class="user-name">{{ fullName() }}</p>
-          <p class="user-role">{{ auth.currentUser()?.role }}</p>
+          <p class="user-role">{{ roleLabel() }}</p>
         </div>
       </button>
     </div>
@@ -78,7 +78,7 @@
       <app-icon-tile [label]="userInitials()" [size]="56" class="logout-modal__avatar" />
       <p class="logout-modal__name" id="logout-modal-name">{{ fullName() }}</p>
       <p class="logout-modal__email">{{ auth.currentUser()?.email }}</p>
-      <p class="logout-modal__role">{{ auth.currentUser()?.role }}</p>
+      <p class="logout-modal__role">{{ roleLabel() }}</p>
       <a routerLink="/settings" class="btn-secondary" cdkFocusInitial (click)="closeLogoutModal()">
         <i class="pi pi-cog" aria-hidden="true"></i>
         Account settings
