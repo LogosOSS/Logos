@@ -104,7 +104,9 @@ def set_window(pair_id: int, window: MaintenanceWindow, expected: MaintenanceWin
         )
         changed = db.session.execute(
             text(
-                "UPDATE nightly_benchmarks SET window_start = :start, window_end = :end "
+                "UPDATE nightly_benchmarks SET window_start = :start, window_end = :end, "
+                "window_revision = window_revision + CASE WHEN CAST(:start AS time) <> CAST(:expected_start AS time) "
+                "OR CAST(:end AS time) <> CAST(:expected_end AS time) THEN 1 ELSE 0 END "
                 "WHERE model_provider_id = :id "
                 "AND COALESCE(window_start, CAST(:default_start AS time)) = :expected_start "
                 "AND COALESCE(window_end, CAST(:default_end AS time)) = :expected_end"
@@ -166,12 +168,14 @@ def claim(pair_id: int, day, *, window: MaintenanceWindow | None = None) -> bool
         claimed = bool(
             db.session.execute(
                 text(
-                    "UPDATE nightly_benchmarks SET last_run_date = :day, status = 'running', report = '[]'::jsonb "
+                    "UPDATE nightly_benchmarks SET last_run_date = :day, last_run_window_revision = window_revision, "
+                    "status = 'running', report = '[]'::jsonb "
                     "WHERE model_provider_id = :id AND enabled AND recovery IS NULL "
                     "AND (NOT :check_window OR ("
                     "COALESCE(window_start, CAST(:default_start AS time)) = CAST(:start AS time) AND "
                     "COALESCE(window_end, CAST(:default_end AS time)) = CAST(:end AS time))) "
-                    "AND ((last_run_date = :day AND status IN ('continuing', :capacity_waiting)) OR "
+                    "AND ((last_run_date = :day AND (window_revision <> last_run_window_revision "
+                    "OR status IN ('continuing', :capacity_waiting))) OR "
                     "((last_run_date IS NULL OR last_run_date < :day) "
                     "AND (SELECT COUNT(*) FROM nightly_benchmarks WHERE last_run_date = :day) < :limit))"
                 ),

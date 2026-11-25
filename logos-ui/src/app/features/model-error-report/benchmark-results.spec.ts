@@ -205,7 +205,7 @@ describe('Benchmark detail navigation', () => {
     const history = http.expectOne('/api/logosdb/model_benchmarks');
     expect(history.request.body).toEqual({ model_id: 1, summary_only: true });
     expect(harness.routeNativeElement?.querySelector('h1')?.textContent).toContain('Model');
-    expect(harness.routeNativeElement?.textContent).toContain('Loading performance…');
+    expect(harness.routeNativeElement?.querySelector('[aria-label="Loading performance"] .pi-spinner')).not.toBeNull();
     expect(harness.routeNativeElement?.textContent).not.toContain('No benchmark results available');
 
     history.flush({ benchmarks: [], pairs: [], runs: [] });

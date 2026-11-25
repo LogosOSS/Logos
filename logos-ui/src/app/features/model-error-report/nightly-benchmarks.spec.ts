@@ -96,6 +96,8 @@ describe('Nightly benchmark management', () => {
     const section: HTMLElement = fixture.nativeElement.querySelector('section');
     const workload = section.querySelector<HTMLSelectElement>('#nightly-workload-31')!;
     const toggle = section.querySelector<HTMLButtonElement>('.nightly__toggle')!;
+    const scheduleButtons = Array.from(section.querySelectorAll('.nightly__actions button'));
+    expect(scheduleButtons.map(button => button.textContent.trim())).toEqual(['Enable automatic benchmarks']);
     expect(workload.labels?.[0].textContent).toBe('Request workload');
     expect(workload.closest('details')).toBeNull();
     expect(toggle.disabled).toBe(false);

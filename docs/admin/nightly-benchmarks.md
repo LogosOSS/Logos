@@ -4,7 +4,7 @@ title: Nightly Benchmarks
 
 # Nightly Benchmarks
 
-Logos admins manage each model/worker pair under **Model Details → Performance → Overview → Nightly rotation**.
+Logos admins manage each model/worker pair under **Model Details → Performance → Overview → Automatic benchmarks**.
 Each worker tile shows its schedule status. Select a tile to see its maintenance window and request workload.
 The scheduler uses the worker's current settings to build the plan when the nightly run starts.
 Trials use explicit serving limits when the current settings are automatic.
@@ -22,17 +22,18 @@ for screenshots of the schedule controls.
 
 1. Sign in as a Logos Admin and open **Models**.
 2. Open the model's **Model Details → Performance** tab.
-3. In **Overview**, select the worker tile under **Nightly rotation**.
+3. In **Overview**, select the worker tile under **Automatic benchmarks**.
 4. Review the time window and **Request workload**. Apply any dataset change before enabling the schedule.
-5. Select **Enable nightly rotation**. The worker shows any missing prerequisite beside the controls.
+5. Select **Enable automatic benchmarks**. The worker shows any missing prerequisite beside the controls.
 6. Check for **Enabled** and a green dot beside the worker.
 
 The schedule persists after a page reload or browser close.
-Use **Edit nightly rotation** to set the daily start and end time for the selected model and worker, then select **Save window**.
+Use **Edit schedule** to set the daily start and end time for the selected model and worker, then select **Save window**.
 The end must be on the same day and more than 10 minutes after the start.
 Until you save a custom window, the pair follows the deployment default of 05:00–08:00 Europe/Berlin.
 An active round keeps its original end time.
-To remove the pair from rotation, open **Edit nightly rotation**, select **Disable nightly rotation** and confirm.
+Changing the window allows another run on the same day. It uses the pair's existing daily quota slot.
+To remove the pair from rotation, open **Edit schedule**, select **Disable automatic benchmarks** and confirm.
 Activation requires
 an updated, connected worker. Run admission also checks the lane and the other
 available workers.
@@ -148,7 +149,7 @@ production baseline. Hugging Face runs retain the original production settings.
 
 ## Fixed Request Workloads
 
-Select the worker tile under **Nightly rotation** to open **Request workload**.
+Select the worker tile under **Automatic benchmarks** to open **Request workload**.
 Use **Request workload** to replace Hugging Face data for the schedule.
 
 1. Choose **Recent FULL request logs** in **Request workload**.

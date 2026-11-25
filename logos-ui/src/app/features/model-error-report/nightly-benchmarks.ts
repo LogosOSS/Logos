@@ -112,7 +112,7 @@ export class NightlyBenchmarks implements OnChanges, OnDestroy {
     if (state.recovery_required) return 'Wait for worker recovery to finish.';
     if (!state.worker_ready) return 'Connect a worker that supports nightly benchmarks.';
     if (!state.window) return 'Waiting for the maintenance window settings.';
-    if (this.sourceEdited) return 'Apply your dataset to enable nightly runs.';
+    if (this.sourceEdited) return 'Apply your dataset to enable automatic benchmarks.';
     return null;
   }
 
@@ -224,7 +224,7 @@ export class NightlyBenchmarks implements OnChanges, OnDestroy {
 
   statusLabel(value: string): string {
     const labels: Record<string, string> = {
-      scheduled: 'Waiting in nightly rotation', unavailable: 'Waiting for an available worker', preparing: 'Preparing benchmark lane', running: 'Benchmark in progress',
+      scheduled: 'Waiting for the scheduled window', unavailable: 'Waiting for an available worker', preparing: 'Preparing benchmark lane', running: 'Benchmark in progress',
       waiting_for_capacity: 'Waiting for GPU capacity', capacity_deferred: 'Deferred until another maintenance window',
       continuing: 'Ready for another optimization round', completed: 'Finished — see results', disabled: 'Deactivated', success: 'Successful', failed: 'Failed',
       stalled: 'Stopped after five minutes without progress', preparation_timeout: 'Preparation timed out',

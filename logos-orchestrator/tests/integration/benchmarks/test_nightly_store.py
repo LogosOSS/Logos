@@ -82,10 +82,9 @@ def database(monkeypatch):
             "{*}changeSet/{*}sql"
         ):
             connection.execute(text(sql.text))
-        for sql in ElementTree.parse(migration.with_name("100_nightly_rotation_window.xml")).findall(
-            "{*}changeSet/{*}sql"
-        ):
-            connection.execute(text(sql.text))
+        for name in ("100_nightly_rotation_window.xml", "101_nightly_window_revision.xml"):
+            for sql in ElementTree.parse(migration.with_name(name)).findall("{*}changeSet/{*}sql"):
+                connection.execute(text(sql.text))
 
     class Database(store.DBManager):
         def __enter__(self):
@@ -118,6 +117,26 @@ def test_rotation_window_is_saved_per_pair_and_rejects_a_stale_editor(database):
     assert store.status(32).get("window_start") is None
     assert not store.claim(31, date(2026, 11, 25), window=default)
     assert store.claim(31, date(2026, 11, 25), window=custom)
+
+
+def test_moving_the_window_can_run_the_same_pair_again_without_spending_another_daily_slot(database):
+    default = MaintenanceWindow.from_env()
+    afternoon = MaintenanceWindow(time(13, 10), time(13, 30), default.timezone)
+    day = date(2026, 11, 25)
+    store.set_enabled(31, enabled=True, expected=False)
+    assert store.claim(31, day, window=default)
+    store.finish(31, "failed", [], None)
+    assert not store.claim(31, day, window=default)
+    assert store.set_window(31, default, default)
+    assert not store.claim(31, day, window=default)
+
+    assert store.set_window(31, afternoon, default)
+    assert store.claim(31, day, window=afternoon)
+    store.finish(31, "completed", [], None)
+    assert not store.claim(31, day, window=afternoon)
+    assert store.set_window(31, default, afternoon)
+    assert store.claim(31, day, window=default)
+    assert store.claimed_today(day) == 1
 
 
 def test_frozen_inputs_survive_log_deletion_and_selection_is_compare_and_set(database, monkeypatch):

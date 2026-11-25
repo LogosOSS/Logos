@@ -230,27 +230,27 @@ async function setNightly(page, enabled) {
     await customization.waitFor({ state: "hidden" });
   }
   await page.getByRole("navigation", { name: "Performance sections" }).getByRole("button", { name: "Overview", exact: true }).click();
-  const rotation = page.getByRole("region", { name: "Nightly rotation", exact: true });
+  const rotation = page.getByRole("region", { name: "Automatic benchmarks", exact: true });
   const tile = rotation.getByRole("button", { name: /^Docs Local Worker (Enabled|Disabled)\b/ });
   await tile.waitFor();
   if (await tile.getAttribute("aria-expanded") === "false") await tile.click();
   const worker = rotation.getByRole("region", { name: "Docs Local Worker", exact: true });
   if ((await tile.textContent()).includes("Enabled") === enabled) return;
   if (enabled) {
-    await button(worker, "Enable nightly rotation").click();
+    await button(worker, "Enable automatic benchmarks").click();
   } else {
     await openNightlyDisable(page);
-    const dialog = page.getByRole("dialog", { name: "Disable nightly rotation?", exact: true });
-    await button(dialog, "Disable nightly rotation").evaluate(b => b.click());
+    const dialog = page.getByRole("dialog", { name: "Disable automatic benchmarks?", exact: true });
+    await button(dialog, "Disable automatic benchmarks").evaluate(b => b.click());
   }
   await rotation.getByRole("button", { name: enabled ? /^Docs Local Worker Enabled\b/ : /^Docs Local Worker Disabled\b/ }).waitFor();
   await page.waitForTimeout(600);
 }
 
 async function openNightlyDisable(page) {
-  await button(page, "Edit nightly rotation").click();
-  const editor = page.getByRole("dialog", { name: "Edit nightly rotation", exact: true });
-  await button(editor, "Disable nightly rotation").click();
+  await button(page, "Edit schedule").click();
+  const editor = page.getByRole("dialog", { name: "Edit schedule", exact: true });
+  await button(editor, "Disable automatic benchmarks").click();
 }
 
 async function performance(page, ids, view, query = "") {
@@ -712,7 +712,7 @@ const SHOTS = [
     full: true,
     go: (p, ids) => analysisView(p, ids, "Benchmark glossary"),
   },
-  // Model performance: Nightly rotation and manual setup
+  // Model performance: Automatic benchmarks and manual setup
   {
     file: "roles/logos-admin-nightly-benchmarks.png",
     user: ADMIN,
@@ -741,8 +741,8 @@ const SHOTS = [
     full: true,
     go: async (p, ids) => {
       await nightlyView(p, ids, true);
-      await button(p, "Edit nightly rotation").click();
-      await p.getByRole("dialog", { name: "Edit nightly rotation", exact: true }).waitFor();
+      await button(p, "Edit schedule").click();
+      await p.getByRole("dialog", { name: "Edit schedule", exact: true }).waitFor();
     },
     after: async (p) => {
       await button(p, "Cancel").click();

@@ -32,13 +32,14 @@
       </div>
       @if (state()) {
         <div class="nightly__actions">
-          <button type="button" (click)="openEditor()" [disabled]="saving() || !window" aria-haspopup="dialog">
-            Edit nightly rotation
-          </button>
-          @if (!state()?.enabled) {
+          @if (state()?.enabled) {
+            <button type="button" (click)="openEditor()" [disabled]="saving() || !window" aria-haspopup="dialog">
+              Edit schedule
+            </button>
+          } @else {
             <button type="button" class="nightly__toggle" (click)="toggleNightly()" [disabled]="saving() || !!enableBlocker"
               [attr.aria-describedby]="enableBlocker ? 'nightly-blocker-' + pairId : null">
-              Enable nightly rotation
+              Enable automatic benchmarks
             </button>
           }
         </div>
@@ -81,7 +82,7 @@
     }
   </section>
   <app-modal-form [visible]="editing()" (visibleChange)="!saving() && editing.set($event)" [dismissible]="!saving()"
-    title="Edit nightly rotation" size="sm">
+    title="Edit schedule" size="sm">
     <div class="nightly-editor">
       <p>Daily window for {{ providerName }} and this model · {{ window?.timezone }}</p>
       <div class="nightly-editor__times">
@@ -93,7 +94,7 @@
       }
       @if (windowError()) { <p role="alert">{{ windowError() }}</p> }
       @if (state()?.enabled) {
-        <button type="button" (click)="disableFromEditor()" [disabled]="saving()" aria-haspopup="dialog">Disable nightly rotation</button>
+        <button type="button" (click)="disableFromEditor()" [disabled]="saving()" aria-haspopup="dialog">Disable automatic benchmarks</button>
       }
     </div>
     <div modal-footer class="nightly-editor__footer">
@@ -103,8 +104,8 @@
     </div>
   </app-modal-form>
   <app-modal-confirm [visible]="confirming()" (visibleChange)="!saving() && confirming.set($event)"
-    title="Disable nightly rotation?" message="This cancels any active nightly run and restores the worker’s previous lane setup."
-    confirmLabel="Disable nightly rotation" [danger]="true" icon="pi-moon" [loading]="saving()" (confirmed)="confirmDisable()">
+    title="Disable automatic benchmarks?" message="This cancels any active automatic benchmark and restores the worker’s previous lane setup."
+    confirmLabel="Disable automatic benchmarks" [danger]="true" icon="pi-moon" [loading]="saving()" (confirmed)="confirmDisable()">
     @if (error()) { <p modal-error role="alert">{{ error() }}</p> }
   </app-modal-confirm>
 </ng-template>

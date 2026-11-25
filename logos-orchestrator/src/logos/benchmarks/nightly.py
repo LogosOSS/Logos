@@ -51,6 +51,10 @@ def schedule_window(schedule: dict) -> MaintenanceWindow:
     return MaintenanceWindow(schedule["window_start"], schedule["window_end"], default.timezone)
 
 
+def window_changed_since_last_run(schedule: dict) -> bool:
+    return schedule.get("window_revision", 0) != schedule.get("last_run_window_revision", 0)
+
+
 def can_start(now: datetime) -> bool:
     """Admit configurations through the end of their rotation window."""
     window = NIGHTLY_WINDOW.get() or MaintenanceWindow.from_env()

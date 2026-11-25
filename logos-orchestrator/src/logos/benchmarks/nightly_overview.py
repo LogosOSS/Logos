@@ -2,7 +2,12 @@
 
 from datetime import timedelta
 
-from logos.benchmarks.nightly import CAPACITY_WAITING, MAX_PAIRS_PER_NIGHT, schedule_window
+from logos.benchmarks.nightly import (
+    CAPACITY_WAITING,
+    MAX_PAIRS_PER_NIGHT,
+    schedule_window,
+    window_changed_since_last_run,
+)
 from logos.maintenance_window import MaintenanceWindow, maintenance_node_limit
 
 
@@ -18,7 +23,10 @@ def overview(schedules, scheduler, now, *, recovery_pending=False, claimed_count
     providers = {}
     for row in schedules:
         _, end = schedule_window(row).bounds(now)
-        continuing = row["last_run_date"] == today and row.get("status") in {"continuing", CAPACITY_WAITING}
+        rescheduled = row["last_run_date"] == today and window_changed_since_last_run(row)
+        continuing = row["last_run_date"] == today and (
+            rescheduled or row.get("status") in {"continuing", CAPACITY_WAITING}
+        )
         continuing_today |= row["enabled"] and continuing and now < end
         next_day = tomorrow if now >= end or (claimed >= MAX_PAIRS_PER_NIGHT and not continuing) else today
         state, reason = "disabled", "Nightly runs are disabled"
@@ -32,10 +40,10 @@ def overview(schedules, scheduler, now, *, recovery_pending=False, claimed_count
                 state, reason = "busy", "Benchmark model is reserved for testing or restoration"
         elif row["enabled"]:
             if blocked:
-                state, reason = "blocked", "Nightly rotation waits for the reserved worker"
-            elif row["last_run_date"] == next_day and row.get("status") == CAPACITY_WAITING:
+                state, reason = "blocked", "Automatic benchmarks wait for the reserved worker"
+            elif row["last_run_date"] == next_day and not rescheduled and row.get("status") == CAPACITY_WAITING:
                 state, reason = "waiting", "Waiting for enough free memory for the benchmark"
-            elif row["last_run_date"] == next_day:
+            elif row["last_run_date"] == next_day and not rescheduled:
                 state, reason = (
                     ("next", "Another optimization round in this window; production configuration confirmed")
                     if row.get("status") == "continuing"
@@ -49,7 +57,11 @@ def overview(schedules, scheduler, now, *, recovery_pending=False, claimed_count
                 try:
                     target, _, _ = scheduler.target_lane(row["model_provider_id"], disable_missing=False)
                     providers[row["model_provider_id"]] = target["provider_id"]
-                    state, reason = "queued", "Later in the nightly rotation"
+                    state, reason = (
+                        ("next", "The updated benchmark window can run today")
+                        if rescheduled and next_day == today
+                        else ("queued", "Later in the automatic benchmarks rotation")
+                    )
                 except RuntimeError as exc:
                     state, reason = "blocked", str(exc)
         result.append(

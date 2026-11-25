@@ -28,6 +28,7 @@ from logos.benchmarks.nightly import (
     local_now,
     parameter_plan,
     schedule_window,
+    window_changed_since_last_run,
 )
 from logos.benchmarks.reservations import benchmark_reservations
 from logos.benchmarks.worker_limits import validate_worker_overrides, worker_limits
@@ -139,7 +140,7 @@ class NightlyScheduler:
                     if not window.contains(now):
                         continue
                     claimed_today = row["last_run_date"] == day
-                    if claimed_today:
+                    if claimed_today and not window_changed_since_last_run(row):
                         if row.get("status") == CAPACITY_WAITING:
                             updated = row.get("updated_at")
                             if updated and (now - updated).total_seconds() < CAPACITY_RETRY_SECONDS:

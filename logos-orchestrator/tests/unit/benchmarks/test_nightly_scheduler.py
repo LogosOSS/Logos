@@ -477,6 +477,26 @@ async def test_rotation_admits_only_the_pair_with_an_open_custom_window(schedule
     assert scheduler.run_schedule.await_args.args[0] == 32
 
 
+async def test_rotation_can_claim_an_edited_window_after_a_failed_round_today(scheduler, rotation, monkeypatch):
+    rows, _ = rotation
+    now = datetime.fromisoformat("2026-11-25T13:10:00+01:00")
+    rows[0].update(
+        last_run_date=now.date(),
+        status="failed",
+        window_start=time(13, 10),
+        window_end=time(13, 30),
+        window_revision=2,
+        last_run_window_revision=1,
+    )
+    monkeypatch.setattr(module, "local_now", lambda: now)
+    monkeypatch.setattr(module.store, "claimed_today", lambda _: module.MAX_PAIRS_PER_NIGHT)
+
+    await scheduler.tick()
+
+    scheduler.run_schedule.assert_awaited_once()
+    assert scheduler.run_schedule.await_args.args[0] == 31
+
+
 async def test_metal_worker_does_not_claim_a_nightly_slot(scheduler, rotation):
     _, claimed = rotation
     runtime = scheduler.registry.peek_runtime_snapshot.return_value["runtime"]
