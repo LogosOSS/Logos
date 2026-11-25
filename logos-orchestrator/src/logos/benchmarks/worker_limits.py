@@ -2,7 +2,7 @@
 
 import re
 
-from .configuration import QWEN_MTP_CONFIG, QWEN_MTP_MODEL, ServingOverrides
+from .configuration import QWEN_MTP_CONFIG, QWEN_MTP_MODEL, ServingOverrides, canonical_kv_cache_dtype
 from .guidellm_runner import benchmark_model_lane, lane_serving_configuration
 
 _FP8_MODELS = {
@@ -61,11 +61,6 @@ def worker_limits(
     )
     current = lane_serving_configuration(lane)
     night_choices = _nightly_vllm_choices(model, lane, devices, current) if known and not metal else {}
-    if "kv_cache_dtype" in night_choices:
-        cache = current.get("kv_cache_dtype")
-        current["kv_cache_dtype"] = "fp8" if cache == "fp8_e4m3" else cache or "auto"
-    if "speculative_config" in night_choices and not current.get("speculative_config"):
-        current["speculative_config"] = ""
     return {
         "metal_batching": metal,
         "gpus": gpus,
@@ -96,13 +91,13 @@ def _nightly_vllm_choices(model: str, lane: dict, devices: list, current: dict) 
     if tuple(map(int, version.groups())) < (0, 26, 0) or lane.get("nightly_blocked_vllm_fields"):
         return {}
     backend = current.get("attention_backend") or ""
-    cache = current.get("kv_cache_dtype") or "auto"
+    cache = canonical_kv_cache_dtype(current.get("kv_cache_dtype"))
     speculative = current.get("speculative_config", "")
     speculative_modes = ("", QWEN_MTP_CONFIG)
     if (
         min_sm < 8
         or backend not in {"", "FLASHINFER", "FLASH_ATTN", "TRITON_ATTN"}
-        or cache not in {"auto", "fp8", "fp8_e4m3"}
+        or cache not in {"auto", "fp8"}
         or speculative not in speculative_modes
     ):
         return {}
@@ -117,6 +112,17 @@ def _nightly_vllm_choices(model: str, lane: dict, devices: list, current: dict) 
 def nightly_variation_values(limits: dict) -> dict[str, tuple[str, ...]]:
     """Return supported non-batching parameter values for this worker and lane."""
     return limits.get("nightly_vllm_choices", {})
+
+
+def nightly_tuning_configuration(limits: dict) -> dict:
+    """Resolve candidate defaults separately from the captured serving configuration."""
+    current = limits["current"].copy()
+    choices = nightly_variation_values(limits)
+    if "kv_cache_dtype" in choices:
+        current["kv_cache_dtype"] = canonical_kv_cache_dtype(current.get("kv_cache_dtype"))
+    if "speculative_config" in choices:
+        current["speculative_config"] = current.get("speculative_config") or ""
+    return current
 
 
 def validate_worker_overrides(overrides: ServingOverrides, limits: dict, *, nightly: bool = False) -> None:

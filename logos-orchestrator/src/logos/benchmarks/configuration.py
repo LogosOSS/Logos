@@ -8,6 +8,13 @@ QWEN_MTP_CONFIG = '{"method":"mtp","num_speculative_tokens":3}'
 QWEN_MTP_MODEL = "Qwen/Qwen3.8-27B"
 
 
+def canonical_kv_cache_dtype(value: str | None) -> str:
+    """Return the effective cache dtype name used for Nightly comparisons and planning."""
+    if value == "fp8_e4m3":
+        return "fp8"
+    return value or "auto"
+
+
 class ServingOverrides(BaseModel):
     """Allowlisted vLLM settings for benchmark runs."""
 

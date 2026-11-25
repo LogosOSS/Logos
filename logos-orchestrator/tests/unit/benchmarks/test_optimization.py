@@ -3,6 +3,7 @@ import copy
 import pytest
 
 from logos.benchmarks import optimization as optimizer
+from logos.benchmarks.configuration import QWEN_MTP_CONFIG
 
 
 def measured(identifier, throughput, *, sequences=16):
@@ -36,6 +37,34 @@ def test_search_reuses_winner_keeps_reference_and_resets_changed_conditions():
     assert optimizer.context(current, snapshot, workload, search["state"])["reference_id"] is None
     assert (
         optimizer.context({**current, "dtype": "bfloat16"}, snapshot, workload, search["state"])["reference_id"] is None
+    )
+
+
+@pytest.mark.parametrize(
+    ("captured", "resolved"),
+    [
+        ({}, {"kv_cache_dtype": "auto", "speculative_config": ""}),
+        ({"kv_cache_dtype": ""}, {"kv_cache_dtype": "auto", "speculative_config": ""}),
+        ({"kv_cache_dtype": "fp8_e4m3"}, {"kv_cache_dtype": "fp8", "speculative_config": ""}),
+    ],
+)
+def test_series_identity_uses_effective_cache_dtype_and_disabled_mtp(captured, resolved):
+    workload = {"id": "a" * 64, "name": "Trial", "request_count": 10, "provenance": "synthetic"}
+    snapshot = {}
+    original = captured.copy()
+    recorded = optimizer.context(captured, snapshot, workload, {})
+    planned = optimizer.context(resolved, snapshot, workload, recorded["state"])
+
+    assert recorded["series_key"] == planned["series_key"]
+    assert recorded["state"]["environment_key"] == planned["state"]["environment_key"]
+    assert captured == original
+    assert (
+        optimizer.context({**captured, "kv_cache_dtype": "fp8_e5m2"}, snapshot, workload, {})["series_key"]
+        != recorded["series_key"]
+    )
+    assert (
+        optimizer.context({**captured, "speculative_config": QWEN_MTP_CONFIG}, snapshot, workload, {})["series_key"]
+        != recorded["series_key"]
     )
 
 

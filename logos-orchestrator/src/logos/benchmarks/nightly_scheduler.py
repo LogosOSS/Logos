@@ -34,7 +34,12 @@ from logos.benchmarks.nightly import (
     window_changed_since_last_run,
 )
 from logos.benchmarks.reservations import benchmark_reservations
-from logos.benchmarks.worker_limits import nightly_variation_values, validate_worker_overrides, worker_limits
+from logos.benchmarks.worker_limits import (
+    nightly_tuning_configuration,
+    nightly_variation_values,
+    validate_worker_overrides,
+    worker_limits,
+)
 from logos.dbutils.dbmanager import DBManager
 from logos.dbutils.dbrequest import InternalBenchmarkRequest
 from logos.logosnode_registry import LogosNodeCommandError
@@ -717,7 +722,7 @@ class NightlyScheduler:
             candidates=options,
             observations=observations,
             remaining_seconds=remaining,
-            limits=limits,
+            limits={**limits, "current": current},
         )
         if type(index) is int and 0 <= index < len(options):
             return options[index], "agent"
@@ -815,6 +820,7 @@ class NightlyScheduler:
                 store.save(pair_id, "preparing", report, recovery)
             limits = worker_limits(snapshot, model, lane=lane)
             current = limits["current"]
+            tuning = nightly_tuning_configuration(limits)
             choices = nightly_variation_values(limits)
             baseline_token = NIGHTLY_BASELINE_CONFIG.set(recovery["vllm_config"])
             workload = None
@@ -829,7 +835,7 @@ class NightlyScheduler:
                 if recent_requests.username():
                     store.bind_workload(pair_id, workload["id"])
                 search = optimization.context(current, snapshot, workload, schedule.get("optimizer") or {})
-                original = {key: current.get(key) for key in sorted(optimization.VARIED_KEYS)}
+                original = {key: tuning.get(key) for key in sorted(optimization.VARIED_KEYS)}
                 if search["state"].get("adaptive_baseline") == original:
                     attempted.extend(search["state"].get("attempted_parameters", []))
                 search["adaptive_baseline"] = original
@@ -858,7 +864,7 @@ class NightlyScheduler:
                     parameters, source = leading["parameters"], "confirmation"
                 elif index <= TRIALS_PER_ROUND:
                     parameters, source = await self._next_trial(
-                        pid, current, limits, choices, attempted, leading, observations
+                        pid, tuning, limits, choices, attempted, leading, observations
                     )
                     if parameters is None and search and can_adopt and leading:
                         confirming = True

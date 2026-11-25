@@ -5,7 +5,12 @@ import pytest
 from fastapi import HTTPException
 
 from logos.benchmarks.configuration import QWEN_MTP_CONFIG, QWEN_MTP_MODEL, ServingOverrides
-from logos.benchmarks.worker_limits import nightly_variation_values, validate_worker_overrides, worker_limits
+from logos.benchmarks.worker_limits import (
+    nightly_tuning_configuration,
+    nightly_variation_values,
+    validate_worker_overrides,
+    worker_limits,
+)
 
 
 def snapshot(count=2, selector="all"):
@@ -57,14 +62,16 @@ def nightly_snapshot(model=QWEN_MTP_MODEL, *, version="0.34.0", capability="12.0
     return status
 
 
-def test_nightly_values_use_the_lane_gpus_and_report_default_values():
+def test_nightly_values_use_the_lane_gpus_and_resolve_tuning_defaults():
     limits = worker_limits(nightly_snapshot(), QWEN_MTP_MODEL)
     assert nightly_variation_values(limits) == {
         "kv_cache_dtype": ("auto", "fp8"),
         "speculative_config": ("", QWEN_MTP_CONFIG),
     }
-    assert limits["current"]["kv_cache_dtype"] == "auto"
-    assert limits["current"]["speculative_config"] == ""
+    assert "kv_cache_dtype" not in limits["current"]
+    assert "speculative_config" not in limits["current"]
+    assert nightly_tuning_configuration(limits)["kv_cache_dtype"] == "auto"
+    assert nightly_tuning_configuration(limits)["speculative_config"] == ""
     validate_worker_overrides(ServingOverrides(speculative_config=QWEN_MTP_CONFIG), limits)
     validate_worker_overrides(ServingOverrides(speculative_config=""), limits)
 
@@ -98,8 +105,10 @@ def test_nightly_extra_values_require_reported_compatibility(settings):
 def test_nightly_limits_with_explicit_baseline_do_not_inherit_last_candidate():
     status = nightly_snapshot(config={"kv_cache_dtype": "fp8", "speculative_config": QWEN_MTP_CONFIG})
     limits = worker_limits(status, QWEN_MTP_MODEL, baseline_config={})
-    assert limits["current"]["kv_cache_dtype"] == "auto"
-    assert limits["current"]["speculative_config"] == ""
+    assert "kv_cache_dtype" not in limits["current"]
+    assert "speculative_config" not in limits["current"]
+    assert nightly_tuning_configuration(limits)["kv_cache_dtype"] == "auto"
+    assert nightly_tuning_configuration(limits)["speculative_config"] == ""
     assert worker_limits(status, QWEN_MTP_MODEL)["current"]["speculative_config"] == QWEN_MTP_CONFIG
 
 
@@ -107,7 +116,8 @@ def test_nightly_cache_recognizes_the_fp8_e4m3_alias_on_an_older_vllm_release():
     status = nightly_snapshot(version="0.26.1rc1", config={"kv_cache_dtype": "fp8_e4m3"})
     limits = worker_limits(status, QWEN_MTP_MODEL)
     assert nightly_variation_values(limits)["kv_cache_dtype"] == ("auto", "fp8")
-    assert limits["current"]["kv_cache_dtype"] == "fp8"
+    assert limits["current"]["kv_cache_dtype"] == "fp8_e4m3"
+    assert nightly_tuning_configuration(limits)["kv_cache_dtype"] == "fp8"
 
 
 def test_combination_includes_current_settings_when_only_one_field_changes():

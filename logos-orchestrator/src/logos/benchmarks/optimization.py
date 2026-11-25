@@ -4,7 +4,7 @@ import copy
 import hashlib
 import math
 
-from logos.benchmarks.configuration import ServingOverrides
+from logos.benchmarks.configuration import ServingOverrides, canonical_kv_cache_dtype
 from logos.benchmarks.workloads import canonical
 
 BATCHING_KEYS = {"max_num_seqs", "max_num_batched_tokens"}
@@ -14,10 +14,16 @@ VARIED_KEYS = BATCHING_KEYS | {"kv_cache_dtype", "speculative_config"}
 def context(current, snapshot, workload, previous):
     """A new workload, serving environment or hardware starts a new fixed reference."""
     runtime = snapshot.get("runtime") or {}
+    serving = {key: value for key, value in current.items() if key not in BATCHING_KEYS | {"command"}}
+    cache_dtype = canonical_kv_cache_dtype(serving.get("kv_cache_dtype"))
+    # Keep the worker's historical representation of the default in the series key.
+    serving["kv_cache_dtype"] = "" if cache_dtype == "auto" else cache_dtype
+    if not serving.get("speculative_config"):
+        serving.pop("speculative_config", None)
     identity = {
         "workload": workload["id"],
         "measurement_engine": "guidellm",
-        "serving": {key: value for key, value in current.items() if key not in BATCHING_KEYS | {"command"}},
+        "serving": serving,
         "devices": runtime.get("devices"),
         "worker_version": runtime.get("version_checksum") or runtime.get("service_version"),
         "profile": {"concurrency": 4, "transport": "streaming", "output_limits": "source_requests"},

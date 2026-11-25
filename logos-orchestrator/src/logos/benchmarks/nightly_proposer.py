@@ -10,10 +10,11 @@ import secrets
 from starlette.responses import JSONResponse
 
 from logos.agent_credential import issue_agent_credential
-from logos.auth import AuthContext, authenticate_api_key
+from logos.auth import AuthContext, authenticate_api_key, initialize_rate_limits
 from logos.benchmarks.guidellm_runner import benchmark_model_lane, lane_is_serving
 from logos.benchmarks.reservations import benchmark_reservations
 from logos.dbutils.dbmanager import DBManager
+from logos.dbutils.dbmodules import LoggingLevel
 from logos.dbutils.types import Deployment
 
 logger = logging.getLogger(__name__)
@@ -84,6 +85,7 @@ def _agent_access() -> tuple[AuthContext | None, list[Deployment]]:
     if key_id is None:
         return None, []
     auth = authenticate_api_key({"Authorization": f"Bearer {issue_agent_credential(key_id)}"})
+    initialize_rate_limits(auth, None)
     with DBManager() as db:
         return auth, db.get_deployments_for_api_key(auth.api_key_id)
 
@@ -205,7 +207,7 @@ async def propose(
     )
     deadline = min(remaining_seconds, PROPOSAL_TIMEOUT_SECONDS)
     try:
-        async with asyncio.timeout(deadline):
+        async with asyncio.timeout(deadline) as timeout:
             registry = gateway._logosnode_registry
             if not _ready_workers(registry, excluded_worker_id):
                 return None
@@ -229,21 +231,47 @@ async def propose(
                 return None
 
             auth.resolved_proxy_model = selected["model_id"], PROPOSER_MODEL
-            response = await gateway.route_and_execute(
-                deployments=[selected],
-                body=body,
-                headers={},
-                auth=auth,
-                path="v1/chat/completions",
-                log_id=None,
-                request_id=secrets.token_urlsafe(16),
-                required_provider_id=provider_id,
-            )
+            request_id = secrets.token_urlsafe(16)
+            # Insert before dispatch so monitoring and terminal usage writes can find the row.
+            # Billing-only logs also keep internal tuning traffic out of replay workloads.
+            with DBManager() as db:
+                log, status = db.log_usage(
+                    api_key_id=auth.api_key_id,
+                    team_id=auth.team_id,
+                    user_id=auth.user_id,
+                    environment=auth.environment,
+                    log_level=LoggingLevel.BILLING.value,
+                    request_id=request_id,
+                    timeout_s=deadline,
+                )
+            if status != 200:
+                return None
+            log_id = int(log["log-id"])
             try:
-                return _choice(response, len(options))
-            finally:
-                if not isinstance(response, JSONResponse):
-                    await gateway._discard_response(response)
+                response = await gateway.route_and_execute(
+                    deployments=[selected],
+                    body=body,
+                    headers={},
+                    auth=auth,
+                    path="v1/chat/completions",
+                    log_id=log_id,
+                    request_id=request_id,
+                    required_provider_id=provider_id,
+                )
+                try:
+                    return _choice(response, len(options))
+                finally:
+                    if not isinstance(response, JSONResponse):
+                        await gateway._discard_response(response)
+            except asyncio.CancelledError:
+                expired = timeout.expired()
+                gateway._record_log_failure(
+                    log_id,
+                    request_id,
+                    "Nightly proposal timed out." if expired else "Nightly proposal cancelled.",
+                    result_status="timeout" if expired else "error",
+                )
+                raise
     except Exception as exc:
         logger.debug("Nightly proposal fell back to rules (%s)", type(exc).__name__)
         return None
