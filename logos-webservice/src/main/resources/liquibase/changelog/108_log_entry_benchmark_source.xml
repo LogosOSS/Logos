@@ -7,7 +7,7 @@
 
     <!-- Do not infer this value for historical rows from the API key's configurable
          environment. Keep the marker even if the benchmark job is removed. -->
-    <changeSet id="102-log-entry-benchmark-source" author="logos">
+    <changeSet id="108-log-entry-benchmark-source" author="logos">
         <addColumn tableName="log_entry">
             <column name="benchmark_job_id" type="INTEGER"/>
         </addColumn>

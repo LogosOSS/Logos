@@ -147,6 +147,18 @@ class TestMemoryAdmission:
         # Rows started before a memory was recorded count with the default.
         assert seen == [4096, 4096]
 
+    async def test_requested_memory_not_default_is_counted_against_reservations(self, monkeypatch):
+        memory_budget.set_for_tests(budget(8192))
+
+        async def reserved(_default_mb):
+            return 3072
+
+        monkeypatch.setattr(sessions.db, "reserved_memory_mb", reserved)
+        control = controls.Controls(session_memory_override=1024)
+        assert await sessions.memory_admission_block(control, override_mb=5120) == ""
+        assert "6144 MiB" in await sessions.memory_admission_block(control, override_mb=6144)
+        assert "exceeds" in await sessions.memory_admission_block(control, override_mb=8193)
+
     async def test_without_a_budget_nothing_is_held_back(self, monkeypatch):
         async def reserved(_default_mb):
             raise AssertionError("not read without a budget")
