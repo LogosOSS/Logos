@@ -15,9 +15,9 @@ latest schedule state. It lists concrete values from the status API. Unknown
 serving limits show **Current configuration only**. This preview reflects the
 current worker settings; the scheduler constructs the plan again at run start.
 
-Choose **Enable nightly runs…** and confirm **Enable nightly runs** to add the
-pair to the rotation. Choose **Disable nightly runs…** and confirm
-**Disable nightly runs** to remove it. **Cancel** leaves the saved state unchanged.
+Choose **Enable automatic benchmarks** to add the pair to the rotation. In **Edit schedule**, choose
+**Disable automatic benchmarks** and confirm in the dialog to remove it. **Cancel**
+leaves the saved state unchanged.
 The schedule remains active after closing the page. Disabling also cancels an
 active nightly run and restores the worker before production traffic resumes.
 

@@ -130,16 +130,15 @@ async def test_failed_or_truncated_stream_does_not_count_as_complete():
         nightly.PROGRESS.pop(7)
 
 
-def test_parameter_plan_changes_only_one_known_parameter_and_fixes_workload():
-    plan = nightly.parameter_plan({"max_num_seqs": 16, "max_num_batched_tokens": 4096})
-    assert len(plan) == 5
-    baseline = plan[0].serving_overrides.model_dump(exclude_none=True)
-    for run in plan[1:]:
-        changed = run.serving_overrides.model_dump(exclude_none=True)
-        assert sum(changed[key] != baseline[key] for key in baseline) == 1
-        assert run.model_dump(exclude={"serving_overrides"}) == plan[0].model_dump(exclude={"serving_overrides"})
-    assert plan[0].samples == 50
-    assert plan[0].max_output_tokens == 512
+def test_baseline_preserves_public_workload_controls():
+    settings = nightly.baseline_settings({"max_num_seqs": 16, "max_num_batched_tokens": 4096})
+    assert settings.serving_overrides.model_dump(exclude_none=True) == {
+        "max_num_seqs": 16,
+        "max_num_batched_tokens": 4096,
+    }
+    assert settings.samples == 50
+    assert settings.max_output_tokens == 512
+    assert settings.concurrency == 4
 
 
 @pytest.mark.parametrize("reason, completed", [("end_turn", 1), ("tool_use", 1), ("max_tokens", 0)])
@@ -167,16 +166,11 @@ async def test_messages_progress_counts_output_and_one_complete_response(reason,
         nightly.PROGRESS.pop(7)
 
 
-def test_auto_batching_starts_unchanged_then_sets_both_limits():
-    plan = nightly.parameter_plan({"max_num_seqs": 0})
-    assert plan[0].serving_overrides.model_dump(exclude_none=True) == {}
-    assert len(plan) == 5
-    assert {(run.serving_overrides.max_num_seqs, run.serving_overrides.max_num_batched_tokens) for run in plan[1:]} == {
-        (4, 2048),
-        (4, 4096),
-        (8, 2048),
-        (8, 4096),
-    }
+def test_baseline_preserves_automatic_batching_and_frozen_workload():
+    settings = nightly.baseline_settings({"max_num_seqs": 0}, {"id": "a" * 64, "request_count": 125})
+    assert settings.serving_overrides.model_dump(exclude_none=True) == {}
+    assert settings.samples == 125
+    assert settings.workload_id == "a" * 64
 
 
 async def test_unfinished_run_is_not_stopped_before_shared_cutoff(monkeypatch):

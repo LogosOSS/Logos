@@ -3,6 +3,7 @@ import { Router, RouterModule } from '@angular/router';
 import { A11yModule } from '@angular/cdk/a11y';
 import { AuthService } from '../../auth/services/auth.service';
 import { MENU_ITEMS, NAV_GROUP_LABELS } from '../../../shared/constants/nav-items';
+import { ROLE_LABELS } from '../../../shared/constants/roles';
 import { MenuItem } from '../../../shared/models/nav.model';
 import { UserRole } from '../../auth/models/user.model';
 import { Logo } from '../../../shared/components/logo/logo';
@@ -104,6 +105,11 @@ export class Shell {
     return full || user.username;
   });
 
+  readonly roleLabel = computed(() => {
+    const role = this.auth.role();
+    return role ? ROLE_LABELS[role] : '';
+  });
+
   userInitials = computed(() => {
     const user = this.auth.currentUser();
     if (!user) return '';
@@ -126,10 +132,10 @@ export class Shell {
         item.roles.includes(role as UserRole) &&
         (!item.requiresAgent || this.agentAvailable()) &&
         (!keyGatedPaths.includes(item.path) || showKeyGated) &&
-        // Teamless callers have no models to request or vote on; only
-        // logos_admin (who manages the catalog itself) keeps the entry.
+        // Teamless callers have no models to request or vote on;
+        // logos_admin and app_admin keep the entry.
         // Mirrors hasTeamGuard, the route-level boundary.
-        (!item.requiresTeam || role === 'logos_admin' || hasTeams),
+        (!item.requiresTeam || role === 'logos_admin' || role === 'app_admin' || hasTeams),
     );
     return (['system', 'management', 'personal'] as const)
       .map((key) => ({

@@ -132,6 +132,36 @@ async def test_execute_resource_mode_forwards_api_key_priority_to_pipeline(monke
         )
     assert exc.value.status_code == 503
     assert captured["request"].default_priority == 10
+    assert captured["request"].api_key_id == 1
+
+
+async def test_signed_benchmark_uses_its_authorized_deployment_without_a_user_key(monkeypatch):
+    process = AsyncMock(side_effect=RuntimeError("pipeline entered"))
+    monkeypatch.setattr(main, "_pipeline", MagicMock(process=process))
+    monkeypatch.setattr(main, "_extract_policy", lambda *_args: {})
+    deployment = {
+        "model_id": 10,
+        "provider_id": 1,
+        "type": "logosnode",
+        "model_name": "model",
+        "provider_name": "worker",
+    }
+
+    with pytest.raises(RuntimeError, match="pipeline entered"):
+        await main._execute_resource_mode(
+            deployments=[deployment],
+            body={"model": "model"},
+            headers={},
+            auth=MagicMock(key_value="", api_key_id=-1, key_type="internal", environment="model-provider-benchmark"),
+            log_id=None,
+            is_async_job=False,
+            required_provider_id=1,
+        )
+    request = process.await_args.args[0]
+    assert request.api_key_id == -1
+    assert request.internal_benchmark
+    assert request.required_provider_id == 1
+    assert request.deployments == [deployment]
 
 
 async def test_execute_resource_mode_uses_sync_response_for_resolved_whisper_alias(monkeypatch):

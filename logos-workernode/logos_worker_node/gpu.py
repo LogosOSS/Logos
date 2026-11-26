@@ -51,6 +51,7 @@ class GpuMetricsCollector:
         self._degraded_reason = ""
         self._gpu_faults: list[str] = []
         self._faulted_gpu_indices: list[int] = []
+        self._last_sample_started_at = float("-inf")
 
     @property
     def available(self) -> bool:
@@ -86,7 +87,7 @@ class GpuMetricsCollector:
         self._task = None
         logger.info("GPU collector stopped")
 
-    async def force_poll(self) -> None:
+    async def force_poll(self) -> bool:
         """Force an immediate GPU metrics refresh outside the regular poll schedule.
 
         Call this after operations that change GPU memory usage (sleep, wake) so
@@ -94,11 +95,12 @@ class GpuMetricsCollector:
         the cached pre-operation snapshot.
         """
         if not self._available:
-            return
+            return False
         try:
-            await self._poll()
+            return await self._poll()
         except Exception:
             logger.warning("Forced GPU poll failed", exc_info=True)
+            return False
 
     async def get_snapshot(self) -> DeviceSummary:
         async with self._lock:
@@ -139,11 +141,12 @@ class GpuMetricsCollector:
             except Exception:
                 logger.exception("Error polling nvidia-smi")
 
-    async def _poll(self) -> None:
+    async def _poll(self) -> bool:
         loop = asyncio.get_running_loop()
+        sample_started_at = loop.time()
         raw = await loop.run_in_executor(None, self._run_nvidia_smi)
         if raw is None:
-            return
+            return False
 
         devices: list[DeviceInfo] = []
         degraded_messages: list[str] = []
@@ -225,10 +228,15 @@ class GpuMetricsCollector:
             )
 
         async with self._lock:
+            # A slower earlier poll must never replace a newer forced sample.
+            if sample_started_at < self._last_sample_started_at:
+                return bool(self._devices)
+            self._last_sample_started_at = sample_started_at
             self._devices = devices
             self._degraded_reason = "; ".join(degraded_messages[:3]) if degraded_messages else ""
             self._gpu_faults = fault_messages
             self._faulted_gpu_indices = faulted_indices
+        return bool(devices)
 
     @staticmethod
     def _run_nvidia_smi() -> str | None:

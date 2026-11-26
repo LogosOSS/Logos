@@ -16,20 +16,68 @@ class BenchmarkReservations:
 
     def __init__(self):
         self._owners: dict[tuple[int, str], int] = {}
+        self._nightly_holds: dict[tuple[int, str], int] = {}
+        self._lanes: dict[tuple[int, str], tuple[int, str]] = {}
         self._request_guards: dict[str, Callable[[], bool]] = {}
         self._draining: dict[str, tuple[int, str, int]] = {}
         self._requests: dict[str, tuple[int, str, int]] = {}
         self._admitted: dict[str, tuple[int, str]] = {}
         self._lock = RLock()
 
-    def reserve(self, provider_id: int, model: str, job_id: int, *, draining: dict[str, str] | None = None) -> None:
+    def reserve(
+        self,
+        provider_id: int,
+        model: str,
+        job_id: int,
+        *,
+        draining: dict[str, str] | None = None,
+        nightly_owner: int | None = None,
+    ) -> None:
         with self._lock:
-            owner = self._owners.get((provider_id, model))
+            key = (provider_id, model)
+            owner = self._owners.get(key)
             if owner is not None and owner != job_id:
                 raise RuntimeError("The model lanes are already reserved for another benchmark")
-            self._owners[provider_id, model] = job_id
+            nightly_hold = self._nightly_holds.get(key)
+            if nightly_hold is not None and nightly_hold != nightly_owner:
+                raise RuntimeError("The model lanes are already reserved for nightly benchmarks")
+            if nightly_owner is not None and nightly_owner not in {nightly_hold, self._owners.get((provider_id, "*"))}:
+                raise RuntimeError("Nightly maintenance no longer owns these model lanes")
+            self._owners[key] = job_id
             for request_id, request_model in (draining or {}).items():
                 self._draining[request_id] = (provider_id, request_model, job_id)
+
+    def reserve_nightly(
+        self, provider_id: int, model: str, owner: int, *, draining: dict[str, str] | None = None
+    ) -> None:
+        """Keep the model fenced through preparation, individual jobs, and cleanup."""
+        with self._lock:
+            key = (provider_id, model)
+            existing = self._nightly_holds.get(key)
+            if existing != owner and (existing is not None or self.owner(provider_id, model) is not None):
+                raise RuntimeError("The model lanes are already reserved for another benchmark")
+            self._nightly_holds[key] = owner
+            for request_id in draining or {}:
+                self._draining[request_id] = (provider_id, model, owner)
+
+    def pin_lane(self, provider_id: int, model: str, owner: int, lane_id: str) -> None:
+        """Keep nightly requests on the journaled lane even if a replica becomes available."""
+        with self._lock:
+            if owner not in {self._nightly_holds.get((provider_id, model)), self._owners.get((provider_id, "*"))}:
+                raise RuntimeError("Nightly maintenance no longer owns these model lanes")
+            self._lanes[(provider_id, model)] = (owner, lane_id)
+
+    def pinned_lane(self, provider_id: int, model: str) -> str | None:
+        with self._lock:
+            pin = self._lanes.get((provider_id, model))
+            return pin[1] if pin else None
+
+    def pinned_model(self, provider_id: int, lane_id: str) -> str | None:
+        with self._lock:
+            return next(
+                (model for (pid, model), (_, lane) in self._lanes.items() if pid == provider_id and lane == lane_id),
+                None,
+            )
 
     def try_admit(self, provider_id: int, model: str, request_id: str, reserve_capacity: Callable[[], bool]) -> bool:
         """Atomically admit capacity before a benchmark can take ownership."""
@@ -42,7 +90,7 @@ class BenchmarkReservations:
     def admit_queued(self, provider_id: int, model: str, dequeue: Callable):
         """Keep queue removal and admission atomic with benchmark acquisition."""
         with self._lock:
-            owner = self._owners.get((provider_id, model))
+            owner = self.owner(provider_id, model, exact=True)
             if (owner is not None and owner < 0) or (owner is None and (provider_id, "*") in self._owners):
                 return None, None
             task, entry = dequeue(owner)
@@ -60,11 +108,24 @@ class BenchmarkReservations:
         """Include cancelled jobs whose worker cleanup has not finished."""
         with self._lock:
             owners = [owner for (pid, _), owner in self._owners.items() if pid == provider_id]
+            owners.extend(owner for (pid, _), owner in self._nightly_holds.items() if pid == provider_id)
             return next((owner for owner in owners if owner > 0), owners[0] if owners else None)
 
     def owner(self, provider_id: int, model: str, *, exact: bool = False) -> int | None:
         with self._lock:
-            return self._owners.get((provider_id, model), None if exact else self._owners.get((provider_id, "*")))
+            key = (provider_id, model)
+            return self._owners.get(
+                key, self._nightly_holds.get(key, None if exact else self._owners.get((provider_id, "*")))
+            )
+
+    def is_nightly_reserved(self, provider_id: int, model: str | None = None) -> bool:
+        """Test a given model or, for whole-worker commands, any model on the worker."""
+        with self._lock:
+            if (provider_id, "*") in self._owners:
+                return True
+            if model is not None:
+                return (provider_id, model) in self._nightly_holds
+            return any(pid == provider_id for pid, _ in self._nightly_holds)
 
     def register_request(
         self, provider_id: int, model: str, job_id: int, request_id: str, *, guard: Callable[[], bool] | None = None
@@ -110,6 +171,8 @@ class BenchmarkReservations:
         with self._lock:
             self._draining = {key: value for key, value in self._draining.items() if value[2] != job_id}
             self._owners = {key: owner for key, owner in self._owners.items() if owner != job_id}
+            self._nightly_holds = {key: owner for key, owner in self._nightly_holds.items() if owner != job_id}
+            self._lanes = {key: value for key, value in self._lanes.items() if value[0] != job_id}
             self._requests = {key: value for key, value in self._requests.items() if value[2] != job_id}
             self._request_guards = {key: guard for key, guard in self._request_guards.items() if key in self._requests}
 

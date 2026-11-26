@@ -20,6 +20,9 @@ description and the capabilities of each model. App Admins see the list. They
 do not see the operator controls for each model (weights, aliases, add and
 delete).
 
+Use **Active models** to browse the catalogue. Use **Model requests** to request a model for your team.
+Enter the Hugging Face repository name, select your team, and select **Vote for this model**.
+
 ![Models page](/img/roles/app-admin-models.png)
 
 ## Users
@@ -52,6 +55,8 @@ key or a member has no individual limit.
 ![Team detail — Overview](/img/roles/team-detail-overview.png)
 
 ### Members
+
+When you open your own developer key, Logos can ask you to [choose a logging level](app-developer.md#choose-a-logging-level).
 
 Open **Members → Import CSV** to add people to this team. **Add Member** remains available for a single account. The tab also shows owners and each person’s budget and rate-limit overrides.
 

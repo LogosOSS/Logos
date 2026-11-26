@@ -6,6 +6,7 @@ from contextvars import ContextVar
 from datetime import UTC, datetime, timedelta
 
 from logos.benchmarks import nightly_store as store
+from logos.benchmarks.nightly import configured_lane_id
 from logos.benchmarks.reservations import benchmark_reservations
 from logos.maintenance_window import maintenance_node_limit
 
@@ -201,11 +202,10 @@ class MaintenanceCoordinator:
     async def release_recovery(self, pair_id, force=False):
         """Release a nightly recovery journal on an operator's request.
 
-        Without ``force`` the worker must show the journal's lane with its
-        original ``vllm_config``, so releasing only drops bookkeeping. With
-        ``force`` the journal is dropped without that proof; the lane keeps
-        whatever settings it runs now. Either way the recovery's own orphaned
-        benchmark jobs are failed and the worker's reservation is lifted.
+        Without ``force`` the worker must confirm the original lanes and
+        settings. With ``force`` the journal is dropped without that proof and
+        the worker retains its current lanes. The worker must still release
+        any held GPU group before the journal can be cleared.
         """
         import importlib
 
@@ -234,14 +234,28 @@ class MaintenanceCoordinator:
                         raise MaintenanceBusyError(
                             f"The worker cannot confirm the original settings ({str(exc) or type(exc).__name__})"
                         ) from exc
-                    lane = next(
-                        (lane for lane in runtime.get("lanes") or [] if lane.get("lane_id") == recovery.get("lane_id")),
-                        None,
-                    )
-                    if lane is None:
+                    lanes = runtime.get("lanes")
+                    if not isinstance(lanes, list):
+                        raise MaintenanceBusyError("The worker cannot confirm its lane inventory")
+                    by_id = {lane["lane_id"]: lane for lane in lanes}
+                    original = by_id.get(recovery.get("lane_id"))
+                    if recovery.get("temporary_lane"):
+                        if original is not None:
+                            raise MaintenanceBusyError("The temporary benchmark lane is still present on the worker")
+                    elif original is None:
                         raise MaintenanceBusyError("The recovered lane is not loaded on the worker")
-                    if (lane.get("lane_config") or {}).get("vllm_config") != recovery.get("vllm_config"):
+                    elif (original.get("lane_config") or {}).get("vllm_config") != recovery.get("vllm_config"):
                         raise MaintenanceBusyError("The lane does not run its original settings yet")
+                    suspended = recovery.get("removed_lanes", []) + recovery.get("slept_lanes", [])
+                    for config in suspended:
+                        lane = by_id.get(configured_lane_id(config)) or {}
+                        if (
+                            lane.get("lane_config") != config
+                            or lane.get("runtime_state") not in {"loaded", "running"}
+                            or lane.get("sleep_state") not in {"awake", "unsupported"}
+                            or lane.get("transition") is not None
+                        ):
+                            raise MaintenanceBusyError("An original lane has not returned with its original settings")
                 if not store.lock_held(connection) or not store.execution_lock_held(execution, pair_id):
                     raise MaintenanceBusyError("Maintenance command is still in progress")
                 if jobs:
@@ -249,6 +263,20 @@ class MaintenanceCoordinator:
                     store.finish_recovery_jobs(jobs)
                     for job in jobs:
                         benchmark_reservations.release(job)
+                if recovery.get("gpu_budget"):
+                    try:
+                        await self.registry.send_command(
+                            provider_id,
+                            "release_nightly_gpu_budget",
+                            {"lane_id": recovery["lane_id"]},
+                            timeout_seconds=30,
+                        )
+                    except (LogosNodeOfflineError, LogosNodeCommandError, TimeoutError) as exc:
+                        raise MaintenanceBusyError(
+                            "The worker has not confirmed release of the benchmark GPUs"
+                        ) from exc
+                    if not store.lock_held(connection) or not store.execution_lock_held(execution, pair_id):
+                        raise MaintenanceBusyError("Maintenance command is still in progress")
                 store.save(pair_id, "interrupted_recovered", row["report"], None)
                 benchmark_reservations.release(-pair_id)
         logger.warning(

@@ -1,0 +1,220 @@
+import { ChangeDetectionStrategy, Component, computed, effect, inject, input, OnDestroy, signal } from '@angular/core';
+import { DatePipe, DecimalPipe } from '@angular/common';
+import { RouterLink } from '@angular/router';
+import { HttpClient } from '@angular/common/http';
+import { firstValueFrom } from 'rxjs';
+import { ModelProviderBenchmark } from '../../shared/models/provider.model';
+import { NightlyStatus } from './nightly-benchmarks';
+import { benchmarkDatasetLabel, servingConfigurationItems } from './benchmark-configuration';
+import {
+  benchmarkResultRow, displayParameterChange, NightlyParameterChange, recordedNightlyChanges, SavedNightlyComparison,
+} from './benchmark-result-row';
+import { benchmarkProgress, recordConfiguration } from './benchmark-progress';
+import { comparisonValue } from './benchmark-comparison';
+
+interface AnswerLengthChange {
+  request_number: number;
+  baseline_tokens: number;
+  trial_tokens: number;
+  change_percent: number | null;
+}
+
+interface SelectionComparison {
+  benchmark_id: number;
+  baseline_id: number | null;
+  throughput: number | null;
+  issues: string[];
+  length_mismatches?: number;
+  length_changes?: AnswerLengthChange[];
+}
+
+type AnswerLengthDetails = AnswerLengthChange[] | 'loading' | 'error';
+interface DeploymentStatus extends NightlyStatus {
+  deployment?: DeploymentSnapshot;
+  selection?: { best_observed: SelectionComparison | null; best_eligible: SelectionComparison | null; comparisons: SelectionComparison[] };
+  active_trial?: { baseline_id: number | null; changes: NightlyParameterChange[] } | null;
+}
+
+export interface DeploymentSnapshot {
+  available: boolean;
+  status?: string;
+  active_replicas?: number;
+  mixed_configuration?: boolean;
+  configured_settings?: Record<string, unknown>;
+  observed_at?: string;
+  lane_state?: string;
+  maintenance: boolean;
+  series_key?: string | null;
+  configuration: Record<string, unknown>;
+}
+
+function canonical(value: unknown): string {
+  if (Array.isArray(value)) return JSON.stringify(value.map(canonical));
+  if (value !== null && typeof value === 'object') return JSON.stringify(Object.entries(value)
+    .filter(([key, item]) => key !== 'command' && item != null).sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, item]) => [key, canonical(item)]));
+  return JSON.stringify(value);
+}
+
+/** A recorded winner alone does not establish what the worker serves now. */
+export function deployedMeasurement(deployment: DeploymentSnapshot | undefined, runs: readonly ModelProviderBenchmark[], sameEnvironment = true) {
+  if (!deployment?.available || deployment.maintenance || deployment.mixed_configuration
+    || (sameEnvironment && !deployment.series_key) || !Object.keys(deployment.configuration).length) return null;
+  const current = canonical(deployment.configuration);
+  return [...runs].sort((a, b) => Date.parse(b.recorded_at) - Date.parse(a.recorded_at) || b.id - a.id).find(run => {
+    const nightly = run.configuration['nightly'] as { series_key?: string } | undefined;
+    const totals = run.metrics.request_totals;
+    return (!sameEnvironment || nightly?.series_key === deployment.series_key) && canonical(run.configuration['serving']) === current
+      && run.sample_size > 0 && totals?.successful === run.sample_size && totals.total === run.sample_size
+      && totals.errored === 0 && totals.incomplete === 0;
+  }) ?? null;
+}
+
+/** A manual run can show its change from the explicitly labeled first dataset baseline. */
+export function deployedResult(run: ModelProviderBenchmark, runs: readonly ModelProviderBenchmark[]) {
+  const row = { ...benchmarkResultRow(run, runs), startingBaseline: false };
+  if (run.configuration['nightly'] || row.before !== null) return row;
+  const reference = benchmarkProgress(runs).find(chart => chart.runIds.includes(run.id))?.reference;
+  if (!reference) return row;
+  const before = comparisonValue(reference, 'throughput');
+  return { ...row, startingBaseline: true, before, baselineId: reference.id,
+    delta: before !== null && before > 0 && row.after !== null ? (row.after / before - 1) * 100 : null,
+    comparisonNote: `Historical comparison with the starting dataset baseline #${reference.id}` };
+}
+
+@Component({
+  selector: 'app-deployed-configuration', standalone: true, imports: [DatePipe, DecimalPipe, RouterLink],
+  templateUrl: './deployed-configuration.html', styleUrl: './deployed-configuration.scss',
+  changeDetection: ChangeDetectionStrategy.OnPush,
+})
+export class DeployedConfiguration implements OnDestroy {
+  readonly pairId = input.required<number>();
+  readonly providerName = input.required<string>();
+  readonly runs = input.required<readonly ModelProviderBenchmark[]>();
+  private readonly http = inject(HttpClient);
+  readonly state = signal<DeploymentStatus | null>(null);
+  readonly error = signal(false);
+  readonly answerLengthDetails = signal<ReadonlyMap<number, AnswerLengthDetails>>(new Map());
+  readonly datasetLabel = benchmarkDatasetLabel;
+  readonly deployment = computed(() => this.state()?.deployment);
+  readonly workerStatus = computed(() => {
+    const deployment = this.deployment();
+    if (this.error()) return 'Status check failed';
+    if (!this.state()) return 'Checking…';
+    if (deployment?.maintenance) return 'Benchmark maintenance';
+    if (deployment?.available) return (deployment.active_replicas ?? 0) > 1 ? `Active · ${deployment.active_replicas} replicas` : 'Active';
+    const labels: Record<string, string> = {
+      offline: 'Worker offline', waiting: 'Waiting for telemetry', sleeping: 'Model sleeping', cold: 'Model cold',
+      starting: 'Model starting', configured: 'Configured on worker', stopped: 'Model stopped',
+      no_lane: 'No model lane reported', error: 'Worker reported a model error', not_ready: 'Model not ready',
+    };
+    return labels[deployment?.status ?? ''] ?? 'No live status';
+  });
+  readonly measurement = computed(() => {
+    const deployment = this.deployment();
+    return deployment ? deployedMeasurement(deployment, this.runs().filter(run => run.model_provider_id === this.pairId())) : null;
+  });
+  readonly deployedRun = computed(() => {
+    const adopted = this.adoptionRun();
+    if (!adopted || this.hasUnreportedBatchingLimit()) return this.measurement();
+    // The ring identifies the applied settings. Live throughput still requires the same measurement series.
+    return deployedMeasurement(this.deployment(), [adopted], false) ?? this.measurement();
+  });
+  readonly historicalMeasurement = computed(() => this.measurement() ?? deployedMeasurement(this.deployment(),
+    this.runs().filter(run => run.model_provider_id === this.pairId()), false));
+  readonly result = computed(() => this.historicalMeasurement() ? deployedResult(this.historicalMeasurement()!, this.runs()) : null);
+  readonly benchmarkParameterChanges = computed(() => {
+    const state = this.state();
+    if (!state) return null;
+    if (state.active_trial) return {
+      baselineId: state.active_trial.baseline_id,
+      run: null,
+      changes: state.active_trial.changes.map(displayParameterChange),
+    };
+
+    const runs = this.runs().filter(run => run.model_provider_id === this.pairId())
+      .sort((a, b) => Date.parse(b.recorded_at) - Date.parse(a.recorded_at) || b.id - a.id);
+    for (const run of runs) {
+      const nightly = run.configuration['nightly'] as SavedNightlyComparison | undefined;
+      const baselineId = nightly?.baseline_id;
+      if (!baselineId || baselineId === run.id) continue;
+      const changes = recordedNightlyChanges(run);
+      if (changes.length) return { baselineId, run, changes };
+    }
+    return null;
+  });
+  private readonly servingParameters = computed(() => servingConfigurationItems({
+    configuration: { serving: this.deployment()?.configuration },
+  }).map(item => item.key === 'max_num_seqs' && item.value === '0' ? { ...item, value: 'Auto' } : item));
+  readonly parameters = computed(() => this.servingParameters().filter(item => item.captured));
+  readonly configuredParameters = computed(() => servingConfigurationItems({
+    configuration: { serving: this.deployment()?.configured_settings },
+  }).filter(item => item.captured));
+  readonly keyParameters = computed(() => this.servingParameters()
+    .filter(item => ['max_num_seqs', 'max_num_batched_tokens'].includes(item.key)));
+  readonly hasUnreportedBatchingLimit = computed(() => this.keyParameters().some(item => !item.captured));
+  readonly selection = computed(() => this.state()?.selection);
+  readonly excludedComparisons = computed(() => this.selection()?.comparisons.filter(comparison => comparison.issues.length) ?? []);
+  readonly adoption = computed(() => this.state()?.optimizer?.production_adoption);
+  readonly adoptionRun = computed(() => {
+    const benchmarkId = this.adoption()?.benchmark_id;
+    return this.runs().find(run => run.id === benchmarkId && run.model_provider_id === this.pairId());
+  });
+  readonly recordedConfiguration = recordConfiguration;
+  private timer?: ReturnType<typeof setTimeout>;
+  private generation = 0;
+  private destroyed = false;
+
+  constructor() {
+    effect(() => {
+      const id = this.pairId();
+      this.state.set(null);
+      this.error.set(false);
+      this.answerLengthDetails.set(new Map());
+      void this.load(id, ++this.generation);
+    });
+  }
+
+  async loadAnswerLengthDetails(benchmarkId: number): Promise<void> {
+    const current = this.answerLengthDetails().get(benchmarkId);
+    if (current !== undefined && current !== 'error') return;
+    const pairId = this.pairId();
+    const generation = this.generation;
+    this.setAnswerLengthDetails(benchmarkId, 'loading');
+    let details: AnswerLengthDetails;
+    try {
+      const status = await firstValueFrom(this.http.post<DeploymentStatus>(
+        '/api/logosdb/model_benchmarks/nightly/status', { model_provider_id: pairId, length_comparison_id: benchmarkId }));
+      details = status.selection?.comparisons.find(item => item.benchmark_id === benchmarkId)?.length_changes ?? [];
+    } catch {
+      details = 'error';
+    }
+    if (!this.destroyed && generation === this.generation && pairId === this.pairId()) {
+      this.setAnswerLengthDetails(benchmarkId, details);
+    }
+  }
+
+  lengthChangeNearBoundary(percent: number): boolean {
+    // Two decimal places can otherwise make a rejected value look exactly at the limit.
+    return Math.abs(percent) < 20.005;
+  }
+
+  private setAnswerLengthDetails(benchmarkId: number, details: AnswerLengthDetails): void {
+    this.answerLengthDetails.update(current => new Map(current).set(benchmarkId, details));
+  }
+  ngOnDestroy(): void { this.destroyed = true; this.generation++; clearTimeout(this.timer); }
+  private async load(id: number, generation: number): Promise<void> {
+    clearTimeout(this.timer);
+    try {
+      const state = await firstValueFrom(this.http.post<DeploymentStatus>(
+        '/api/logosdb/model_benchmarks/nightly/status', { model_provider_id: id }));
+      if (this.destroyed || generation !== this.generation) return;
+      this.state.set(state); this.error.set(false);
+    } catch {
+      if (this.destroyed || generation !== this.generation) return;
+      this.state.set(null); this.error.set(true);
+    } finally {
+      if (!this.destroyed && generation === this.generation) this.timer = setTimeout(() => void this.load(id, generation), 15000);
+    }
+  }
+}

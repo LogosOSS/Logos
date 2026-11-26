@@ -19,6 +19,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from logos.asyncio_tasks import cancel_and_wait
 from logos.background_refresh import BackgroundRefreshedValue
+from logos.benchmarks.nightly import NIGHTLY_CONTEXT
 from logos.benchmarks.reservations import benchmark_reservations
 from logos.logosnode_registry import LogosNodeCommandError, LogosNodeRuntimeRegistry
 from logos.monitoring import prometheus_metrics as prom
@@ -261,7 +262,7 @@ class CapacityPlanner:
     #
     #   ESTIMATION_SLACK_RATIO — multiplicative slack on disk-size → memory
     #     estimates for non-calibrated profiles. Applied at the *size estimation*
-    #     site, not the gate. Calibrated/measured profiles skip it because their
+    #     site, not the gate. Calibrated profiles skip it because their
     #     base_residency was observed empirically.
     #
     #   VRAM_SAFETY_MARGIN — aggregate (whole-provider) multiplier; left at 1.0
@@ -900,19 +901,19 @@ class CapacityPlanner:
         same settings. A lane of a locked worker that slept before is put to
         sleep again once it runs.
         """
-        registry = self._registry
-        snapshot = registry.peek_runtime_snapshot(provider_id) if registry is not None else None
-        if snapshot is None:
-            return []
-        runtime_lanes = (snapshot.get("runtime") or {}).get("lanes") or []
-        if not isinstance(runtime_lanes, list):
-            return []
         if not any(pid == provider_id and entry[0] for (pid, _), entry in self._lock_cache().peek().items()):
             return []
         await self._retry_unsettled_refusals(provider_id)
-        present = {str(lane.get("lane_id")) for lane in runtime_lanes if isinstance(lane, dict)}
         pending = self._restore_sleep_pending()
         async with self._restore_record_lock(provider_id):
+            registry = self._registry
+            snapshot = registry.peek_runtime_snapshot(provider_id) if registry is not None else None
+            if snapshot is None:
+                return []
+            runtime_lanes = (snapshot.get("runtime") or {}).get("lanes") or []
+            if not isinstance(runtime_lanes, list):
+                return []
+            present = {str(lane.get("lane_id")) for lane in runtime_lanes if isinstance(lane, dict)}
             # Read under the lock: a change waited for may have rewritten a record.
             locks = [
                 (lane_id, revision, record)
@@ -935,8 +936,13 @@ class CapacityPlanner:
             # other commands for a long time, so only a definite failure
             # (unload_refused) brings the lane back into the records.
             done = {lane_id for lane_id in unloading if lane_id not in present}
+            # Nightly owns recovery for its model. Keep its last serving
+            # config in the lock record until Nightly settles and releases it.
             observed = {
-                lane_id: entry for lane_id, entry in observed_lanes(runtime_lanes).items() if lane_id not in unloading
+                lane_id: entry
+                for lane_id, entry in observed_lanes(runtime_lanes).items()
+                if lane_id not in unloading
+                and not benchmark_reservations.is_nightly_reserved(provider_id, entry["lane_config"]["model"])
             }
             records = []
             for lock_id, revision, record in locks:
@@ -1044,6 +1050,10 @@ class CapacityPlanner:
             for lane_id, entry in missing:
                 if lane_id in planned or lane_id in busy:
                     continue
+                lane_config = dict(entry["lane_config"])
+                model_name = str(lane_config["model"])
+                if benchmark_reservations.is_nightly_reserved(provider_id, model_name):
+                    continue
                 if not entry.get("sleeping") and self._overlaps(self._parse_restore_gpus(entry), unsettled_gpus):
                     continue
                 if self._lane_is_in_load_failure_cooldown(provider_id, lane_id):
@@ -1051,13 +1061,12 @@ class CapacityPlanner:
                 planned.add(lane_id)
                 if cycle_reserved_lane_ids is not None:
                     cycle_reserved_lane_ids.setdefault(provider_id, set()).add(lane_id)
-                lane_config = dict(entry["lane_config"])
                 actions.append(
                     CapacityPlanAction(
                         action="load",
                         provider_id=provider_id,
                         lane_id=lane_id,
-                        model_name=str(lane_config["model"]),
+                        model_name=model_name,
                         params=lane_config,
                         reason="Restoring a locked lane as it was before the worker restarted",
                         restore=True,
@@ -2106,23 +2115,38 @@ class CapacityPlanner:
         if self._registry and not self._registry.has_received_first_status(provider_id):
             raise RuntimeError(f"Worker {provider_id} has not reported its status yet. Retry after it connects.")
 
+        pinned = self._require_benchmark_lane_pin(provider_id, model_name)
         target = self._pick_request_target_lane(provider_id, model_name)
         if target is not None and self._benchmark_lane_is_ready(target):
             await self._drain_benchmark_lane(provider_id, model_name, target.lane_id, timeout_seconds)
+            self._require_benchmark_lane_pin(provider_id, model_name, pinned)
             return True
         if target is not None and target.runtime_state == "starting":
-            await self._wait_for_benchmark_lane_ready(provider_id, model_name, timeout_seconds)
+            await self._wait_for_benchmark_lane_ready(provider_id, model_name, timeout_seconds, lane_id=pinned)
+        elif pinned is not None:
+            raise RuntimeError(f"Nightly benchmark lane '{pinned}' on worker {provider_id} is no longer ready.")
         elif target is not None and target.runtime_state in {"sleeping", "cold"}:
             await self._prepare_existing_lane(provider_id, model_name, target, timeout_seconds, raise_on_failure=True)
         else:
             await self._cold_load_for_request(provider_id, model_name, timeout_seconds, raise_on_failure=True)
 
+        self._require_benchmark_lane_pin(provider_id, model_name, pinned)
         target = self._pick_request_target_lane(provider_id, model_name)
         if target is None or not self._benchmark_lane_is_ready(target):
             state = target.runtime_state if target is not None else "missing"
             raise RuntimeError(f"Benchmark model '{model_name}' on worker {provider_id} is not ready (state: {state}).")
         await self._drain_benchmark_lane(provider_id, model_name, target.lane_id, timeout_seconds)
+        self._require_benchmark_lane_pin(provider_id, model_name, pinned)
         return True
+
+    @staticmethod
+    def _require_benchmark_lane_pin(provider_id: int, model_name: str, expected: str | None = None) -> str | None:
+        pinned = benchmark_reservations.pinned_lane(provider_id, model_name)
+        if (NIGHTLY_CONTEXT.get() and pinned is None) or (expected is not None and pinned != expected):
+            raise RuntimeError(
+                f"Nightly benchmark for '{model_name}' on worker {provider_id} no longer owns its pinned lane"
+            )
+        return pinned
 
     def _refuse_benchmark_on_locked_worker(self, provider_id: int) -> None:
         """A benchmark wakes, loads, reconfigures and drains lanes, which a locked worker does not allow."""
@@ -2153,14 +2177,28 @@ class CapacityPlanner:
         overrides,
         timeout_seconds: float = 600.0,
         progress_callback: Callable[[str], None] | None = None,
+        *,
+        baseline_config: dict | None = None,
     ) -> bool:
-        """Reload an idle vLLM lane and wait for its new configuration to be reported."""
+        """Reuse an idle vLLM lane when it already matches, or reload and confirm the requested settings."""
         self._refuse_benchmark_on_locked_worker(provider_id)
-        from logos.benchmarks.guidellm_runner import apply_serving_overrides
+        from logos.benchmarks.guidellm_runner import (
+            apply_serving_overrides,
+            benchmark_model_lane,
+            lane_serving_configuration,
+        )
         from logos.benchmarks.worker_limits import validate_worker_overrides, worker_limits
 
+        pinned = self._require_benchmark_lane_pin(provider_id, model_name)
         validate_worker_overrides(
-            overrides, worker_limits(self._registry.peek_runtime_snapshot(provider_id), model_name)
+            overrides,
+            worker_limits(
+                self._registry.peek_runtime_snapshot(provider_id),
+                model_name,
+                lane_id=pinned,
+                baseline_config=baseline_config,
+            ),
+            nightly=baseline_config is not None,
         )
 
         target = self._pick_request_target_lane(provider_id, model_name)
@@ -2170,7 +2208,9 @@ class CapacityPlanner:
                 (
                     lane
                     for lane in self._safe_get_lanes(provider_id)
-                    if lane.model_name == model_name and lane.runtime_state in {"error", "stopped"}
+                    if lane.model_name == model_name
+                    and lane.runtime_state in {"error", "stopped"}
+                    and (pinned is None or lane.lane_id == pinned)
                 ),
                 None,
             )
@@ -2180,6 +2220,7 @@ class CapacityPlanner:
         if not recovering:
             if not await self.prepare_benchmark_lane(provider_id, model_name, timeout_seconds):
                 return False
+            self._require_benchmark_lane_pin(provider_id, model_name, pinned)
             target = self._pick_request_target_lane(provider_id, model_name)
         if target is None:
             raise RuntimeError(
@@ -2188,21 +2229,40 @@ class CapacityPlanner:
         if recovering:
             await self._drain_benchmark_lane(provider_id, model_name, target.lane_id, timeout_seconds)
         async with self._lane_lock(provider_id, target.lane_id):
+            self._require_benchmark_lane_pin(provider_id, model_name, pinned)
             snapshot = self._registry.peek_runtime_snapshot(provider_id) or {}
-            lane = next(
-                (
-                    lane
-                    for lane in (snapshot.get("runtime") or {}).get("lanes", [])
-                    if lane.get("lane_id") == target.lane_id
-                ),
-                None,
+            lane = (
+                benchmark_model_lane(snapshot, model_name, lane_id=pinned)
+                if pinned is not None
+                else next(
+                    (
+                        lane
+                        for lane in (snapshot.get("runtime") or {}).get("lanes", [])
+                        if lane.get("lane_id") == target.lane_id
+                    ),
+                    None,
+                )
             )
             config = (lane or {}).get("lane_config") or {}
             if not config.get("vllm"):
                 raise RuntimeError("Serving overrides require an existing vLLM lane on this worker")
-            validate_worker_overrides(overrides, worker_limits(snapshot, model_name))
+            validate_worker_overrides(
+                overrides,
+                worker_limits(snapshot, model_name, lane=lane, baseline_config=baseline_config),
+                nightly=baseline_config is not None,
+            )
             current = config.get("vllm_config") or {}
-            updated = apply_serving_overrides(current, overrides)
+            if pinned is not None and not recovering and baseline_config is None:
+                requested = overrides.model_dump(exclude_none=True)
+                live = lane_serving_configuration(lane)
+                # Batching flags may use a different spelling in the saved lane
+                # config. A matching Nightly baseline should keep this process.
+                if requested.keys() <= {"max_num_seqs", "max_num_batched_tokens"} and all(
+                    live.get(key) == value for key, value in requested.items()
+                ):
+                    return True
+            # Nightly candidates are relative to the original lane, including omitted automatic values.
+            updated = apply_serving_overrides(current if baseline_config is None else baseline_config, overrides)
             if updated == current and not recovering:
                 return True
             self._hold_lane_cold(provider_id, target.lane_id)
@@ -2217,6 +2277,7 @@ class CapacityPlanner:
                         "updates": {"vllm_config": updated},
                         "require_idle": True,
                         **({"force_restart": True} if recovering else {}),
+                        **({"nightly_gpu_budget": True} if pinned is not None else {}),
                     },
                     timeout_seconds=int(timeout_seconds),
                 )
@@ -2237,9 +2298,18 @@ class CapacityPlanner:
                 confirmation_timeout = min(timeout_seconds, 30.0)
                 deadline = time.monotonic() + confirmation_timeout
                 while time.monotonic() < deadline:
+                    self._require_benchmark_lane_pin(provider_id, model_name, pinned)
                     snapshot = self._registry.peek_runtime_snapshot(provider_id) or {}
                     lanes = (snapshot.get("runtime") or {}).get("lanes", [])
-                    lane = next((item for item in lanes if item.get("lane_id") == target.lane_id), {})
+                    lane = next(
+                        (
+                            item
+                            for item in lanes
+                            if item.get("lane_id") == target.lane_id
+                            and (pinned is None or item.get("model") == model_name)
+                        ),
+                        {},
+                    )
                     actual = (lane.get("lane_config") or {}).get("vllm_config") or {}
                     if all(actual.get(key) == value for key, value in updated.items()):
                         break
@@ -2251,6 +2321,7 @@ class CapacityPlanner:
                     )
             finally:
                 self._release_lane_cold(provider_id, target.lane_id)
+        self._require_benchmark_lane_pin(provider_id, model_name, pinned)
         return await self.prepare_benchmark_lane(provider_id, model_name, timeout_seconds)
 
     @staticmethod
@@ -2262,11 +2333,17 @@ class CapacityPlanner:
         provider_id: int,
         model_name: str,
         timeout_seconds: float,
+        *,
+        lane_id: str | None = None,
     ) -> bool:
         """Wait for an already-starting lane instead of issuing a duplicate load."""
         deadline = time.monotonic() + timeout_seconds
         while True:
-            matching_lanes = [lane for lane in self._safe_get_lanes(provider_id) if lane.model_name == model_name]
+            matching_lanes = [
+                lane
+                for lane in self._safe_get_lanes(provider_id)
+                if lane.model_name == model_name and (lane_id is None or lane.lane_id == lane_id)
+            ]
             target = best_lane([lane for lane in matching_lanes if lane.runtime_state not in {"stopped", "error"}])
             if target is not None:
                 if target.runtime_state in {"loaded", "running"} and target.sleep_state != "sleeping":
@@ -5411,10 +5488,7 @@ class CapacityPlanner:
             if profile and profile.tensor_parallel_size and int(profile.tensor_parallel_size) > 1:
                 tp = int(profile.tensor_parallel_size)
             load_cost = self._estimate_model_loaded_vram(profile) if profile else 4096.0
-            is_calibrated = profile is not None and profile.residency_source in (
-                "calibrated",
-                "measured",
-            )
+            is_calibrated = profile is not None and profile.residency_source == "calibrated"
             if tp > 1 and not is_calibrated:
                 # Calibrated base_residency already includes TP overhead from
                 # the actual measured run.  Only add the estimate for unknown models.
@@ -6251,10 +6325,13 @@ class CapacityPlanner:
         provider_id: int,
         model_name: str,
     ) -> Optional[LaneSchedulerSignals]:
+        pinned = benchmark_reservations.pinned_lane(provider_id, model_name)
         lanes = [
             lane
             for lane in self._safe_get_lanes(provider_id)
-            if lane.model_name == model_name and lane.runtime_state not in {"stopped", "error"}
+            if lane.model_name == model_name
+            and lane.runtime_state not in {"stopped", "error"}
+            and (pinned is None or lane.lane_id == pinned)
         ]
         return best_lane(lanes)
 
@@ -6372,7 +6449,7 @@ class CapacityPlanner:
                 per_gpu_total = self._get_per_gpu_total(provider_id) or {}
                 if target_gpu_ids and per_gpu_free is not None and all(dev in per_gpu_free for dev in target_gpu_ids):
                     tp = len(target_gpu_ids)
-                    is_calibrated = profile is not None and profile.residency_source in ("calibrated", "measured")
+                    is_calibrated = profile is not None and profile.residency_source == "calibrated"
                     if tp > 1:
                         if is_calibrated:
                             # Calibrated base_residency is the measured total across
@@ -6458,7 +6535,7 @@ class CapacityPlanner:
                         inferred = self._infer_tensor_parallel(profile, capacity, provider_id)
                         if inferred and inferred > 1:
                             tp = inferred
-                    is_calibrated_tp = profile is not None and profile.residency_source in ("calibrated", "measured")
+                    is_calibrated_tp = profile is not None and profile.residency_source == "calibrated"
                     if tp > 1:
                         if is_calibrated_tp:
                             footprint_per_gpu = needed / tp
@@ -7484,7 +7561,7 @@ class CapacityPlanner:
         """
         if profile is None:
             return True
-        if profile.residency_source in ("calibrated", "measured"):
+        if profile.residency_source == "calibrated":
             return False
         return not (profile.residency_source == "override" and self._provider_is_metal(provider_id))
 
@@ -7542,10 +7619,7 @@ class CapacityPlanner:
             )
             return False
 
-        is_calibrated = profile is not None and profile.residency_source in (
-            "calibrated",
-            "measured",
-        )
+        is_calibrated = profile is not None and profile.residency_source == "calibrated"
 
         if is_calibrated:
             # Use the realistic loaded footprint — min(base_residency, observed
@@ -9176,7 +9250,7 @@ class CapacityPlanner:
     def _estimate_model_loaded_vram(self, profile: ModelProfile) -> float:
         """Total GPU memory (MB) used by a model when fully loaded and awake.
 
-        For calibrated/measured vLLM profiles: prefer the live-observed
+        For calibrated vLLM profiles: prefer the live-observed
         loaded_vram_mb over base_residency_mb. Calibration measures
         base_residency from total nvidia-smi VRAM while vLLM holds its
         gpu_memory_utilization KV pool, so base_residency comes out ≈ a whole
@@ -9198,7 +9272,7 @@ class CapacityPlanner:
         """
         if profile.engine == "vllm":
             base = float(profile.estimate_base_residency_mb() or 0.0)
-            if profile.residency_source in ("calibrated", "measured"):
+            if profile.residency_source == "calibrated":
                 observed = float(profile.loaded_vram_mb or 0.0)
                 if observed > 0.0:
                     return min(base, observed) if base > 0.0 else observed
@@ -9237,7 +9311,7 @@ class CapacityPlanner:
         """
         if profile is not None and profile.engine == "vllm":
             base_residency = float(profile.estimate_base_residency_mb() or 0.0)
-            is_calibrated = profile.residency_source in ("calibrated", "measured")
+            is_calibrated = profile.residency_source == "calibrated"
 
             if is_calibrated:
                 # Prefer the live-observed footprint over the inflated calibrated

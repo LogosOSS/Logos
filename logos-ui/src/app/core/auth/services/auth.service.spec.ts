@@ -1,12 +1,13 @@
 import { TestBed } from '@angular/core/testing';
 import { provideHttpClient } from '@angular/common/http';
-import { provideHttpClientTesting } from '@angular/common/http/testing';
+import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { KEYCLOAK } from '../keycloak';
 import { AuthService } from './auth.service';
 
-describe('AuthService token refresh', () => {
+describe('AuthService', () => {
   const keycloak = { authenticated: false, token: 'old-token', updateToken: vi.fn() };
   let service: AuthService;
+  let http: HttpTestingController;
 
   beforeEach(() => {
     keycloak.authenticated = false;
@@ -16,8 +17,11 @@ describe('AuthService token refresh', () => {
       providers: [provideHttpClient(), provideHttpClientTesting(), { provide: KEYCLOAK, useValue: keycloak }],
     });
     service = TestBed.inject(AuthService);
+    http = TestBed.inject(HttpTestingController);
     keycloak.authenticated = true;
   });
+
+  afterEach(() => http.verify());
 
   it('forces Keycloak to refresh when the server reports expiry', async () => {
     keycloak.updateToken.mockImplementation(async () => { keycloak.token = 'fresh-token'; });

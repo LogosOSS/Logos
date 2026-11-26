@@ -15,11 +15,25 @@ class NightlyStatusRequest(BaseModel):
     model_provider_id: int = Field(gt=0)
 
 
+class NightlySelectionStatusRequest(NightlyStatusRequest):
+    length_comparison_id: int | None = Field(default=None, gt=0)
+
+
 class NightlyUpdateRequest(NightlyStatusRequest):
     enabled: StrictBool
     expected_enabled: StrictBool
     workload_id: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     expected_workload_id: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+
+
+ClockTime = Annotated[str, Field(pattern=r"^(?:[01][0-9]|2[0-3]):[0-5][0-9]$")]
+
+
+class NightlyWindowRequest(NightlyStatusRequest):
+    start: ClockTime
+    end: ClockTime
+    expected_start: ClockTime
+    expected_end: ClockTime
 
 
 class RecentBenchmarkWorkloadRequest(NightlyStatusRequest):

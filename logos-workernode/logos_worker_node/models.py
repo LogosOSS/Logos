@@ -989,6 +989,8 @@ class LaneStatus(BaseModel):
     active_requests: int = Field(default=0, ge=0)
     loaded_models: list[LoadedModel] = Field(default_factory=list)
     lane_config: LaneConfig | None = None
+    nightly_vllm_version: str | None = None
+    nightly_blocked_vllm_fields: list[str] = Field(default_factory=list)
     backend_metrics: dict[str, Any] = Field(default_factory=dict)
     reported_vram_mb: float = 0.0
     pid_vram_mb: float = 0.0
@@ -1020,6 +1022,7 @@ class LaneTransferStatus(BaseModel):
 
 class WorkerRuntimeStatus(BaseModel):
     supports_benchmark_restart: bool = True
+    supports_nightly_gpu_budget: bool = False
     worker_name: str
     worker_id: str
     service_version: str

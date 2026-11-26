@@ -2,14 +2,13 @@
 
 Sources of truth, in priority order:
   1. "calibrated"  — measured by a calibration session
-  2. "measured"    — derived from live observations (loaded_vram - kv_cache_sent)
-  3. "override"    — operator-provided values in config.yml
-  4. "hf"          — best-effort estimate from the model's Hugging Face
+  2. "override"    — operator-provided values in config.yml
+  3. "hf"          — best-effort estimate from the model's Hugging Face
                      config.json + safetensors sizes, applied by the
                      calibration compatibility pre-check (hf_model_info.py)
-                     before a probe has ever run. Below "measured"/"calibrated"
-                     in authority — a real measurement always overwrites it.
-  5. "cached"      — any of the above, restored from the central store
+                     before a probe has ever run. Below "calibrated" in
+                     authority — a real calibration always overwrites it.
+  4. "cached"      — any of the above, restored from the central store
 
 If base_residency_mb is unknown (no override, no HF estimate, never
 calibrated), placement returns 0 (no estimate) and the lane manager skips
@@ -162,12 +161,10 @@ class ModelProfileRecord:
     #                  loaded_vram_mb = full awake footprint with the
     #                  configured KV cap already in effect. KV is INCLUDED;
     #                  callers must NOT add kv_cache_memory_bytes on top.
-    #   "measured"   — derived from live observation: loaded_vram − kv_cache_sent.
-    #                  Value is weights-only; callers DO add KV separately.
     #   "override"   — operator-provided value in config.yml.
     #   "hf"         — best-effort estimate from HF config.json +
     #                  safetensors sizes (pre-calibration precheck).
-    #                  Weights-only, same semantics as "measured";
+    #                  Weights-only: callers DO add KV separately;
     #                  a real calibration always replaces it.
     #   "cached"     — any of the above, restored without a source label.
     residency_source: str | None = None
@@ -282,8 +279,8 @@ class ModelProfileRecord:
 
         For vLLM: returns base_residency_mb. The value's meaning depends on
         residency_source — "calibrated" is the full awake footprint (KV
-        included); "measured" is weights-only. Callers that add KV on top
-        must gate on residency_source to avoid double-counting.
+        included); every other source is weights-only. Callers that add KV
+        on top must gate on residency_source to avoid double-counting.
         Falls back to loaded_vram_mb for non-vLLM engines.
         Returns 0.0 when nothing is known — caller must handle this.
         """
@@ -719,14 +716,11 @@ class ModelProfileRegistry:
         tensor_parallel_size: int | None = None,
         kv_cache_sent_mb: float = 0.0,
     ) -> None:
-        """Called after lane reaches loaded/running with measured effective_vram_mb > 0.
+        """Called after a lane reaches loaded/running with VRAM in use.
 
-        When kv_cache_sent_mb > 0 (vLLM with explicit --kv-cache-memory-bytes),
-        derives base_residency exactly:
-            base_residency = effective_vram - kv_cache_sent
-
-        Without kv_cache_sent_mb, only loaded_vram_mb is updated.
-        base_residency_mb is never touched if it already has a calibrated/override value.
+        Updates loaded_vram_mb, and kv_budget_mb when the lane pins its KV
+        cache (kv_cache_sent_mb > 0). base_residency_mb and its source are
+        never touched: calibration, the HF precheck and overrides own them.
         A lane that ran at a TP different from the calibrated profile's TP
         records nothing: the calibrated TP is authoritative, and the
         measurement would describe a different configuration.
@@ -765,23 +759,6 @@ class ModelProfileRegistry:
                 profile.sleeping_residual_mb = None
 
             if engine == "vllm" and kv_cache_sent_mb > 0:
-                measured_base = max(effective_vram_mb - kv_cache_sent_mb, 0.0)
-                if measured_base > 0:
-                    # Never let runtime measurements overwrite a calibrated
-                    # base_residency — calibration measures on a clean GPU and
-                    # is authoritative.  Runtime measurements can be lower when
-                    # multiple models share GPU memory.
-                    if profile.residency_source == "calibrated":
-                        pass  # keep calibrated value
-                    elif tp_changed or profile.base_residency_mb is None or profile.residency_source == "hf":
-                        # "hf" is a best-effort guess, not a prior real
-                        # measurement — the first live one replaces it
-                        # exactly instead of blending through it via EMA.
-                        profile.base_residency_mb = measured_base
-                        profile.residency_source = "measured"
-                    else:
-                        profile.base_residency_mb = _ema(profile.base_residency_mb, measured_base)
-                        profile.residency_source = "measured"
                 profile.kv_budget_mb = _ema(profile.kv_budget_mb, kv_cache_sent_mb)
 
             if tp_changed or profile.loaded_vram_mb is None:
@@ -979,7 +956,7 @@ class ModelProfileRegistry:
         operator-provided config.yml override for the same field. Only sets
         base_residency_mb + residency_source="hf" when the profile has no
         higher-priority source yet (None, "hf", or "cached") — a real
-        "measured"/"calibrated"/"override" value always wins.
+        "calibrated"/"override" value always wins.
         kv_per_token_bytes/max_context_length/disk_size_bytes have no
         higher-priority writer to conflict with, so they're set unconditionally
         (subject only to the manual-override check).

@@ -4,20 +4,26 @@ import copy
 import hashlib
 import math
 
-from logos.benchmarks.configuration import ServingOverrides
-from logos.benchmarks.nightly import parameter_plan
+from logos.benchmarks.configuration import ServingOverrides, canonical_kv_cache_dtype
 from logos.benchmarks.workloads import canonical
 
 BATCHING_KEYS = {"max_num_seqs", "max_num_batched_tokens"}
+VARIED_KEYS = BATCHING_KEYS | {"kv_cache_dtype", "speculative_config"}
 
 
 def context(current, snapshot, workload, previous):
     """A new workload, serving environment or hardware starts a new fixed reference."""
     runtime = snapshot.get("runtime") or {}
+    serving = {key: value for key, value in current.items() if key not in BATCHING_KEYS | {"command"}}
+    cache_dtype = canonical_kv_cache_dtype(serving.get("kv_cache_dtype"))
+    # Keep the worker's historical representation of the default in the series key.
+    serving["kv_cache_dtype"] = "" if cache_dtype == "auto" else cache_dtype
+    if not serving.get("speculative_config"):
+        serving.pop("speculative_config", None)
     identity = {
         "workload": workload["id"],
         "measurement_engine": "guidellm",
-        "serving": {key: value for key, value in current.items() if key not in BATCHING_KEYS | {"command"}},
+        "serving": serving,
         "devices": runtime.get("devices"),
         "worker_version": runtime.get("version_checksum") or runtime.get("service_version"),
         "profile": {"concurrency": 4, "transport": "streaming", "output_limits": "source_requests"},
@@ -58,51 +64,6 @@ def context(current, snapshot, workload, previous):
     }
 
 
-def round_index(state, day):
-    session = state.get("nightly_session") or {}
-    rounds = session.get("rounds", 0)
-    return rounds if session.get("date") == str(day) and type(rounds) is int and rounds >= 0 else 0
-
-
-def plan(current, search, *, round_index=0):
-    """Measure production, the incumbent, then bounded neighbours of the incumbent."""
-    baseline = parameter_plan(current)[0]
-    best = search["state"].get("best_parameters") or {}
-    center = {**current, **best}
-    neighbours = parameter_plan(center)
-    if round_index:
-        radius = (0.25, 0.5, 0.125, 0.75, 0.375, 0.625, 0.875)[round_index % 7]
-        explicit = {
-            key: center[key] if isinstance(center.get(key), int) and center[key] > 0 else fallback
-            for key, fallback in (("max_num_seqs", 4), ("max_num_batched_tokens", 2048))
-        }
-        trials = []
-        for key in ("max_num_seqs", "max_num_batched_tokens"):
-            for factor in (1 - radius, 1 + radius):
-                candidate = {**explicit, key: max(1, int(explicit[key] * factor))}
-                if candidate["max_num_seqs"] > 65536 or candidate["max_num_batched_tokens"] < candidate["max_num_seqs"]:
-                    continue
-                trials.append(baseline.model_copy(update={"serving_overrides": ServingOverrides(**candidate)}))
-        neighbours = [neighbours[0], *trials]
-    runs = [baseline]
-    if best and best != baseline.serving_overrides.model_dump(exclude_none=True):
-        runs.append(neighbours[0])
-    runs.extend(neighbours[1:])
-    seen = set()
-    result = []
-    for run in runs:
-        key = canonical(run.serving_overrides.model_dump(exclude_none=True))
-        if key in seen:
-            continue
-        seen.add(key)
-        result.append(
-            run.model_copy(
-                update={"workload_id": search["workload_id"], "samples": search["workload"]["request_count"]}
-            )
-        )
-    return result
-
-
 def rate(run):
     value = run["metrics"].get("aggregate_output_tokens_per_second")
     totals = run["metrics"].get("request_totals", {})
@@ -118,45 +79,63 @@ def rate(run):
     return value
 
 
-def eligibility_issues(candidate, baseline):
-    """Explain the response, workload and latency checks used for automatic adoption."""
+def comparison_diagnostics(candidate, baseline, *, include_length_changes=False):
+    """Return adoption issues, the length mismatch count, and optional anonymous measurements."""
     issues = []
+    lengths = 0
+    length_changes = []
     if rate(candidate) is None or rate(baseline) is None:
         issues.append("A complete successful throughput measurement is missing")
     candidate_config, base_config = candidate["configuration"], baseline["configuration"]
     if candidate_config.get("nightly", {}).get("series_key") != base_config.get("nightly", {}).get("series_key"):
         issues.append("Measurement environments differ")
-    if candidate_config.get("workload", {}).get("id") != base_config.get("workload", {}).get("id"):
+    workload_id = candidate_config.get("workload", {}).get("id")
+    same_workload = workload_id == base_config.get("workload", {}).get("id")
+    if not same_workload:
         issues.append("Request datasets differ")
-    base_rows = baseline["metrics"].get("replay_samples", [])
-    samples = candidate["metrics"].get("replay_samples", [])
-    base_samples = {row["source_log_id"]: row for row in base_rows}
+    base_rows = baseline["metrics"].get("replay_samples") or []
+    samples = candidate["metrics"].get("replay_samples") or []
+    by_source = {row["source_log_id"]: row for row in samples}
     if (
-        len(base_samples) != baseline["sample_size"]
-        or len(samples) != len(base_samples)
-        or {row["source_log_id"] for row in samples} != set(base_samples)
+        len(base_rows) != baseline["sample_size"]
+        or len(by_source) != len(base_rows)
+        or len(samples) != len(base_rows)
+        or {row["source_log_id"] for row in base_rows} != set(by_source)
+        or any(not _is_token_count(row.get("output_tokens")) for rows in (base_rows, samples) for row in rows)
     ):
         issues.append("Per-request comparison data is missing or the request sets differ")
     else:
-        finishes, native, lengths = 0, 0, 0
-        for row in samples:
-            original = base_samples[row["source_log_id"]]
-            reason = row["finish_reason"]
+        finishes, native = 0, 0
+        for request_number, original in enumerate(base_rows, start=1):
+            row = by_source[original["source_log_id"]]
+            baseline_tokens, trial_tokens = original["output_tokens"], row["output_tokens"]
+            reason = row.get("finish_reason")
             budget = row.get("fixed_output_budget")
             reached_fixed_budget = (
                 reason == "length"
                 and type(budget) is int
                 and budget > 0
-                and budget == original.get("fixed_output_budget") == row["output_tokens"] == original["output_tokens"]
+                and budget == original.get("fixed_output_budget") == trial_tokens == baseline_tokens
             )
-            if reason != original["finish_reason"] or (
+            if reason != original.get("finish_reason") or (
                 reason not in {"stop", "tool_calls"} and not reached_fixed_budget
             ):
                 finishes += 1
             if row.get("native_finish_reason") != original.get("native_finish_reason"):
                 native += 1
-            if not (0.8 * original["output_tokens"] <= row["output_tokens"] <= 1.2 * original["output_tokens"]):
+            if not (4 * baseline_tokens <= 5 * trial_tokens <= 6 * baseline_tokens):
                 lengths += 1
+                if include_length_changes and same_workload and workload_id:
+                    length_changes.append(
+                        {
+                            "request_number": request_number,
+                            "baseline_tokens": baseline_tokens,
+                            "trial_tokens": trial_tokens,
+                            "change_percent": (
+                                100 * (trial_tokens - baseline_tokens) / baseline_tokens if baseline_tokens else None
+                            ),
+                        }
+                    )
         if finishes:
             issues.append(f"{finishes} answers have a different or incomplete finish reason")
         if native:
@@ -164,10 +143,7 @@ def eligibility_issues(candidate, baseline):
         if lengths:
             issues.append(f"{lengths} answer lengths differ by more than 20% from baseline")
 
-    def p95(run):
-        return run["metrics"].get("request_latency_ms", {}).get("successful", {}).get("percentiles", {}).get("p95")
-
-    before, after = p95(baseline), p95(candidate)
+    before, after = p95_latency(baseline), p95_latency(candidate)
     if not (
         type(before) in (int, float)
         and type(after) in (int, float)
@@ -179,6 +155,30 @@ def eligibility_issues(candidate, baseline):
         issues.append("Comparable p95 request latency is missing")
     elif after > before * 1.1:
         issues.append(f"p95 latency increased by {(after / before - 1) * 100:.1f}% (maximum 10%)")
+    return issues, lengths if same_workload and workload_id else 0, length_changes
+
+
+def p95_latency(run):
+    """Return the successful-request p95 used to compare serving configurations."""
+    value = run["metrics"].get("request_latency_ms", {}).get("successful", {}).get("percentiles", {}).get("p95")
+    return value if type(value) in (int, float) and math.isfinite(value) and value > 0 else None
+
+
+def trial_eligible(candidate, baseline, *, frozen_workload):
+    """Compare a completed trial to a baseline, including replay checks where available."""
+    if frozen_workload:
+        return eligible(candidate, baseline)
+    before, after = p95_latency(baseline), p95_latency(candidate)
+    return rate(candidate) is not None and before is not None and after is not None and after <= before * 1.1
+
+
+def _is_token_count(value):
+    return (type(value) is int or (type(value) is float and value.is_integer())) and value >= 0
+
+
+def eligibility_issues(candidate, baseline):
+    """Explain the response, workload and latency checks used for automatic adoption."""
+    issues, _, _ = comparison_diagnostics(candidate, baseline)
     return issues
 
 
@@ -206,6 +206,14 @@ def select_state(search, runs, report):
         state["best_benchmark_id"] = winner["id"]
         state["best_parameters"] = winner["configuration"]["nightly"]["parameters"]
         state["best_throughput"] = rate(winner)
+    if "adaptive_baseline" in search:
+        state["adaptive_baseline"] = search["adaptive_baseline"]
+        attempted = {canonical(params): params for params in search["attempted"]}
+        for outcome in report:
+            if outcome.get("kind") == "trial" and outcome.get("status") in {"success", "failed", "stalled"}:
+                params = outcome["parameters"]
+                attempted[canonical(params)] = params
+        state["attempted_parameters"] = list(attempted.values())[-128:]
     state["iterations"] = state.get("iterations", 0) + 1
     state["guardrails"] = {"output_token_ratio": [0.8, 1.2], "max_p95_latency_ratio": 1.1}
     return state
@@ -226,29 +234,50 @@ def adoption_candidate(search, runs, report):
         or config.get("workload", {}).get("id") != search["workload_id"]
     ):
         return None
-    successful = {row.get("benchmark_id") for row in report if row.get("status") == "success"}
-    candidates = [
-        run
-        for run in runs
-        if run["id"] in successful
-        and run["id"] != baseline_id
-        and eligible(run, baseline)
-        and rate(run) > rate(baseline)
-    ]
+    by_id = {run["id"]: run for run in runs}
+    trials = {
+        row["benchmark_id"]
+        for row in report
+        if row.get("kind") == "trial" and row.get("status") == "success" and row["benchmark_id"] != baseline_id
+    }
+
+    def qualifies(run):
+        return run is not None and eligible(run, baseline) and rate(run) > rate(baseline)
+
+    candidates = []
+    for row in report:
+        if row.get("kind") != "confirmation" or row.get("status") != "success":
+            continue
+        original_id, confirmation_id = row.get("confirms_benchmark_id"), row.get("benchmark_id")
+        if original_id not in trials or confirmation_id in trials or confirmation_id == baseline_id:
+            continue
+        trial, confirmation = by_id.get(original_id), by_id.get(confirmation_id)
+        if not qualifies(trial) or not qualifies(confirmation):
+            continue
+        parameters = confirmation["configuration"]["nightly"].get("parameters") or {}
+        if parameters != trial["configuration"]["nightly"].get("parameters"):
+            continue
+        if not parameters or parameters.keys() - VARIED_KEYS:
+            continue
+        if any(type(parameters[key]) is not int or parameters[key] <= 0 for key in BATCHING_KEYS & parameters.keys()):
+            continue
+        if parameters.get("kv_cache_dtype", "auto") not in {"auto", "fp8"}:
+            continue
+        try:
+            overrides = ServingOverrides(**parameters)
+        except ValueError:
+            continue
+        candidates.append((min(rate(trial), rate(confirmation)), confirmation["id"], original_id, overrides))
     if not candidates:
         return None
-    winner = max(candidates, key=lambda run: (rate(run), -run["id"]))
-    parameters = winner["configuration"]["nightly"].get("parameters") or {}
-    if not parameters or set(parameters) - BATCHING_KEYS:
-        return None
-    overrides = ServingOverrides(**parameters)
-    if any(type(value) is not int or value <= 0 for value in parameters.values()):
-        return None
+    _, confirmation_id, trial_id, overrides = max(candidates, key=lambda item: (item[0], -item[1]))
     return {
-        "benchmark_id": winner["id"],
+        "benchmark_id": confirmation_id,
+        "confirmation_benchmark_id": confirmation_id,
+        "trial_benchmark_id": trial_id,
         "baseline_id": baseline_id,
         "workload_id": search["workload_id"],
         "parameters": overrides.model_dump(exclude_none=True),
-        "throughput": rate(winner),
+        "throughput": rate(by_id[confirmation_id]),
         "baseline_throughput": rate(baseline),
     }

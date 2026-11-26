@@ -17,6 +17,14 @@ The **Models** page shows the models that are available to your team. The
 permissions of your team decide which of the **Providers**, **Statistics**,
 and **Batches** pages you can use.
 
+## Choose a Logging Level
+
+Open **My Workspace** and select **Expand models** on your developer key.
+If the key uses billing-only logging, then Logos asks for your choice the first time you open it.
+The choice applies to your own developer key in that team. Logos saves a separate choice for each team.
+
+See [My Workspace](../roles/app-developer.md#choose-a-logging-level) for the available logging levels.
+
 ## First API Request
 
 Send your API key as a bearer token:

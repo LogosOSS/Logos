@@ -1,0 +1,142 @@
+import { ChangeDetectionStrategy, Component, computed, ElementRef, input, output, signal, viewChild } from '@angular/core';
+import { DatePipe, DecimalPipe } from '@angular/common';
+import { RouterLink } from '@angular/router';
+import { ModelProviderBenchmark } from '../../shared/models/provider.model';
+import { ModalFormComponent } from '../../shared/components/modal/modal-form/modal-form';
+import { benchmarkConfigurationItems, benchmarkDatasetLabel, servingConfigurationItems } from './benchmark-configuration';
+import { comparisonValue } from './benchmark-comparison';
+import { benchmarkProgress, recordConfiguration } from './benchmark-progress';
+import { batchingSignature } from './benchmark-isolation';
+import { benchmarkResultRow } from './benchmark-result-row';
+
+type ResultColumn = 'runId' | 'measuredFrom' | 'before' | 'after' | 'delta';
+
+@Component({
+  selector: 'app-benchmark-results',
+  standalone: true,
+  imports: [DatePipe, DecimalPipe, ModalFormComponent, RouterLink],
+  templateUrl: './benchmark-results.html',
+  styleUrl: './benchmark-results.scss',
+  changeDetection: ChangeDetectionStrategy.OnPush,
+})
+export class BenchmarkResults {
+  readonly configuration = recordConfiguration;
+  readonly datasetLabel = benchmarkDatasetLabel;
+  readonly runs = input.required<readonly ModelProviderBenchmark[]>();
+  readonly workerName = input<string | null>(null);
+  readonly deployedBenchmarkIds = input<ReadonlySet<number>>(new Set<number>());
+  readonly lastAdoptionId = input<number | null>(null);
+  readonly deploymentNote = input<string | null>(null);
+  readonly selectedRunId = input<number | null>(null);
+  readonly loading = input(false);
+  readonly loadError = input(false);
+  readonly closeSelectedRun = output<void>();
+  readonly showProgress = input(true);
+  readonly showHistory = input(true);
+  readonly selectedRow = computed(() => this.rows().find(row => row.run.id === this.selectedRunId()) ?? null);
+  private readonly timelineScroll = viewChild<ElementRef<HTMLElement>>('timelineScroll');
+  readonly progress = computed(() => benchmarkProgress(this.runs()));
+  readonly progressKey = signal('');
+  readonly deploymentGroups = computed(() => {
+    const ids = this.deployedBenchmarkIds();
+    return new Map(this.progress().flatMap(group => {
+      const deployed = group.points.find(point => ids.has(point.run.id));
+      return deployed ? [[group.key, deployed] as const] : [];
+    }));
+  });
+  readonly activeProgress = computed(() => {
+    const charts = this.progress();
+    return charts.find(group => group.key === this.progressKey())
+      ?? charts.find(group => this.deploymentGroups().has(group.key))
+      ?? charts.find(group => group.runIds.includes(this.lastAdoptionId() ?? -1))
+      ?? charts[0];
+  });
+  readonly deployedPoint = computed(() => {
+    const chart = this.activeProgress();
+    return chart ? this.deploymentGroups().get(chart.key) : undefined;
+  });
+  readonly lastAdoptionPoint = computed(() => {
+    const id = this.lastAdoptionId();
+    return this.activeProgress()?.points.find(point => point.run.id === id);
+  });
+  readonly timelineLimit = 6;
+  readonly expandedTimeline = signal<string | null>(null);
+  readonly timelineRuns = computed(() => {
+    const chart = this.activeProgress();
+    if (!chart) return [];
+    if (this.expandedTimeline() === chart.key) return chart.points;
+    const latest = chart.points.slice(-this.timelineLimit);
+    const highlighted = this.deployedPoint() ?? this.lastAdoptionPoint();
+    return highlighted && !latest.includes(highlighted) ? [highlighted, ...latest.slice(1)] : latest;
+  });
+  readonly showAll = signal(false);
+  readonly sort = signal<{ key: ResultColumn; direction: 'ascending' | 'descending' } | null>(null);
+  readonly columns: readonly { key: ResultColumn; label: string }[] = [
+    { key: 'runId', label: 'Run' }, { key: 'measuredFrom', label: 'Measured from → to' },
+    { key: 'before', label: 'Before' }, { key: 'after', label: 'After' }, { key: 'delta', label: 'Change' },
+  ];
+  readonly sortedRows = computed(() => {
+    const sort = this.sort();
+    if (!sort) return this.rows();
+    return [...this.rows()].sort((a, b) => {
+      const left = a[sort.key], right = b[sort.key];
+      if (left === null) return right === null ? 0 : 1;
+      if (right === null) return -1;
+      return sort.direction === 'ascending' ? left - right : right - left;
+    });
+  });
+  readonly datasetGroups = computed(() => {
+    const groups = new Map<string, { key: string; label: string; rows: ReturnType<BenchmarkResults['rows']> }>();
+    // Dataset order stays newest first; sorting changes the runs within each dataset.
+    for (const row of this.rows()) {
+      const workload = row.run.configuration['workload'] as { id?: string } | undefined;
+      const key = workload?.id ? `requests:${workload.id}` : row.run.dataset;
+      if (!groups.has(key)) groups.set(key, { key, label: benchmarkDatasetLabel(row.run), rows: [] });
+    }
+    for (const row of this.sortedRows()) {
+      const workload = row.run.configuration['workload'] as { id?: string } | undefined;
+      groups.get(workload?.id ? `requests:${workload.id}` : row.run.dataset)!.rows.push(row);
+    }
+    return [...groups.values()].map(group => ({ ...group,
+      visible: this.showAll() ? group.rows : group.rows.slice(0, 5) }));
+  });
+  readonly visibleRows = computed(() => this.datasetGroups().flatMap(group => group.visible));
+  readonly hasMore = computed(() => this.datasetGroups().some(group => group.rows.length > 5));
+
+  sortBy(key: ResultColumn): void {
+    this.sort.update(previous => previous?.key === key
+      ? previous.direction === 'ascending' ? { key, direction: 'descending' } : null
+      : { key, direction: 'ascending' });
+  }
+
+  focusTimelineBenchmark(id: number): void {
+    const link = this.timelineScroll()?.nativeElement.querySelector<HTMLAnchorElement>(`.timeline-run[data-benchmark-id="${id}"]`);
+    link?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+    link?.focus({ preventScroll: true });
+  }
+
+  readonly topRuns = computed(() => {
+    const best = new Map<number, ModelProviderBenchmark>();
+    const workloads = new Map<number, string>();
+    for (const run of [...this.runs()].sort((a, b) => Date.parse(b.recorded_at) - Date.parse(a.recorded_at) || b.id - a.id)) {
+      const totals = run.metrics.request_totals;
+      const rate = comparisonValue(run, 'throughput');
+      if (rate === null || run.sample_size <= 0 || totals?.successful !== run.sample_size
+        || totals.total !== run.sample_size || totals.errored !== 0 || totals.incomplete !== 0) continue;
+      const workload = batchingSignature(run) ?? `uncaptured:${run.id}`;
+      if (!workloads.has(run.model_provider_id)) workloads.set(run.model_provider_id, workload);
+      if (workloads.get(run.model_provider_id) !== workload) continue;
+      const previous = best.get(run.model_provider_id);
+      if (!previous || rate > comparisonValue(previous, 'throughput')!
+        || (rate === comparisonValue(previous, 'throughput') && run.id > previous.id)) {
+        best.set(run.model_provider_id, run);
+      }
+    }
+    return [...best.values()].sort((a, b) => a.provider_name.localeCompare(b.provider_name) || a.model_provider_id - b.model_provider_id).map(run => ({
+      run, rate: comparisonValue(run, 'throughput'),
+      workload: benchmarkConfigurationItems(run), parameters: servingConfigurationItems(run),
+    }));
+  });
+  readonly rows = computed(() => [...this.runs()].sort((a, b) => Date.parse(b.recorded_at) - Date.parse(a.recorded_at) || b.id - a.id)
+    .map(run => benchmarkResultRow(run, this.runs())));
+}

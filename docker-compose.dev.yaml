@@ -288,6 +288,10 @@ services:
       # Production must set LOGOS_REPO_CREDENTIALS_KEY instead.
       LOGOS_REPO_CREDENTIALS_DEV_FALLBACK: "${LOGOS_REPO_CREDENTIALS_DEV_FALLBACK:-true}"
       LOGOS_REPO_CREDENTIALS_KEY: "${LOGOS_REPO_CREDENTIALS_KEY:-}"
+      # Whether the Logos admin records the license acceptances. While false,
+      # non-gated model licenses are reference-only: the user interface offers
+      # the text read-only and the webservice refuses acceptances for them.
+      REQUIRE_LOGOS_ADMIN_LICENSE_APPROVAL: "${REQUIRE_LOGOS_ADMIN_LICENSE_APPROVAL:-true}"
       LOGOS_GATEWAY_ENABLED: "${LOGOS_GATEWAY_ENABLED:-true}"
       LOGOS_GATEWAY_MAX_IN_FLIGHT: "${LOGOS_GATEWAY_MAX_IN_FLIGHT:-0}"
       LOGOS_GATEWAY_BUDGET_CACHE_TTL_SECONDS: "${LOGOS_GATEWAY_BUDGET_CACHE_TTL_SECONDS:-15}"
@@ -439,7 +443,7 @@ services:
       timeout: 5s
       retries: 10
     volumes:
-      - postgres_data:/var/lib/postgresql
+      - postgres_data:/var/lib/postgresql/data
     networks:
       - internal
 
@@ -484,7 +488,6 @@ services:
 volumes:
   data_volume:
   postgres_data:
-    name: ${LOGOS_DB_VOLUME_NAME:-${COMPOSE_PROJECT_NAME}_postgres_data}
 
 networks:
   internal:

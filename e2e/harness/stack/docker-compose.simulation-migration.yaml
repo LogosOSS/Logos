@@ -1,0 +1,6 @@
+# Only the simulation workflow sets this preloaded image name.
+services:
+  migrate:
+    build: !reset null
+    image: ${E2E_SIM_MIGRATE_IMAGE:?Load the simulation migration image first}
+    pull_policy: never

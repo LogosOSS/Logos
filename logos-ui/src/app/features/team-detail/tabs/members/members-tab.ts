@@ -8,12 +8,15 @@ import {
   signal,
   inject,
   ChangeDetectionStrategy,
+  DestroyRef,
 } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { ModalFormComponent } from '../../../../shared/components/modal/modal-form/modal-form';
 import { ModalConfirmComponent } from '../../../../shared/components/modal/modal-confirm/modal-confirm';
 import { TeamManagementService } from '../../../../core/services/team-management.service';
+import { DeveloperKeyLoggingService } from '../../../../core/services/developer-key-logging.service';
 import { AuthService } from '../../../../core/auth/services/auth.service';
+import { LoggingOnboarding } from '../../../../core/auth/pages/logging-onboarding/logging-onboarding';
 import {
   TeamDetail,
   TeamMember,
@@ -41,6 +44,7 @@ import { isInteractiveClick } from '../../../../shared/utils/interactive-click';
     SearchInputComponent,
     DataTableComponent,
     ApiKeyModalComponent,
+    LoggingOnboarding,
     ErrorMessageComponent,
     IconTileComponent,
   ],
@@ -55,9 +59,12 @@ export class MembersTabComponent {
   @Input() apiKeys: TeamApiKey[] = [];
   @Input() canEdit = false;
   @Output() refresh = new EventEmitter<void>();
+  @Output() keysReloaded = new EventEmitter<TeamApiKey[]>();
 
   private teamService = inject(TeamManagementService);
+  private developerKeyLogging = inject(DeveloperKeyLoggingService);
   private auth = inject(AuthService);
+  private destroyRef = inject(DestroyRef);
 
   isLogosAdminSignal = computed(() => this.auth.currentUser()?.role === 'logos_admin');
 
@@ -168,6 +175,8 @@ export class MembersTabComponent {
 
   toggleExpand(key: TeamApiKey): void {
     this.keyPermissions.toggleExpand(key);
+    const request = ++this.keyOpenRequest;
+    if (this.isExpanded(key.id)) void this.checkLoggingOnOpen(key, false, request);
   }
 
   getModelGroups(key: TeamApiKey): KeyModelGroup[] {
@@ -203,8 +212,60 @@ export class MembersTabComponent {
   // ── dev-key modal ─────────────────────────────────────────────────────────
   selectedKey = signal<TeamApiKey | null>(null);
   keyModalOpen = signal(false);
+  loggingPrompt = signal<{ team: TeamDetail; settingsKey: TeamApiKey | null } | null>(null);
+  private keyOpenRequest = 0;
 
   openKeyModal(key: TeamApiKey): void {
+    void this.checkLoggingOnOpen(key, true, ++this.keyOpenRequest);
+  }
+
+  private async checkLoggingOnOpen(key: TeamApiKey, openSettings: boolean, request: number): Promise<void> {
+    if (this.loggingPrompt()) return;
+    const userId = this.auth.currentUser()?.user_id;
+    const team = this.team;
+    if (team && userId != null && key.user_id === userId && key.key_type === 'developer') {
+      const pending = await this.developerKeyLogging.needsChoice(team.id).catch(() => false);
+      if (!this.isCurrentKeyOpen(request, team.id) || this.auth.currentUser()?.user_id !== userId) return;
+      if (pending) {
+        this.loggingPrompt.set({ team, settingsKey: openSettings ? key : null });
+        return;
+      }
+    }
+
+    if (openSettings) this.showKeySettings(key);
+  }
+
+  async finishLoggingOnboarding(saved: boolean): Promise<void> {
+    const prompt = this.loggingPrompt();
+    if (!prompt) return;
+    this.loggingPrompt.set(null);
+    const request = this.keyOpenRequest;
+    let settingsKey = prompt.settingsKey;
+    if (saved) {
+      const keys = await this.teamService.getTeamApiKeys(prompt.team.id).catch(() => null);
+      if (!this.isCurrentKeyOpen(request, prompt.team.id)) return;
+      if (!keys) {
+        // Settings saves the logging level along with the other fields.
+        this.refresh.emit();
+        return;
+      }
+      this.keysReloaded.emit(keys);
+      settingsKey = keys.find((key) => key.id === settingsKey?.id) ?? null;
+    }
+    if (settingsKey) this.showKeySettings(settingsKey);
+  }
+
+  private isCurrentKeyOpen(request: number, teamId: number): boolean {
+    return !this.destroyRef.destroyed
+      && this.keyOpenRequest === request
+      && this.teamId === teamId
+      && !this.keyModalOpen()
+      && !this.addOwnerOpen()
+      && !this.addMemberOpen()
+      && this.removeTarget() === null;
+  }
+
+  private showKeySettings(key: TeamApiKey): void {
     this.selectedKey.set(key);
     this.keyModalOpen.set(true);
   }

@@ -7,6 +7,7 @@ import pytest
 
 from logos.benchmarks import nightly_store as store
 from logos.benchmarks.completion import notification_message
+from logos.benchmarks.nightly import CAPACITY_WAITING
 
 REASON = "Could not make enough GPU capacity available to load the model."
 REPORT = [{"status": "success"}, {"status": "recovery_required", "reason": REASON}]
@@ -16,6 +17,7 @@ REPORT = [{"status": "success"}, {"status": "recovery_required", "reason": REASO
 def nightly(monkeypatch):
     row = {
         "last_run_date": date(2026, 10, 29),
+        "last_run_window_revision": 0,
         "status": "recovery_required",
         "optimizer": {},
         "enabled": True,
@@ -26,7 +28,9 @@ def nightly(monkeypatch):
 
     def execute(_, params):
         if "state" in params:
-            row.update(status=params["state"], optimizer=json.loads(params["optimizer"]))
+            row["status"] = params["state"]
+            if params["optimizer"] is not None:
+                row["optimizer"] = json.loads(params["optimizer"])
         elif "event" in params:
             events.append(json.loads(params["payload"]))
         else:
@@ -90,6 +94,23 @@ def test_completed_night_keeps_the_interruption_and_measurement_from_an_earlier_
     title, body = notification_message(event)
     assert title == "Nightly benchmark finished"
     assert "Benchmark #135" in body and REASON in body
+
+
+def test_insufficient_memory_can_retry_without_counting_or_notifying_a_completed_round(nightly):
+    row, events = nightly
+    row.update(status="preparing", optimizer={"last_round_result": {"benchmark_id": 135}})
+    report = [{"status": CAPACITY_WAITING, "reason": REASON}]
+    store.finish(31, CAPACITY_WAITING, report)
+    assert row["status"] == CAPACITY_WAITING
+    assert row["optimizer"]["nightly_session"]["rounds"] == 0
+    assert "last_round_result" not in row["optimizer"]
+    assert not events
+
+    store.finish(31, "capacity_deferred", report)
+    (event,) = events
+    assert event["successful_configurations"] == 0
+    assert event["benchmark_id"] is None
+    assert notification_message(event)[0] == "Nightly benchmark deferred"
 
 
 @pytest.mark.parametrize(

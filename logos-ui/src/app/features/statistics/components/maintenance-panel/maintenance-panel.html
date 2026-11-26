@@ -111,7 +111,7 @@
   (visibleChange)="closeForceRelease($event)"
   title="Force release the recovery?"
   [message]="'Logos could not confirm that ' + (forceTarget()?.provider ?? 'the provider')
-    + ' runs its original settings again. If you force the release, the model keeps whatever settings it has now, and those may be benchmark settings. Check the lane on the provider first. Calibration and benchmarks can start again afterwards.'"
+    + ' has its original lanes and settings back. Force release leaves the worker in its current state. Check for missing lanes, temporary benchmark lanes and changed settings before releasing it.'"
   confirmLabel="Force release"
   icon="pi-unlock"
   [loading]="busyKey() !== null"

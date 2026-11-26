@@ -24,6 +24,19 @@ with psycopg2.connect(os.environ["LOGOS_DB_URL"]) as db:
         model = cursor.fetchone()
         if not model:
             raise SystemExit("Apply role-screenshots.sql first")
+        cursor.execute(
+            "INSERT INTO providers (name, base_url, provider_type, privacy_level, auth_name, auth_format) "
+            "SELECT 'Docs Secondary Worker', base_url, provider_type, privacy_level, auth_name, auth_format "
+            "FROM providers WHERE id = %s "
+            "AND NOT EXISTS (SELECT 1 FROM providers WHERE name = 'Docs Secondary Worker')",
+            (model["provider_id"],),
+        )
+        cursor.execute(
+            "INSERT INTO model_provider (provider_id, model_id) "
+            "SELECT id, %s FROM providers WHERE name = 'Docs Secondary Worker' "
+            "ON CONFLICT (model_id, provider_id) DO NOTHING",
+            (model["id"],),
+        )
         rows = [
             {
                 "id": index,

@@ -61,8 +61,6 @@ Do not delete the volume to change its password.
 Redis uses `requirepass`. The web service and Redis health check use the same `LOGOS_REDIS_PASSWORD`.
 To change the Redis password, update `.env`, then recreate Redis and the web service together.
 
-For a PostgreSQL 17 installation, complete the [database upgrade](admin/installation.md#upgrade-postgresql-17-to-18) before you deploy the PostgreSQL 18 image.
-
 ## Residency policy
 
 `LOGOS_RESIDENCY_POLICY` selects the orchestrator policy. The default is `simple`.
@@ -125,7 +123,7 @@ PostgreSQL, Redis, nginx, and GPU worker images retain their existing startup us
 | `logos-orchestrator` | orchestrator |
 | `logos-webservice` | Spring admin/statistics service and public inference gateway (`/v1`, `/openai`, `/jobs`) |
 | `logos-ui` | Angular web application |
-| `logos-db` | PostgreSQL 18 plus `pg_cron` |
+| `logos-db` | PostgreSQL 17 plus `pg_cron` |
 | `logos-rate-gateway` | per-IP rate limiting (nginx) |
 | `logos-agent`, `logos-agent-gateway`, `logos-agent-workspace` | the agent stack (only with the `agent` profile) |
 | `logos-workernode-vllm` | the worker node runtime (on the GPU host) |
@@ -579,17 +577,18 @@ See [deployment-specific request sources](admin/nightly-benchmarks.md#deployment
 This setting reads the deployment's own database. It does not copy Prod requests to Dev.
 
 Nightly benchmarks require updates to the webservice, orchestrator, web application and selected workers.
-The webservice applies changelog `065_nightly_benchmarks.xml` before the new scheduler starts.
-Workers report `supports_benchmark_restart` in their runtime status.
-The activation API rejects workers without this capability.
+Deploy the webservice before the orchestrator so the database schema is ready for the scheduler.
+Workers report `supports_benchmark_restart` and `supports_nightly_gpu_budget` in their runtime status.
+These capabilities allow Logos to reserve the benchmark lane's GPUs and check capacity before each restart.
 All schedules default to disabled.
+Enabled pairs follow the deployment's 05:00–08:00 Europe/Berlin default until an admin saves a custom window for that pair.
 
-The selected model requires 1 loaded, awake vLLM lane on its worker.
+Logos selects 1 vLLM lane or starts a temporary lane when needed.
 `LOGOS_MAINTENANCE_MAX_NODES` limits simultaneous maintenance workers. Its default is `1`.
 A value of `2` permits 2 workers at the same time.
 This limit also applies to manual calibration and benchmarks.
-The scheduler waits for each selected worker's existing requests to finish.
-No spare worker is required. If all workers are reserved, normal requests must wait.
+The scheduler waits for existing requests for the benchmarked model to finish.
+Other models on that worker keep serving. The round waits when the GPU group has insufficient memory for warm-up.
 The old `LOGOS_NIGHTLY_ALLOW_SINGLE_WORKER` variable no longer controls admission.
 
 Each night selects at most `LOGOS_NIGHTLY_MAX_PAIRS` enabled model/worker pairs.
@@ -604,7 +603,7 @@ A run stops after 5 minutes without output content or a successful request compl
 A stalled configuration gets at most 1 retry before 08:00.
 The existing 2-hour measurement timeout also applies.
 
-The scheduler restores the original worker configuration after each round.
+The scheduler restores the original lane configuration or removes the temporary lane after each round.
 The admitted pairs rotate through further rounds until 08:00.
 The daily limit counts distinct pairs. It does not limit the number of rounds.
 Completion is reported only after the final restoration.

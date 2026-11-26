@@ -15,6 +15,8 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 # Taken before the shared fixture stubs it for the tests without a database.
 REAL_SESSION_MEMORY_MB = db.session_memory_mb
+REAL_NEXT_QUEUED = db.next_queued_session
+REAL_SESSIONS_IN_STATUS = db.sessions_in_status
 REAL_OWING_REPLACEMENT = db.sessions_owing_a_replacement
 
 pytestmark = pytest.mark.skipif(
@@ -188,10 +190,71 @@ async def test_reserved_memory_counts_sessions_that_hold_a_container(database):
     assert await db.reserved_memory_mb(1024) == 2048 + 3 * 1024
 
 
+async def _queued_job(database, *, automatic=False, priority=50, branch=None):
+    async with database.begin() as conn:
+        workspace = (
+            await conn.execute(
+                text("INSERT INTO agent_workspaces (name) VALUES (:name) RETURNING id"), {"name": uuid.uuid4().hex}
+            )
+        ).scalar_one()
+        return (
+            await conn.execute(
+                text("""
+                    INSERT INTO agent_sessions (workspace_id, status, trigger_ref, priority, branch_name)
+                    VALUES (:workspace, 'queued', :trigger, :priority, :branch) RETURNING id
+                    """),
+                {
+                    "workspace": workspace,
+                    "trigger": uuid.uuid4().hex if automatic else None,
+                    "priority": priority,
+                    "branch": branch,
+                },
+            )
+        ).scalar_one()
+
+
+@pytest.mark.parametrize("ceiling", [0, 1, 2])
+async def test_automatic_work_can_fill_but_not_exceed_the_shared_ceiling(database, ceiling):
+    queued = [await _queued_job(database, automatic=True) for _ in range(3)]
+
+    results = await asyncio.gather(*(db.claim_session(job, max_active=ceiling) for job in queued))
+
+    assert sum(row is not None for row in results) == ceiling
+    assert len(await REAL_SESSIONS_IN_STATUS(db.SessionStatus.STARTING)) == ceiling
+
+
+async def test_a_manual_arrival_wins_the_next_free_slot_without_displacing_running_work(database):
+    first = await _queued_job(database, automatic=True, priority=100)
+    assert await db.claim_session(first, max_active=2)
+    await db.update_session(first, status="running")
+    automated = await _queued_job(database, automatic=True, priority=100)
+    assert (await REAL_NEXT_QUEUED())["id"] == automated
+
+    manual = await _queued_job(database, priority=1)
+    assert await db.claim_session(automated, max_active=2) is None
+    assert (await REAL_NEXT_QUEUED())["id"] == manual
+    assert await db.claim_session(manual, max_active=2)
+    assert await db.claim_session(automated, max_active=2) is None
+    assert (await db.get_session(first))["status"] == "running"
+    assert (await db.get_session(automated))["status"] == "queued"
+
+
+async def test_a_branch_blocked_manual_job_does_not_keep_the_other_slot_idle(database):
+    first = await _queued_job(database, automatic=True, branch="shared")
+    assert await db.claim_session(first, max_active=2)
+    await db.update_session(first, status="running")
+    manual = await _queued_job(database, branch="shared")
+    automated = await _queued_job(database, automatic=True, branch="independent")
+
+    assert (await REAL_NEXT_QUEUED())["id"] == automated
+    assert await db.claim_session(automated, max_active=2)
+    assert (await db.get_session(manual))["status"] == "queued"
+
+
 async def test_the_claim_records_the_memory_of_the_session(database):
     session_id = await db.create_session(**_session(repo_slug=None, repo_url=None, team_repository_id=None))
 
-    claimed = await db.claim_session(session_id, trigger_quota=1, memory_mb=2048)
+    claimed = await db.claim_session(session_id, max_active=1, memory_mb=2048)
 
     assert claimed["status"] == "starting"
     assert claimed["memory_mb"] == 2048

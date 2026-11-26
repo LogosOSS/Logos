@@ -14,6 +14,8 @@ import { IconTileComponent } from '../../shared/components/icon-tile/icon-tile';
 import { MyKeysService } from '../../core/services/my-keys.service';
 import { TeamManagementService } from '../../core/services/team-management.service';
 import { AuthService } from '../../core/auth/services/auth.service';
+import { DeveloperKeyLoggingService } from '../../core/services/developer-key-logging.service';
+import { LoggingOnboarding } from '../../core/auth/pages/logging-onboarding/logging-onboarding';
 import { MyKey, ModelAccess, RateLimitUsage } from '../../shared/models/my-key.model';
 import { MyTeam } from '../../shared/models/team.model';
 import { formatLastUsed as formatLastUsedLabel } from '../../shared/utils/date';
@@ -40,8 +42,10 @@ interface ModelGroup {
     ModalConfirmComponent,
     ErrorMessageComponent,
     IconTileComponent,
+    LoggingOnboarding,
   ],
   templateUrl: './my-workspace.html',
+  host: { '(window:focus)': 'refreshWorkspace()' },
   changeDetection: ChangeDetectionStrategy.Eager,
   styleUrl: './my-workspace.scss',
 })
@@ -49,6 +53,9 @@ export class MyWorkspace implements OnInit {
   private keysService = inject(MyKeysService);
   private teamService = inject(TeamManagementService);
   private authService = inject(AuthService);
+  private developerKeyLogging = inject(DeveloperKeyLoggingService);
+  private workspaceLoad = 0;
+  private loggingCheck = 0;
 
   readonly showProviderNames = computed(
     () => this.authService.role() === 'logos_admin' || this.authService.role() === 'app_admin',
@@ -63,6 +70,9 @@ export class MyWorkspace implements OnInit {
   modelsLoading = signal<Set<number>>(new Set());
   modelsError = signal<Set<number>>(new Set());
 
+  checkingLoggingKeyId = signal<number | null>(null);
+  loggingTarget = signal<MyKey | null>(null);
+
   logChangeTarget = signal<{ key: MyKey; newLog: 'BILLING' | 'FULL' } | null>(null);
   logChangeLoading = signal(false);
   logChangeError = signal(false);
@@ -73,14 +83,19 @@ export class MyWorkspace implements OnInit {
 
   copiedKeyId = signal<number | null>(null);
 
-  async ngOnInit(): Promise<void> {
-    this.loading.set(true);
-    this.loadError.set(false);
+  ngOnInit(): Promise<void> {
+    return this.refreshWorkspace();
+  }
+
+  async refreshWorkspace(): Promise<void> {
+    const load = ++this.workspaceLoad;
+    this.keysService.invalidateCache();
     try {
       const [teams, keys] = await Promise.all([
         this.teamService.getMyTeams(),
         this.keysService.getMyKeys(),
       ]);
+      if (load !== this.workspaceLoad) return;
       const devKeys = keys.filter((k) => k.key_type?.toLowerCase() === 'developer');
       const byTeam = new Map<number, MyKey[]>();
       for (const k of devKeys) {
@@ -89,10 +104,11 @@ export class MyWorkspace implements OnInit {
         byTeam.set(k.team.id, list);
       }
       this.workspaces.set(teams.map((team) => ({ team, keys: byTeam.get(team.id) ?? [] })));
+      this.loadError.set(false);
     } catch {
-      this.loadError.set(true);
+      if (load === this.workspaceLoad && this.loading()) this.loadError.set(true);
     } finally {
-      this.loading.set(false);
+      if (load === this.workspaceLoad) this.loading.set(false);
     }
   }
 
@@ -144,20 +160,43 @@ export class MyWorkspace implements OnInit {
     if (isInteractiveClick(event)) return;
     // Clicks inside the expanded models list shouldn't collapse it.
     if ((event.target as HTMLElement | null)?.closest('.models-section')) return;
-    this.toggleModels(key);
+    void this.toggleModels(key);
   }
 
-  toggleModels(key: MyKey): void {
-    const expanded = new Set(this.expandedKeyIds());
-    if (expanded.has(key.id)) {
-      expanded.delete(key.id);
-      this.expandedKeyIds.set(expanded);
+  async toggleModels(key: MyKey): Promise<void> {
+    if (this.isExpanded(key.id)) {
+      this.expandedKeyIds.update(ids => {
+        const expanded = new Set(ids);
+        expanded.delete(key.id);
+        return expanded;
+      });
       return;
     }
-    expanded.add(key.id);
-    this.expandedKeyIds.set(expanded);
-    if (this.keyModels().has(key.id)) return;
-    void this.loadKeyModels(key);
+    if (this.loggingTarget() || this.checkingLoggingKeyId() === key.id) return;
+
+    const check = ++this.loggingCheck;
+    this.checkingLoggingKeyId.set(key.id);
+    const needsChoice = await this.developerKeyLogging.needsChoice(key.team.id).catch(() => false);
+    if (check !== this.loggingCheck) return;
+
+    this.checkingLoggingKeyId.set(null);
+    if (needsChoice) this.loggingTarget.set(key);
+    else this.expandModels(key);
+  }
+
+  finishLoggingOnboarding(saved: boolean): void {
+    const key = this.loggingTarget();
+    if (!key) return;
+    this.loggingTarget.set(null);
+    if (saved) void this.refreshWorkspace();
+    this.expandModels(key);
+  }
+
+  private expandModels(key: MyKey): void {
+    this.expandedKeyIds.update(ids => new Set(ids).add(key.id));
+    if (!this.keyModels().has(key.id) && !this.isModelsLoading(key.id)) {
+      void this.loadKeyModels(key);
+    }
   }
 
   private async loadKeyModels(key: MyKey): Promise<void> {
@@ -206,9 +245,7 @@ export class MyWorkspace implements OnInit {
   }
 
   retryModels(key: MyKey): void {
-    this.keyModels.update((m) => { const n = new Map(m); n.delete(key.id); return n; });
-    this.expandedKeyIds.update((s) => { const n = new Set(s); n.delete(key.id); return n; });
-    this.toggleModels(key);
+    void this.loadKeyModels(key);
   }
 
   // ── Logging toggle ─────────────────────────────────────────────────────────

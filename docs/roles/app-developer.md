@@ -66,6 +66,9 @@ shows what the model supports (function calling, vision, reasoning) and where
 Logos serves the model. You can search the list and open the details of a
 model.
 
+Use **Active models** to browse the catalogue. Use **Model requests** to request a model for your team.
+Enter the Hugging Face repository name, select your team, and select **Vote for this model**.
+
 ![Models page](/img/roles/app-developer-models.png)
 
 ## My Workspace
@@ -90,6 +93,23 @@ Local rate limits and model permissions still apply.
 The budget message shows this distinction; it does not mean that the key is inactive.
 
 ![My Workspace — exhausted cloud budget with local models available](/img/roles/app-developer-my-workspace-budget.png)
+
+### Choose a logging level
+
+1. Open **My Workspace**.
+2. Find your developer key in the team card.
+3. Select **Expand models**.
+
+If the key uses billing-only logging, then Logos asks for your choice the first time you open it.
+
+![My Workspace — choose a logging level for your developer key](/img/roles/my-workspace-logging-choice.png)
+
+- **Keep billing-only logging** keeps usage and billing logs.
+- **Enable full logging** lets Logos store requests and responses for this key. Logos can use this content in benchmarks.
+
+Logos saves the choice for you and the team shown in the dialog. A different team has a separate choice.
+Select **Decide later** to open the key and make your choice the next time you open it.
+To change the logging level later, select **BILLING** or **FULL** on the key card.
 
 ## AI Tools
 

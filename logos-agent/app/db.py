@@ -1267,7 +1267,7 @@ async def next_queued_session(*, include_triggered: bool = True) -> dict[str, An
                                 AND same.id <> s.id
                                 AND same.status = ANY(:occupying)
                            )
-                     ORDER BY s.priority DESC, s.created_at
+                     ORDER BY (s.trigger_ref IS NOT NULL), s.priority DESC, s.created_at
                      LIMIT 1
                     """),
                     {
@@ -1288,7 +1288,7 @@ async def next_queued_session(*, include_triggered: bool = True) -> dict[str, An
 
 
 async def claim_session(
-    session_id: int, *, trigger_quota: int | None = None, memory_mb: int | None = None
+    session_id: int, *, max_active: int | None = None, memory_mb: int | None = None
 ) -> dict[str, Any] | None:
     """Take this exact queued session, or nothing.
 
@@ -1297,10 +1297,9 @@ async def claim_session(
     cancelled, or a more urgent one on another model can be queued. Claiming
     "the next one" would then start a session whose lane nobody measured.
 
-    ``trigger_quota`` is how many self-queued sessions may be running at
-    once, counted *inside this statement*. Counting it beforehand and
-    claiming afterwards leaves a window in which two schedulers both see
-    room — the automation would then take the places kept for people.
+    ``max_active`` is the shared session ceiling. Count every occupying
+    session inside the serialized claim. An automated candidate also yields
+    if a claimable manual session arrived after the lane was measured.
 
     A session with a branch holds that branch's advisory lock while it
     claims: the row lock alone cannot keep two claims on one branch apart —
@@ -1315,12 +1314,9 @@ async def claim_session(
     containers will actually get.
     """
     async with sessionmaker()() as db:
-        if trigger_quota is not None:
-            # One admission at a time, across every replica: two schedulers
-            # locking different rows would otherwise both read the same
-            # count of active triggered sessions and both pass the check
-            # below, taking the places kept for people. Held to the end of
-            # this transaction, which is the claim.
+        if max_active is not None:
+            # Serialize claims across replicas so two schedulers cannot
+            # both count the same last free slot. Held through the claim.
             await db.execute(text("SELECT pg_advisory_xact_lock(hashtext('logos-agent-admission'))"))
         branch = (
             await db.execute(
@@ -1359,19 +1355,29 @@ async def claim_session(
                                 AND same.status = ANY(:occupying)
                            )
                        AND (
+                             CAST(:max_active AS INTEGER) IS NULL
+                             OR (SELECT COUNT(*) FROM agent_sessions active
+                                  WHERE active.status = ANY(:occupying)) < CAST(:max_active AS INTEGER)
+                           )
+                       AND (
                              s.trigger_ref IS NULL
-                             OR CAST(:trigger_quota AS INTEGER) IS NULL
-                             OR (
-                                  SELECT COUNT(*) FROM agent_sessions mine
-                                   WHERE mine.trigger_ref IS NOT NULL
-                                     AND mine.status = ANY(:occupying)
-                                ) < CAST(:trigger_quota AS INTEGER)
+                             OR NOT EXISTS (
+                                 SELECT 1 FROM agent_sessions manual
+                                  WHERE manual.status = 'queued'
+                                    AND manual.trigger_ref IS NULL
+                                    AND NOT EXISTS (
+                                        SELECT 1 FROM agent_sessions busy
+                                         WHERE busy.status = ANY(:occupying)
+                                           AND (busy.workspace_id = manual.workspace_id
+                                                OR busy.branch_name = manual.branch_name)
+                                    )
+                             )
                            )
                      FOR UPDATE OF s SKIP LOCKED
                     """),
                 {
                     "session_id": session_id,
-                    "trigger_quota": trigger_quota,
+                    "max_active": max_active,
                     "occupying": [
                         SessionStatus.STARTING.value,
                         SessionStatus.RUNNING.value,
@@ -1411,9 +1417,7 @@ async def claim_session(
 # per workspace or per branch.
 _CLAIMABLE = """
     s.status = 'queued'
-      -- The automation may fill the platform, but not the
-      -- last places in it: with its quota used up, only
-      -- work a person queued is claimable.
+      -- Manual-only callers may exclude background work.
       AND (:include_triggered OR s.trigger_ref IS NULL)
       AND NOT EXISTS (
             SELECT 1 FROM agent_sessions busy

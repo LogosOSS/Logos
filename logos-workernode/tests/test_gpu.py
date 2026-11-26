@@ -1,8 +1,54 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from logos_worker_node.gpu import GpuMetricsCollector
+
+
+@pytest.mark.asyncio
+async def test_force_poll_reports_failure_without_discarding_last_sample() -> None:
+    collector = GpuMetricsCollector()
+    assert not await collector.force_poll()
+    collector._available = True
+    collector._run_nvidia_smi = lambda: "0, GPU-a, RTX, 2048, 16384, 0, 44, 42.47"
+    assert await collector.force_poll()
+    collector._run_nvidia_smi = lambda: None
+    assert not await collector.force_poll()
+
+    def broken_poll():
+        raise OSError("nvidia-smi failed")
+
+    collector._run_nvidia_smi = broken_poll
+    assert not await collector.force_poll()
+    snapshot = await collector.get_snapshot()
+    assert snapshot.free_memory_mb == 16384 - 2048
+
+
+@pytest.mark.asyncio
+async def test_slow_periodic_poll_does_not_overwrite_newer_forced_sample(monkeypatch) -> None:
+    collector = GpuMetricsCollector()
+    collector._available = True
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def run_query(_executor, _query):
+        if not started.is_set():
+            started.set()
+            await release.wait()
+            return "0, GPU-a, RTX, 2048, 16384, 0, 44, 42.47"
+        return "0, GPU-a, RTX, 8192, 16384, 0, 44, 42.47"
+
+    monkeypatch.setattr(asyncio.get_running_loop(), "run_in_executor", run_query)
+    older = asyncio.create_task(collector._poll())
+    await started.wait()
+    try:
+        assert await collector.force_poll()
+    finally:
+        release.set()
+        await older
+    assert (await collector.get_snapshot()).free_memory_mb == 8192
 
 
 @pytest.mark.asyncio

@@ -3,7 +3,7 @@
 import copy
 import os
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, time
 from pathlib import Path
 from xml.etree import ElementTree
 
@@ -12,6 +12,8 @@ from sqlalchemy import bindparam, create_engine, text
 from sqlalchemy.orm import Session
 
 from logos.benchmarks import nightly_store as store
+from logos.benchmarks.nightly import CAPACITY_WAITING, NIGHTLY_WINDOW
+from logos.maintenance_window import MaintenanceWindow
 
 pytestmark = pytest.mark.integration
 
@@ -80,6 +82,9 @@ def database(monkeypatch):
             "{*}changeSet/{*}sql"
         ):
             connection.execute(text(sql.text))
+        for name in ("100_nightly_rotation_window.xml", "101_nightly_window_revision.xml"):
+            for sql in ElementTree.parse(migration.with_name(name)).findall("{*}changeSet/{*}sql"):
+                connection.execute(text(sql.text))
 
     class Database(store.DBManager):
         def __enter__(self):
@@ -96,6 +101,94 @@ def database(monkeypatch):
     with admin.begin() as connection:
         connection.execute(text(f"DROP SCHEMA {schema} CASCADE"))
     admin.dispose()
+
+
+def test_rotation_window_is_saved_per_pair_and_rejects_a_stale_editor(database):
+    default = MaintenanceWindow.from_env()
+    custom = MaintenanceWindow(time(11, 15), time(13), default.timezone)
+    stale = MaintenanceWindow(time(12), time(14), default.timezone)
+    store.set_enabled(31, enabled=True, expected=False)
+
+    assert store.set_window(31, custom, default)
+    assert not store.set_window(31, stale, default)
+    row = store.status(31)
+    assert row["enabled"]
+    assert (row["window_start"], row["window_end"]) == (custom.start, custom.end)
+    assert store.status(32).get("window_start") is None
+    assert not store.claim(31, date(2026, 11, 25), window=default)
+    assert store.claim(31, date(2026, 11, 25), window=custom)
+
+
+def test_active_nightly_trial_is_scoped_to_its_live_job_and_preserves_the_round_baseline(database):
+    import json
+
+    engine, _ = database
+    store.set_enabled(31, enabled=True, expected=False)
+    assert store.claim(31, date(2026, 11, 25))
+    recovery = {
+        "provider_id": 1,
+        "vllm_config": {
+            "max_num_seqs": 5,
+            "extra_args": ["--max-num-batched-tokens", "2560", "--token=do-not-return"],
+            "kv_cache_dtype": "fp8_e4m3",
+        },
+    }
+    job = {
+        "nightly": True,
+        "model_provider_id": 31,
+        "provider_id": 1,
+        "provider_session_id": "worker-session",
+        "serving_overrides": {
+            "max_num_seqs": 2,
+            "max_num_batched_tokens": 2560,
+            "kv_cache_dtype": "fp8",
+            "speculative_config": '{"method":"mtp","num_speculative_tokens":3}',
+            "hf_overrides": {"token": "do-not-return"},
+        },
+    }
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO jobs (id, environment, status, request_payload) "
+                "VALUES (41, 'model-provider-benchmark', 'running', CAST(:payload AS jsonb))"
+            ),
+            {"payload": json.dumps(job)},
+        )
+    store.save(31, "running", [], recovery)
+    assert store.active_trial(31, 1, 41, "worker-session") == {"baseline_id": None, "changes": []}
+    store.save(31, "running", [{"configuration": 1, "status": "success", "benchmark_id": 71}], recovery)
+    assert store.active_trial(31, 1, 41, "worker-session") == {
+        "baseline_id": 71,
+        "changes": [
+            {"parameter": "max_num_seqs", "before": 5, "after": 2},
+            {"parameter": "speculative_config", "before": "Off", "after": "3 draft tokens"},
+        ],
+    }
+    assert store.active_trial(31, 1, 41, "old-session") is None
+    assert store.active_trial(32, 1, 41, "worker-session") is None
+    assert store.active_trial(31, 2, 41, "worker-session") is None
+    store.fence_recovery_jobs([41])
+    assert store.active_trial(31, 1, 41, "worker-session") is None
+
+
+def test_moving_the_window_can_run_the_same_pair_again_without_spending_another_daily_slot(database):
+    default = MaintenanceWindow.from_env()
+    afternoon = MaintenanceWindow(time(13, 10), time(13, 30), default.timezone)
+    day = date(2026, 11, 25)
+    store.set_enabled(31, enabled=True, expected=False)
+    assert store.claim(31, day, window=default)
+    store.finish(31, "failed", [], None)
+    assert not store.claim(31, day, window=default)
+    assert store.set_window(31, default, default)
+    assert not store.claim(31, day, window=default)
+
+    assert store.set_window(31, afternoon, default)
+    assert store.claim(31, day, window=afternoon)
+    store.finish(31, "completed", [], None)
+    assert not store.claim(31, day, window=afternoon)
+    assert store.set_window(31, default, afternoon)
+    assert store.claim(31, day, window=default)
+    assert store.claimed_today(day) == 1
 
 
 def test_frozen_inputs_survive_log_deletion_and_selection_is_compare_and_set(database, monkeypatch):
@@ -246,6 +339,68 @@ async def test_completion_event_survives_failed_delivery_and_deduplicates_finish
     assert delivery.call_args.kwargs["event_key"] == "nightly:31:2026-10-28"
 
 
+def test_moving_a_window_keeps_one_completion_per_claimed_revision(database):
+    engine, _ = database
+    day = date(2026, 11, 25)
+    default = MaintenanceWindow.from_env()
+    afternoon = MaintenanceWindow(time(13, 10), time(13, 30), default.timezone)
+    store.set_enabled(31, True, False)
+    assert store.claim(31, day, window=default)
+    store.finish(31, "continuing", [{"configuration": 1, "status": "success"}])
+
+    assert store.set_window(31, afternoon, default)
+    store.finalize_continuations(datetime.fromisoformat("2026-11-25T07:00:00+01:00"))
+    assert store.claim(31, day, window=afternoon)
+    report = [{"configuration": 1, "status": "failed", "reason": "The afternoon baseline failed"}]
+    store.finish(31, "failed", report)
+    store.finish(31, "failed", report)
+
+    with engine.connect() as connection:
+        events = dict(connection.execute(text("SELECT event_id, payload FROM benchmark_completion_events")).all())
+    morning = events["nightly:31:2026-11-25"]
+    later = events["nightly:31:2026-11-25:1"]
+    assert len(events) == 2
+    assert (morning["status"], morning["rounds"], morning["successful_configurations"]) == ("completed", 1, 1)
+    assert (later["status"], later["rounds"], later["successful_configurations"]) == ("failed", 1, 0)
+    assert later["interruption_reason"] == "The afternoon baseline failed"
+
+
+def test_earlier_custom_window_freezes_the_shared_source_before_the_default_window(database, monkeypatch):
+    from logos.benchmarks import recent_requests
+
+    engine, _ = database
+    monkeypatch.setenv("LOGOS_NIGHTLY_REQUEST_USERNAME", "source-user")
+    default = MaintenanceWindow.from_env()
+    early = MaintenanceWindow(time(4), time(4, 40), default.timezone)
+    now = datetime.fromisoformat("2026-11-25T04:15:00+01:00")
+    cutoff = early.bounds(now)[0]
+    assert recent_requests.freeze(default.bounds(now)[0]) is None
+    store.set_enabled(31, True, False)
+    assert store.set_window(31, early, default)
+    with engine.begin() as connection:
+        connection.execute(text("INSERT INTO users(id, username) VALUES (1, 'source-user')"))
+        connection.execute(
+            text(
+                "INSERT INTO log_entry(id, model_id, user_id, privacy_level, result_status, input_payload, "
+                "timestamp_request, timestamp_response) "
+                "SELECT i, 11, 1, 'FULL', 'success', "
+                '\'{"messages":[{"role":"user","content":"Synthetic example"}]}\'::jsonb, :cutoff, :cutoff '
+                "FROM generate_series(1, 50) i"
+            ),
+            {"cutoff": cutoff},
+        )
+    assert recent_requests.policy(now)["cutoff"] == cutoff
+    assert recent_requests.freeze(now) is None
+    token = NIGHTLY_WINDOW.set(early)
+    try:
+        workload = recent_requests.for_model({"model_id": 11, "model_name": "model-a"}, now)
+    finally:
+        NIGHTLY_WINDOW.reset(token)
+    assert workload["request_count"] == 50
+    assert recent_requests.policy(now)["ready"] is True
+    assert recent_requests.freeze(default.bounds(now)[0])["cutoff"] == cutoff
+
+
 @pytest.mark.parametrize("adopt", [False, True])
 def test_finish_persists_winner_reference_and_chart_eligibility_atomically(database, adopt):
     import json
@@ -260,14 +415,14 @@ def test_finish_persists_winner_reference_and_chart_eligibility_atomically(datab
         "workload_id": "a" * 64,
     }
     with engine.begin() as connection:
-        for identifier, throughput in [(1, 40), (2, 50)]:
+        for identifier, throughput in [(1, 40), (2, 50), (3, 49)]:
             configuration = {
                 "workload": {"id": "a" * 64},
                 "nightly": {
                     "baseline_id": 1,
                     "reference_id": 1,
                     "series_key": "series",
-                    "parameters": {"max_num_seqs": 16 * identifier},
+                    "parameters": {"max_num_seqs": 16 if identifier == 1 else 32},
                 },
             }
             metrics = {
@@ -283,9 +438,19 @@ def test_finish_persists_winner_reference_and_chart_eligibility_atomically(datab
                 ),
                 {"id": identifier, "config": json.dumps(configuration), "metrics": json.dumps(metrics)},
             )
-    report = [{"configuration": i, "status": "success", "benchmark_id": i} for i in (1, 2)]
+    report = [
+        {"configuration": 1, "status": "success", "benchmark_id": 1, "kind": "baseline"},
+        {"configuration": 2, "status": "success", "benchmark_id": 2, "kind": "trial"},
+        {
+            "configuration": 3,
+            "status": "success",
+            "benchmark_id": 3,
+            "kind": "confirmation",
+            "confirms_benchmark_id": 2,
+        },
+    ]
     candidate = store.adoption_candidate(31, search, report)
-    assert candidate["benchmark_id"] == 2
+    assert candidate["benchmark_id"] == 3
     assert store.adoption_candidate(32, search, report) is None
     if adopt:
         report.append({"status": "adopted", **candidate})
@@ -293,10 +458,10 @@ def test_finish_persists_winner_reference_and_chart_eligibility_atomically(datab
     assert store.status(31)["optimizer"]["best_parameters"] == {"max_num_seqs": 32}
     assert store.status(31)["optimizer"]["reference_id"] == 1
     if adopt:
-        assert store.status(31)["optimizer"]["production_adoption"]["benchmark_id"] == 2
+        assert store.status(31)["optimizer"]["production_adoption"]["benchmark_id"] == 3
     with engine.connect() as connection:
         payload = connection.execute(text("SELECT payload FROM benchmark_completion_events")).scalar_one()
-        assert payload["benchmark_id"] == 2
+        assert payload["benchmark_id"] == (3 if adopt else 2)
         assert payload["changes"] == [{"parameter": "max_num_seqs", "before": None, "after": 32}]
         assert (
             connection.execute(
@@ -658,6 +823,44 @@ def test_continuous_rounds_keep_daily_claims_and_notify_only_after_the_final_res
         payload = connection.execute(text("SELECT payload FROM benchmark_completion_events")).scalar_one()
         assert payload["successful_configurations"] == 4
         assert payload["rounds"] == 2
+    assert not store.claim(31, day)
+
+
+def test_capacity_wait_reuses_its_daily_claim_and_emits_one_deferred_event(database):
+    engine, _ = database
+    day = date(2026, 10, 29)
+    report = [{"status": CAPACITY_WAITING, "reason": "GPU 0 lacks free memory for warm-up"}]
+    store.set_enabled(31, True, False)
+    assert store.claim(31, day)
+    store.finish(31, CAPACITY_WAITING, report)
+
+    store.finalize_continuations(datetime.fromisoformat("2026-10-29T07:59:59+01:00"))
+    assert store.status(31)["status"] == CAPACITY_WAITING
+    workload_id = "c" * 64
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO benchmark_workloads(id, name, model_id, model_name, provenance, requests, request_count) "
+                "VALUES (:id, 'Next workload', 11, 'model-a', 'synthetic', '[{}]'::jsonb, 1)"
+            ),
+            {"id": workload_id},
+        )
+    updated = store.set_enabled(31, True, True, workload_id, None)
+    assert updated["workload_id"] == workload_id
+    assert updated["status"] == CAPACITY_WAITING
+    with engine.connect() as connection:
+        assert connection.execute(text("SELECT COUNT(*) FROM benchmark_completion_events")).scalar_one() == 0
+    assert store.claim(31, day)
+    assert store.claimed_today(day) == 1
+    store.finish(31, CAPACITY_WAITING, report)
+
+    end = datetime.fromisoformat("2026-10-29T08:00:00+01:00")
+    store.finalize_continuations(end)
+    store.finalize_continuations(end)
+    assert store.status(31)["status"] == "capacity_deferred"
+    with engine.connect() as connection:
+        event = connection.execute(text("SELECT payload FROM benchmark_completion_events")).scalar_one()
+    assert (event["status"], event["rounds"], event["successful_configurations"]) == ("capacity_deferred", 0, 0)
     assert not store.claim(31, day)
 
 

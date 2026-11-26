@@ -5,6 +5,7 @@ import os
 
 from sqlalchemy import text
 
+from logos.benchmarks.nightly import NIGHTLY_WINDOW
 from logos.benchmarks.workloads import MAX_BYTES, canonical, replay_request
 from logos.dbutils.dbmanager import DBManager
 from logos.maintenance_window import MaintenanceWindow
@@ -17,6 +18,16 @@ def username():
     return os.getenv("LOGOS_NIGHTLY_REQUEST_USERNAME", "").strip()
 
 
+def cutoff_for_schedules(db, now, window):
+    start, _ = window.bounds(now)
+    count, earliest = db.session.execute(
+        text("SELECT count(*), min(window_start) FROM nightly_benchmarks WHERE enabled")
+    ).one()
+    if earliest is not None:
+        start = min(start, start.replace(hour=earliest.hour, minute=earliest.minute))
+    return count, start
+
+
 def policy(now=None):
     owner = username()
     result = {
@@ -25,8 +36,8 @@ def policy(now=None):
         "request_count": REQUEST_COUNT if owner else None,
     }
     if owner and now is not None:
-        cutoff = MaintenanceWindow.from_env().bounds(now)[0]
         with DBManager() as db:
+            _, cutoff = cutoff_for_schedules(db, now, MaintenanceWindow.from_env())
             row = (
                 db.session.execute(
                     text(
@@ -46,11 +57,12 @@ def freeze(now, *, include_requests=True):
     """Freeze before calibration; a restart or failed selection never replaces this night's inputs."""
     owner = username()
     window = MaintenanceWindow.from_env()
-    if not owner or not window.contains(now):
+    active_window = NIGHTLY_WINDOW.get()
+    if not owner or not (window.contains(now) or (active_window and active_window.contains(now))):
         return None
-    cutoff = window.bounds(now)[0]
     with DBManager() as db:
-        if not db.session.execute(text("SELECT EXISTS(SELECT 1 FROM nightly_benchmarks WHERE enabled)")).scalar():
+        count, cutoff = cutoff_for_schedules(db, now, window)
+        if not count:
             return None
         db.session.execute(
             text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),

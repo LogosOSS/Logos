@@ -331,6 +331,7 @@ async def build_runtime_status(app: FastAPI) -> WorkerRuntimeStatus:
     startup_gmu = _startup_gmu_by_model(cfg, profiles_registry, devices)
 
     return WorkerRuntimeStatus(
+        supports_nightly_gpu_budget=_supports_nightly_gpu_budget(cfg.worker.gpu_devices, devices),
         worker_name=cfg.worker.name,
         worker_id=bridge.worker_id,
         service_version=SERVICE_VERSION,
@@ -355,6 +356,25 @@ async def build_runtime_status(app: FastAPI) -> WorkerRuntimeStatus:
         configured_vllm_by_model=configured or None,
         startup_gmu_by_model=startup_gmu or None,
     )
+
+
+def _supports_nightly_gpu_budget(gpu_selector: str, devices: DeviceSummary) -> bool:
+    """Nightly admission requires NVIDIA memory telemetry on a selectable GPU."""
+    if not devices.nvidia_smi_available:
+        return False
+    from .lane_manager import LaneManager
+
+    usable = {
+        int(device.extra["index"])
+        for device in devices.devices
+        if (
+            device.kind == "nvidia"
+            and device.health != "faulted"
+            and device.memory_total_mb > 0
+            and str(device.extra.get("index", "")).isdigit()
+        )
+    }
+    return bool(LaneManager._parse_gpu_selector(gpu_selector, usable.difference(devices.faulted_gpu_indices)))
 
 
 def _restore_gpu_pools(cfg, devices: DeviceSummary) -> dict[str, list[int]]:

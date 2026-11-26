@@ -31,8 +31,10 @@ from logos.benchmarks.guidellm_runner import (
 )
 from logos.benchmarks.huggingface_datasets import dataset_metadata, search_datasets
 from logos.benchmarks.nightly import (
+    NIGHTLY_BASELINE_CONFIG,
     NIGHTLY_CONTEXT,
     PROGRESS,
+    NightlyCapacityDeferred,
     NightlyStopped,
     RunProgress,
     can_start,
@@ -72,6 +74,7 @@ from logos.dbutils.dbrequest import (
 )
 from logos.dbutils.types import Deployment
 from logos.errors import admin_error_response
+from logos.hf_license import fetch_hf_license
 from logos.hf_reachability import check_hf_reachability
 from logos.logosnode_registry import LogosNodeCommandError, LogosNodeOfflineError, MaintenanceBusyError
 from logos.logosnode_snapshot import _logosnode_snapshot_is_connected
@@ -378,6 +381,25 @@ async def internal_hf_reachability(data: HfReachabilityRequest, request: Request
     return JSONResponse(content=asdict(result))
 
 
+@router.post("/internal/hf_license", tags=["admin"])
+async def internal_hf_license(data: HfReachabilityRequest, request: Request):
+    """The license of a Hugging Face model repository, read with the central
+    HF_TOKEN: the SPDX expression the model card declares plus the license
+    file's text when the repository carries one, and the acceptable-use
+    policy file (USE_POLICY.md, POLICY.md, ...) alongside it when the
+    repository publishes one.
+
+    Gated repositories are only readable for a token whose account was
+    granted access, so call this for a repository the reachability check has
+    answered ``reachable`` for. A non-null ``error`` means the license could
+    not be determined (not that the model is unlicensed) — the caller leaves
+    its row pending and retries later.
+    """
+    _require_internal_secret(request)
+    result = await fetch_hf_license(data.hf_repo_id)
+    return JSONResponse(content=asdict(result))
+
+
 def _require_internal_secret(request: Request, disabled_detail: str = "Internal endpoint disabled") -> None:
     """Authenticate an /internal/* call: the shared secret, no user context.
 
@@ -636,6 +658,10 @@ async def internal_run_model_benchmark(data: InternalBenchmarkRequest, request: 
     _require_internal_secret(request)
 
     configurations = data.batch.configurations if data.batch else [data]
+    if not NIGHTLY_CONTEXT.get() and any(
+        settings.serving_overrides.speculative_config is not None for settings in configurations
+    ):
+        raise HTTPException(status_code=400, detail="Speculative decoding overrides are available to Nightly only.")
     checked_datasets = {}
     for settings in configurations:
         if settings.workload_id:
@@ -720,12 +746,19 @@ async def internal_run_model_benchmark(data: InternalBenchmarkRequest, request: 
                 raise HTTPException(status_code=503, detail="Provider has not sent its first status yet")
 
         model_name = str(target["model_name"])
+        pinned_lane = benchmark_reservations.pinned_lane(provider_id, model_name) if owns_nightly_reservation else None
+        if provider_type == "logosnode" and NIGHTLY_CONTEXT.get() and pinned_lane is None:
+            raise HTTPException(status_code=409, detail="Nightly benchmark no longer owns its pinned lane")
         try:
+            baseline_config = NIGHTLY_BASELINE_CONFIG.get() if owns_nightly_reservation else None
+            limits = worker_limits(runtime_snapshot, model_name, lane_id=pinned_lane, baseline_config=baseline_config)
             for settings in configurations:
-                validate_worker_overrides(settings.serving_overrides, worker_limits(runtime_snapshot, model_name))
+                validate_worker_overrides(settings.serving_overrides, limits, nightly=owns_nightly_reservation)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        serving_configuration = extract_serving_configuration(runtime_snapshot, model_name)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        serving_configuration = limits["current"]
         job_payload = {
             "nightly": NIGHTLY_CONTEXT.get(),
             "model_provider_id": data.model_provider_id,
@@ -764,6 +797,13 @@ async def internal_run_model_benchmark(data: InternalBenchmarkRequest, request: 
         else None
     )
 
+    def read_serving_configuration():
+        if pinned_lane is not None and benchmark_reservations.pinned_lane(provider_id, model_name) != pinned_lane:
+            raise RuntimeError("Nightly benchmark no longer owns its pinned lane")
+        return extract_serving_configuration(
+            _main._logosnode_registry.peek_runtime_snapshot(provider_id), model_name, lane_id=pinned_lane
+        )
+
     async def execute_run(
         settings: BenchmarkRunSettings | InternalBenchmarkRequest,
         progress: dict[str, int] | None = None,
@@ -793,6 +833,7 @@ async def internal_run_model_benchmark(data: InternalBenchmarkRequest, request: 
                     model_name,
                     settings.serving_overrides,
                     progress_callback=report_preparation_stage,
+                    **({"baseline_config": baseline_config} if baseline_config is not None else {}),
                 )
 
         else:
@@ -808,9 +849,7 @@ async def internal_run_model_benchmark(data: InternalBenchmarkRequest, request: 
             settings=settings,
             max_output_tokens=settings.max_output_tokens,
             serving_configuration=serving_configuration,
-            serving_configuration_getter=lambda: extract_serving_configuration(
-                _main._logosnode_registry.peek_runtime_snapshot(provider_id), model_name
-            ),
+            serving_configuration_getter=read_serving_configuration,
             request_headers=request_headers,
             worker_preparer=worker_preparer,
             worker_session_is_current=(
@@ -825,7 +864,12 @@ async def internal_run_model_benchmark(data: InternalBenchmarkRequest, request: 
         )
 
     if is_internal_worker_benchmark:
-        benchmark_reservations.reserve(provider_id, model_name, job_id)
+        benchmark_reservations.reserve(
+            provider_id,
+            model_name,
+            job_id,
+            nightly_owner=-data.model_provider_id if owns_nightly_reservation else None,
+        )
 
     async def nightly_run():
         progress = RunProgress(data.samples)
@@ -836,7 +880,8 @@ async def internal_run_model_benchmark(data: InternalBenchmarkRequest, request: 
             )
         except NightlyStopped as exc:
             with DBManager() as db:
-                db.update_job_status(job_id, "failed", error_message=exc.reason)
+                detail = exc.detail[:1000] if isinstance(exc, NightlyCapacityDeferred) else exc.reason
+                db.update_job_status(job_id, "failed", error_message=detail)
             raise
         finally:
             PROGRESS.pop(job_id, None)
@@ -923,6 +968,8 @@ async def internal_model_benchmark_completion(job_id: int, path: str, request: R
             "model_id": int(target["model_id"]),
             "provider_id": int(target["provider_id"]),
             "type": "logosnode",
+            "model_name": target["model_name"],
+            "provider_name": target["provider_name"],
             "privacy_level": target.get("privacy_level"),
             "cloud_provider_type": target.get("cloud_provider_type"),
             "base_url": target.get("base_url"),
@@ -1109,7 +1156,7 @@ def _why_not_calibrated(model: str, snapshot: Dict[str, Any], needing: List[str]
 async def internal_logosnode_calibrate_uncalibrated(data: InternalCalibrateRequest, request: Request):
     """Calibrate uncalibrated models on a worker, called by Spring after JWT validation."""
     _require_internal_secret(request)
-    if benchmark_reservations.owner(data.provider_id, "*") is not None:
+    if benchmark_reservations.is_nightly_reserved(data.provider_id):
         raise HTTPException(status_code=409, detail="Worker is reserved for nightly benchmarks")
     snap = _main._logosnode_registry.peek_runtime_snapshot(data.provider_id)
     if snap is None:

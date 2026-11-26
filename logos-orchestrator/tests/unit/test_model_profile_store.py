@@ -73,7 +73,7 @@ def test_new_local_calibration_needs_key_and_no_snapshot_id():
     assert not is_new_local_calibration({**fresh, "calibration_id": 3})
     assert not is_new_local_calibration({**fresh, "calibration_origin": "shared"})
     assert not is_new_local_calibration({**fresh, "calibration_key_hash": None})
-    assert not is_new_local_calibration({**fresh, "residency_source": "measured"})
+    assert not is_new_local_calibration({**fresh, "residency_source": "override"})
     assert not is_new_local_calibration({**fresh, "last_measured_epoch": 0})
 
 
@@ -202,7 +202,7 @@ def test_every_missing_measurement_needs_calibration():
 
 def test_a_collapsed_envelope_counts_only_for_a_calibrated_profile():
     envelope = {**_MEASURED, "min_kv_cache_mb": 8.0, "max_kv_cache_mb": 8.0}
-    assert profile_needs_calibration({**envelope, "residency_source": "measured"}) is False
+    assert profile_needs_calibration({**envelope, "residency_source": "override"}) is False
 
 
 def test_an_hf_estimate_still_needs_calibration():

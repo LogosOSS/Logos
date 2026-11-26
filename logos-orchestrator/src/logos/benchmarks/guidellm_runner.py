@@ -18,8 +18,8 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from logos.benchmarks.configuration import BenchmarkSettings, ServingOverrides
-from logos.benchmarks.nightly import PROGRESS
+from logos.benchmarks.configuration import QWEN_MTP_CONFIG, BenchmarkSettings, ServingOverrides
+from logos.benchmarks.nightly import NIGHTLY_CONTEXT, NIGHTLY_GPU_BUDGET_REASON, PROGRESS, NightlyCapacityDeferred
 from logos.benchmarks.nightly_store import write_progress
 
 DATASET = "openai/gsm8k"
@@ -281,20 +281,29 @@ def apply_serving_overrides(current: dict[str, Any], overrides: ServingOverrides
     return result
 
 
-def extract_serving_configuration(snapshot: dict[str, Any] | None, model: str) -> dict[str, Any]:
-    """Capture the live vLLM lane configuration for the benchmarked model."""
-    runtime = (snapshot or {}).get("runtime")
-    if not isinstance(runtime, dict):
-        return {}
-    lanes = runtime.get("lanes")
-    if not isinstance(lanes, list):
-        return {}
+def lane_is_serving(lane: dict[str, Any]) -> bool:
+    return lane.get("runtime_state") in {"loaded", "running"} and lane.get("sleep_state") != "sleeping"
 
-    for lane in lanes:
-        if not isinstance(lane, dict) or lane.get("model") != model:
-            continue
-        return lane_serving_configuration(lane)
-    return {}
+
+def benchmark_model_lane(snapshot: dict[str, Any] | None, model: str, *, lane_id: str | None = None) -> dict[str, Any]:
+    runtime = (snapshot or {}).get("runtime")
+    lanes = runtime.get("lanes") if isinstance(runtime, dict) else None
+    if not isinstance(lanes, list):
+        lanes = []
+    matching = [lane for lane in lanes if isinstance(lane, dict) and lane.get("model") == model]
+    if lane_id is not None:
+        lane = next((lane for lane in matching if lane.get("lane_id") == lane_id), None)
+        if lane is None:
+            raise RuntimeError(f"Nightly benchmark lane '{lane_id}' for '{model}' is missing from worker status")
+        return lane
+    return next((lane for lane in matching if lane_is_serving(lane)), matching[0] if matching else {})
+
+
+def extract_serving_configuration(
+    snapshot: dict[str, Any] | None, model: str, *, lane_id: str | None = None
+) -> dict[str, Any]:
+    """Capture the live settings for the requested lane or the eligible replica."""
+    return lane_serving_configuration(benchmark_model_lane(snapshot, model, lane_id=lane_id))
 
 
 def lane_serving_configuration(lane: dict[str, Any]) -> dict[str, Any]:
@@ -319,6 +328,24 @@ def lane_serving_configuration(lane: dict[str, Any]) -> dict[str, Any]:
                     result[key] = json.loads(raw)
                 except (ValueError, TypeError):
                     result[key] = raw
+    if "speculative_config" in vllm_config:
+        speculative = vllm_config["speculative_config"]
+        if speculative:
+            try:
+                config = json.loads(speculative)
+            except (TypeError, ValueError):
+                config = None
+            result["speculative_config"] = (
+                QWEN_MTP_CONFIG
+                if isinstance(config, dict)
+                and config.get("method") in ("mtp", "qwen3_5_mtp")
+                and config.keys() == {"method", "num_speculative_tokens"}
+                and type(config.get("num_speculative_tokens")) is int
+                and config["num_speculative_tokens"] == 3
+                else "custom"
+            )
+        else:
+            result["speculative_config"] = ""
     # The worker includes global flags, aliases and lane override precedence.
     # Older workers without this field cannot establish an implicit default.
     backend_metrics = lane.get("backend_metrics")
@@ -616,6 +643,8 @@ async def run_benchmark_job(
                     },
                 },
             )
+        if NIGHTLY_CONTEXT.get() and getattr(exc, "reason_code", None) == NIGHTLY_GPU_BUDGET_REASON:
+            raise NightlyCapacityDeferred(message) from exc
     finally:
         lease_task.cancel()
         await asyncio.gather(lease_task, return_exceptions=True)

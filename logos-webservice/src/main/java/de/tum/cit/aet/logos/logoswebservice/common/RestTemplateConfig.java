@@ -18,9 +18,13 @@ public class RestTemplateConfig {
     @Primary
     @Bean
     public RestTemplate restTemplate() {
+        return withReadTimeout(5_000);
+    }
+
+    private static RestTemplate withReadTimeout(int readTimeoutMs) {
         SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
         factory.setConnectTimeout(3_000);
-        factory.setReadTimeout(5_000);
+        factory.setReadTimeout(readTimeoutMs);
         return new RestTemplate(factory);
     }
 
@@ -34,10 +38,7 @@ public class RestTemplateConfig {
      */
     @Bean
     public RestTemplate workerAdminRestTemplate() {
-        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
-        factory.setConnectTimeout(3_000);
-        factory.setReadTimeout(130_000);
-        return new RestTemplate(factory);
+        return withReadTimeout(130_000);
     }
 
     /**
@@ -49,10 +50,20 @@ public class RestTemplateConfig {
      */
     @Bean
     public RestTemplate hfReachabilityRestTemplate() {
-        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
-        factory.setConnectTimeout(3_000);
-        factory.setReadTimeout(20_000);
-        return new RestTemplate(factory);
+        return withReadTimeout(20_000);
+    }
+
+    /**
+     * Template for the orchestrator's HF license fetch.
+     *
+     * Unlike the precheck's single Hub call, the license fetch is several
+     * sequential Hub round trips (model card, tree scan, license file); the
+     * orchestrator bounds the whole fetch with a 60 s overall deadline, so the
+     * read timeout exceeds that deadline instead of the one-call bound.
+     */
+    @Bean
+    public RestTemplate hfLicenseRestTemplate() {
+        return withReadTimeout(65_000);
     }
 
     /**
@@ -62,10 +73,7 @@ public class RestTemplateConfig {
      */
     @Bean
     public RestTemplate calibrationLogRestTemplate() {
-        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
-        factory.setConnectTimeout(3_000);
-        factory.setReadTimeout(30_000);
-        return new RestTemplate(factory);
+        return withReadTimeout(30_000);
     }
 
     /**

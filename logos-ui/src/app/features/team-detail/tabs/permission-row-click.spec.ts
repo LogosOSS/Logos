@@ -3,6 +3,7 @@ import { TestBed } from '@angular/core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AuthService } from '../../../core/auth/services/auth.service';
+import { DeveloperKeyLoggingService } from '../../../core/services/developer-key-logging.service';
 import { TeamManagementService } from '../../../core/services/team-management.service';
 import { TeamApiKey } from '../../../shared/models/team.model';
 import { AppKeysTabComponent } from './app-keys/app-keys-tab';
@@ -28,6 +29,7 @@ describe('key permission rows', () => {
     TestBed.configureTestingModule({
       providers: [
         { provide: TeamManagementService, useValue: teamService },
+        { provide: DeveloperKeyLoggingService, useValue: { needsChoice: vi.fn() } },
         { provide: AuthService, useValue: { currentUser: signal(null) } },
       ],
     });

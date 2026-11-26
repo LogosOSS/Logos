@@ -6,7 +6,7 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 
 from logos.benchmarks import huggingface_datasets as hf
-from logos.benchmarks.configuration import BenchmarkSettings
+from logos.benchmarks.configuration import BenchmarkSettings, ServingOverrides
 from logos.benchmarks.guidellm_runner import build_scenario
 
 
@@ -183,3 +183,23 @@ def test_attention_backend_is_applied_and_recorded(backend):
     assert current["attention_backend"] == "TRITON_ATTN"
     status = {"runtime": {"lanes": [{"model": "m", "lane_config": {"vllm_config": updated}}]}}
     assert extract_serving_configuration(status, "m")["attention_backend"] == backend
+
+
+def test_nightly_mtp_switch_preserves_other_worker_fields_and_records_only_approved_mode():
+    from logos.benchmarks.configuration import QWEN_MTP_CONFIG
+    from logos.benchmarks.guidellm_runner import apply_serving_overrides, lane_serving_configuration
+
+    original = {
+        "speculative_config": '{"method":"draft_model","model":"org/draft","token":"private"}',
+        "extra_args": ["--some-feature"],
+    }
+    assert lane_serving_configuration({"lane_config": {"vllm_config": original}})["speculative_config"] == "custom"
+    configured = apply_serving_overrides(original, ServingOverrides(speculative_config=QWEN_MTP_CONFIG))
+    assert configured == {"speculative_config": QWEN_MTP_CONFIG, "extra_args": original["extra_args"]}
+    disabled = apply_serving_overrides(configured, ServingOverrides(speculative_config=""))
+    assert disabled == {"speculative_config": "", "extra_args": original["extra_args"]}
+
+
+def test_nightly_mtp_override_rejects_arbitrary_draft_model_config():
+    with pytest.raises(ValidationError, match="speculative_config"):
+        ServingOverrides(speculative_config='{"method":"draft_model","model":"org/other"}')

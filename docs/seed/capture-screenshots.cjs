@@ -43,6 +43,7 @@ const AGENT_API = "the agent runner API on /api/agent";
 const ADMIN = "tobias.wasner";
 const APP_ADMIN = "alexandra.szuminska";
 const DEVELOPER = "henriette.huhn";
+const NIGHTLY_SCHEDULE = "**/model_benchmarks/nightly/{status,configure}";
 
 function sql(query) {
   return execFileSync("docker", ["exec", DB_CONTAINER, "psql", "-U", "postgres", "-d", "logosdb", "-Atc", query]) // NOSONAR - developer tool: uses the docker CLI from the developer's PATH
@@ -60,9 +61,10 @@ function lookupIds() {
     team: sql("SELECT id FROM teams WHERE name = 'Logos'"),
     worker: sql("SELECT id FROM providers WHERE name = 'Docs Local Worker'"),
     model,
-    // The second nightly night: its variant is the linked result in the guide.
+    // Use an earlier variant to show its changed parameters.
     linkedBenchmark: sql(
-      `SELECT id FROM model_provider_benchmarks WHERE model_provider_id = ${pair} ORDER BY recorded_at DESC OFFSET 2 LIMIT 1`,
+      `SELECT id FROM model_provider_benchmarks WHERE model_provider_id = ${pair}
+        AND configuration->'nightly' ? 'parameters' ORDER BY recorded_at DESC, id DESC OFFSET 1 LIMIT 1`,
     ),
   };
 }
@@ -221,40 +223,34 @@ async function unlock(page) {
   await page.waitForTimeout(300);
 }
 
-async function manageNightly(page) {
-  if (!await page.getByRole("dialog", { name: /^Nightly benchmarks ·/ }).isVisible()) {
-    await page.getByRole("button", { name: /^Manage nightly benchmarks on / }).first().click();
-  }
-  await page.locator(".nightly-management").waitFor({ state: "visible" });
-}
-
-// Sets the schedule through the management dialog, then returns to the page.
 async function setNightly(page, enabled) {
   const customization = page.getByRole("dialog", { name: "Customize benchmark", exact: true });
   if (await customization.isVisible()) {
     await button(page, "Done").evaluate(b => b.click());
     await customization.waitFor({ state: "hidden" });
   }
-  await page.waitForFunction(
-    () => ![...document.querySelectorAll(".nightly__status")].some((e) => e.textContent.includes("Loading")),
-    null, { timeout: 30000 },
-  );
-  await manageNightly(page);
-  const toggle = page.getByRole("dialog", { name: /^Nightly benchmarks ·/ }).getByRole("button", { name: /nightly runs…?$/ });
-  const label = (await toggle.textContent()).trim();
-  if (label.startsWith("Disable") === enabled) {
-    await page.keyboard.press("Escape");
-    await page.getByRole("dialog", { name: /^Nightly benchmarks ·/ }).waitFor({ state: "hidden" });
-    return;
+  await page.getByRole("navigation", { name: "Performance sections" }).getByRole("button", { name: "Overview", exact: true }).click();
+  const rotation = page.getByRole("region", { name: "Automatic benchmarks", exact: true });
+  const tile = rotation.getByRole("button", { name: /^Docs Local Worker (Enabled|Disabled)\b/ });
+  await tile.waitFor();
+  if (await tile.getAttribute("aria-expanded") === "false") await tile.click();
+  const worker = rotation.getByRole("region", { name: "Docs Local Worker", exact: true });
+  if ((await tile.textContent()).includes("Enabled") === enabled) return;
+  if (enabled) {
+    await button(worker, "Enable automatic benchmarks").click();
+  } else {
+    await openNightlyDisable(page);
+    const dialog = page.getByRole("dialog", { name: "Disable automatic benchmarks?", exact: true });
+    await button(dialog, "Disable automatic benchmarks").evaluate(b => b.click());
   }
-  await toggle.and(page.locator("button:enabled")).waitFor();
-  await toggle.evaluate(b => b.click());
-  if (!enabled) await button(page, "Disable nightly runs").evaluate(b => b.click());
-  await page.waitForFunction((enabled) => {
-    const status = document.querySelector(".nightly__status");
-    return status?.textContent.includes(enabled ? "Enabled" : "Disabled");
-  }, enabled, { timeout: 30000 });
+  await rotation.getByRole("button", { name: enabled ? /^Docs Local Worker Enabled\b/ : /^Docs Local Worker Disabled\b/ }).waitFor();
   await page.waitForTimeout(600);
+}
+
+async function openNightlyDisable(page) {
+  await button(page, "Edit schedule").click();
+  const editor = page.getByRole("dialog", { name: "Edit schedule", exact: true });
+  await button(editor, "Disable automatic benchmarks").click();
 }
 
 async function performance(page, ids, view, query = "") {
@@ -264,16 +260,14 @@ async function performance(page, ids, view, query = "") {
   await settle(page, 800);
 }
 
-// Opens customization or nightly management only when the shot needs those controls.
-async function runView(page, ids, { nightly, open = [] }) {
-  await performance(page, ids, "Run benchmark");
+async function nightlyView(page, ids, nightly) {
+  await performance(page, ids, null);
   await setNightly(page, nightly);
-  if (open.includes("Dataset and settings") || open.includes("Repeat or compare settings")) await button(page, "Customize").click();
-  else if (open.some(text => ["Request workload", "Schedule and test plan", "Latest round results"].includes(text))) await manageNightly(page);
-  for (const text of open) {
-    if (!["Dataset and settings", "Request workload"].includes(text)) await details(page, text);
-  }
-  await page.waitForTimeout(600);
+}
+
+async function runView(page, ids, customize = false) {
+  await performance(page, ids, "Benchmarks");
+  if (customize) await button(page, "Customize").click();
 }
 
 async function resultsView(page, ids, sections = [], query = "") {
@@ -286,7 +280,7 @@ async function resultsView(page, ids, sections = [], query = "") {
 
 async function analysisView(page, ids, section) {
   await performance(page, ids, "Analysis");
-  if (section !== "Charts and comparison") await details(page, section);
+  await details(page, section);
 }
 
 async function selectSavedDataset(page) {
@@ -388,6 +382,35 @@ const SHOTS = [
     },
   },
   { file: "roles/logos-admin-models.png", user: ADMIN, full: true, go: (p) => p.goto(BASE + "/models") },
+  {
+    file: "roles/model-requests.png",
+    user: ADMIN,
+    full: true,
+    go: async (p) => {
+      await p.goto(BASE + "/models?tab=requests");
+      await p.getByRole("button", { name: /^License agreement for logos-docs\/example-chat/ }).waitFor();
+    },
+  },
+  {
+    file: "roles/model-request-license.png",
+    user: ADMIN,
+    go: async (p) => {
+      await p.goto(BASE + "/models?tab=requests");
+      await p.getByRole("button", { name: /^License agreement for logos-docs\/example-chat/ }).click();
+      await p.getByText("Example use policy for the documentation model.", { exact: true }).waitFor();
+    },
+    after: (p) => button(p, "Cancel").click(),
+  },
+  {
+    file: "roles/model-request-gated.png",
+    user: ADMIN,
+    go: async (p) => {
+      await p.goto(BASE + "/models?tab=requests");
+      await p.getByRole("button", { name: /example-chat repository is gated/ }).click();
+      await button(p, "Go to Hugging Face").waitFor();
+    },
+    after: (p) => button(p, "Cancel").click(),
+  },
   { file: "roles/logos-admin-providers.png", user: ADMIN, go: (p) => p.goto(BASE + "/providers") },
   {
     file: "roles/logos-admin-provider-connections.png",
@@ -665,21 +688,21 @@ const SHOTS = [
     full: true,
     go: async (p, ids) => {
       await resultsView(p, ids, [], `&benchmark=${ids.linkedBenchmark}`);
-      await p.getByRole("region", { name: "Selected benchmark result" }).waitFor();
+      await p.getByRole("dialog", { name: `Benchmark #${ids.linkedBenchmark}`, exact: true }).waitFor();
     },
   },
   {
     file: "roles/logos-admin-benchmark-comparison.png",
     user: ADMIN,
     full: true,
-    go: (p, ids) => analysisView(p, ids, "Charts and comparison"),
+    go: (p, ids) => analysisView(p, ids, "Compare parameter values"),
   },
   {
     file: "roles/logos-admin-benchmark-configuration.png",
     user: ADMIN,
     full: true,
     go: async (p, ids) => {
-      await analysisView(p, ids, "Run details and saved configurations");
+      await analysisView(p, ids, "Inspect saved runs");
       await p.locator(".benchmark-configuration > summary").first().click();
     },
   },
@@ -687,22 +710,14 @@ const SHOTS = [
     file: "roles/logos-admin-benchmark-glossary.png",
     user: ADMIN,
     full: true,
-    go: (p, ids) => analysisView(p, ids, "Glossary & abbreviations"),
+    go: (p, ids) => analysisView(p, ids, "Benchmark glossary"),
   },
-  // Model performance: Run benchmark view and the nightly schedule
+  // Model performance: Automatic benchmarks and manual setup
   {
     file: "roles/logos-admin-nightly-benchmarks.png",
     user: ADMIN,
     full: true,
-    go: (p, ids) =>
-      runView(p, ids, { nightly: true }),
-    after: (p) => setNightly(p, false),
-  },
-  {
-    file: "roles/logos-admin-nightly-plan.png",
-    user: ADMIN,
-    full: true,
-    go: (p, ids) => runView(p, ids, { nightly: true, open: ["Schedule and test plan"] }),
+    go: (p, ids) => nightlyView(p, ids, true),
     after: (p) => setNightly(p, false),
   },
   {
@@ -710,26 +725,37 @@ const SHOTS = [
     user: ADMIN,
     full: true,
     go: async (p, ids) => {
-      await runView(p, ids, { nightly: false, open: ["Request workload"] });
-      await p.getByRole("combobox", { name: "Request workload", exact: true }).selectOption("recent");
+      await nightlyView(p, ids, false);
+      await p.getByRole("combobox", { name: "Request workload", exact: true }).first().selectOption("recent");
     },
   },
   {
     file: "roles/logos-admin-nightly-enable.png",
     user: ADMIN,
     full: true,
-    go: (p, ids) => runView(p, ids, { nightly: false, open: ["Request workload"] }),
+    go: (p, ids) => nightlyView(p, ids, false),
+  },
+  {
+    file: "roles/logos-admin-nightly-edit.png",
+    user: ADMIN,
+    full: true,
+    go: async (p, ids) => {
+      await nightlyView(p, ids, true);
+      await button(p, "Edit schedule").click();
+      await p.getByRole("dialog", { name: "Edit schedule", exact: true }).waitFor();
+    },
+    after: async (p) => {
+      await button(p, "Cancel").click();
+      await setNightly(p, false);
+    },
   },
   {
     file: "roles/logos-admin-nightly-disable.png",
     user: ADMIN,
     full: true,
     go: async (p, ids) => {
-      await runView(p, ids, {
-        nightly: true,
-        open: ["Schedule and test plan"],
-      });
-      await p.getByRole("button", { name: "Disable nightly runs…" }).click();
+      await nightlyView(p, ids, true);
+      await openNightlyDisable(p);
       await p.waitForTimeout(800);
     },
     after: async (p) => {
@@ -742,7 +768,7 @@ const SHOTS = [
     user: ADMIN,
     full: true,
     go: async (p, ids) => {
-      await runView(p, ids, { nightly: false, open: ["Dataset and settings"] });
+      await runView(p, ids, true);
       await selectSavedDataset(p);
       await p.locator(".benchmark-customization select").filter({ has: p.locator('option[value="concurrent"]') }).first().selectOption("concurrent");
       await p.getByLabel("Concurrent requests", { exact: true }).fill("4");
@@ -755,7 +781,7 @@ const SHOTS = [
     user: ADMIN,
     full: true,
     go: async (p, ids) => {
-      await runView(p, ids, { nightly: true, open: ["Dataset and settings"] });
+      await runView(p, ids, true);
       await selectSavedDataset(p);
       await details(p, "Repeat or compare settings");
       await p.getByLabel("Run a batch").check();
@@ -770,14 +796,13 @@ const SHOTS = [
       }
       await details(p, "View run plan & fixed settings");
     },
-    after: (p) => setNightly(p, false),
   },
   {
     file: "roles/logos-admin-benchmark-confirmation.png",
     user: ADMIN,
     full: true,
     go: async (p, ids) => {
-      await runView(p, ids, { nightly: false });
+      await runView(p, ids);
       await button(p, "Review benchmark").click();
     },
     after: (p) => button(p, "Cancel").evaluate((b) => b.click()),
@@ -787,8 +812,8 @@ const SHOTS = [
     user: ADMIN,
     full: true,
     go: async (p, ids) => {
-      await runView(p, ids, { nightly: false, open: ["Dataset and settings"] });
-      await details(p, "vLLM settings for the next run");
+      await runView(p, ids, true);
+      await p.getByText("vLLM settings for the next run", { exact: true }).click();
     },
   },
   {
@@ -801,7 +826,26 @@ const SHOTS = [
     file: "roles/logos-admin-model-request-measurements.png",
     user: ADMIN,
     full: true,
-    go: (p, ids) => resultsView(p, ids, ["Request measurements"]),
+    go: async (p, ids) => {
+      const endpoint = "**/api/logosdb/request_latency_stats";
+      await p.route(endpoint, async (route) => {
+        const range = route.request().postDataJSON();
+        await route.fulfill({ json: {
+          range: { start: range.start_date, end: range.end_date },
+          rows: [
+            { reasoningEffort: "low", requestCount: 60, ttftSamples: 60, upstreamP50Ms: 850, upstreamP95Ms: 1500 },
+            { reasoningEffort: "medium", requestCount: 42, ttftSamples: 38, upstreamP50Ms: 1100, upstreamP95Ms: 2400 },
+          ].map(row => ({
+            modelId: Number(ids.model), modelName: "llama-3.1-8b-instruct",
+            providerId: Number(ids.worker), providerName: "Docs Local Worker", local: true, errorCount: 0,
+            queueP50Ms: 17, queueP95Ms: 55, ttftP50Ms: 135, ttftP95Ms: 420, ...row,
+          })),
+        } });
+      });
+      await resultsView(p, ids, ["Request measurements"]);
+      await p.locator(".latency-chart").first().waitFor();
+      await p.unroute(endpoint);
+    },
   },
   {
     file: "roles/logos-admin-benchmark-status.png",
@@ -817,13 +861,23 @@ const SHOTS = [
     file: "roles/logos-admin-nightly-automatic-source.png",
     user: ADMIN,
     full: true,
-    needs: "LOGOS_NIGHTLY_REQUEST_USERNAME in the documentation orchestrator",
     go: async (p, ids) => {
-      await runView(p, ids, { nightly: true });
-      await manageNightly(p);
+      await p.route(NIGHTLY_SCHEDULE, async (route) => {
+        const response = await route.fetch();
+        if (!response.ok()) return route.fulfill({ response });
+        const status = await response.json();
+        await route.fulfill({ response, json: {
+          ...status,
+          workload_policy: { kind: "recent_user", username: "docs.operator", request_count: 50, ready: true },
+        } });
+      });
+      await nightlyView(p, ids, true);
       await p.getByText(/Latest \d+ successful FULL requests/).waitFor();
     },
-    after: (p) => setNightly(p, false),
+    after: async (p) => {
+      await p.unroute(NIGHTLY_SCHEDULE);
+      await setNightly(p, false);
+    },
   },
 
   // App Admin
@@ -881,6 +935,16 @@ const SHOTS = [
   // App Developer
   { file: "roles/app-developer-models.png", user: DEVELOPER, go: (p) => p.goto(BASE + "/models") },
   { file: "roles/app-developer-my-workspace.png", user: DEVELOPER, go: (p) => p.goto(BASE + "/my-workspace") },
+  {
+    file: "roles/my-workspace-logging-choice.png",
+    user: DEVELOPER,
+    go: async (p) => {
+      await p.goto(BASE + "/my-workspace");
+      const team = p.locator(".team-card").filter({ has: p.getByText("Logos", { exact: true }) });
+      await team.getByRole("button", { name: "Expand models", exact: true }).click();
+      await p.getByRole("heading", { name: "Choose your logging level", exact: true }).waitFor();
+    },
+  },
   {
     file: "roles/ai-tools-step-connect.png",
     user: DEVELOPER,

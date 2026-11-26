@@ -365,14 +365,14 @@ def test_estimate_available_for_kv_falls_back_to_free_when_total_unknown():
 
 
 def test_estimate_available_for_kv_uses_full_base_for_uncalibrated():
-    """Uncalibrated/measured profiles keep the weights-only base convention —
+    """Uncalibrated profiles keep the weights-only base convention —
     no kv_budget to subtract, so the full base is used."""
     from unittest.mock import MagicMock
 
     profile = ModelProfile(
         model_name="x/y",
         engine="vllm",
-        residency_source="measured",
+        residency_source="hf",
         base_residency_mb=40000.0,
         kv_budget_mb=4096.0,
     )

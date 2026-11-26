@@ -56,6 +56,7 @@ def status_description(status):
         "recovery_required": "Benchmark interrupted; worker recovery requires attention",
         "interrupted": "Benchmark interrupted",
         "completed": "Benchmark completed",
+        "capacity_deferred": "Benchmark deferred pending GPU capacity",
     }.get(status, status.replace("_", " ").capitalize())
 
 
@@ -65,9 +66,15 @@ def notification_message(payload):
     if status == "adoption_failed":
         settings = [
             f"{label} {payload['parameters'][key]}"
-            for key, label in (("max_num_seqs", "Max sequences"), ("max_num_batched_tokens", "Max batched tokens"))
+            for key, label in (
+                ("max_num_seqs", "Max sequences"),
+                ("max_num_batched_tokens", "Max batched tokens"),
+                ("kv_cache_dtype", "KV cache dtype"),
+            )
             if key in payload["parameters"]
         ]
+        if "speculative_config" in payload["parameters"]:
+            settings.append("MTP 3 draft tokens" if payload["parameters"]["speculative_config"] else "MTP off")
         benchmark = payload["benchmark_id"]
         gain = (payload["throughput"] / payload["baseline_throughput"] - 1) * 100
         return "Nightly configuration adoption failed", "\n".join(
@@ -78,7 +85,10 @@ def notification_message(payload):
                 "Check the nightly report for the status of the rollback.",
             ]
         )
-    title = "Nightly benchmark interrupted" if status.startswith("interrupted") else "Nightly benchmark finished"
+    if status == "capacity_deferred":
+        title = "Nightly benchmark deferred"
+    else:
+        title = "Nightly benchmark interrupted" if status.startswith("interrupted") else "Nightly benchmark finished"
     lines = [
         f"{payload['provider_name']} · {payload['successful_configurations']} successful configurations",
         f"{status_description(status)}.",

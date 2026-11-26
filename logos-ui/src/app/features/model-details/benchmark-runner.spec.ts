@@ -1,0 +1,357 @@
+import { TestBed } from '@angular/core/testing';
+import { ActivatedRoute, convertToParamMap, provideRouter } from '@angular/router';
+import { BehaviorSubject } from 'rxjs';
+import { HttpClient, provideHttpClient } from '@angular/common/http';
+import { ModelManagementService } from '../../core/services/model-management.service';
+import { ModelBenchmarkPair, ModelBenchmarkRun, ModelBenchmarkResponse, ModelProviderBenchmark } from '../../shared/models/provider.model';
+import { ModelDetails } from './model-details';
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>(r => resolve = r);
+  return { promise, resolve };
+}
+
+describe('Benchmark runner', () => {
+  let component: ModelDetails;
+  let service: { getBenchmarks: ReturnType<typeof vi.fn>; getBenchmarkWorkerLimits: ReturnType<typeof vi.fn>; startBenchmark: ReturnType<typeof vi.fn>; cancelBenchmark: ReturnType<typeof vi.fn> };
+  const empty: ModelBenchmarkResponse = { benchmarks: [], pairs: [], runs: [] };
+  const pair = { model_provider_id: 1, provider_id: 2, endpoint_configured: true } as ModelBenchmarkPair;
+  const run = { id: 3, status: 'running', request: { provider_id: 2 }, result: {} } as ModelBenchmarkRun;
+
+  beforeEach(() => {
+    service = { getBenchmarks: vi.fn().mockResolvedValue(empty), getBenchmarkWorkerLimits: vi.fn(), startBenchmark: vi.fn(), cancelBenchmark: vi.fn() };
+    TestBed.configureTestingModule({ providers: [
+      { provide: ActivatedRoute, useValue: {} },
+      { provide: HttpClient, useValue: {} },
+      { provide: ModelManagementService, useValue: service },
+    ] });
+    component = TestBed.runInInjectionContext(() => new ModelDetails());
+    component.modelId.set(1);
+  });
+  afterEach(() => { component.ngOnDestroy(); vi.restoreAllMocks(); });
+
+  it('keeps the current view for a benchmark link and resets the view for a different model', async () => {
+    const params = new BehaviorSubject(convertToParamMap({ id: '1' }));
+    const query = new BehaviorSubject(convertToParamMap({}));
+    Object.assign(TestBed.inject(ActivatedRoute), { paramMap: params, queryParamMap: query });
+    component.modelId.set(null);
+    const fetch = vi.spyOn(component, 'fetchModel').mockResolvedValue();
+    await component.ngOnInit();
+    expect(component.activeTab()).toBe('performance');
+    expect(component.visibleTabs()).toEqual(['performance', 'error_report', 'complete_logs', 'access', 'prices']);
+    query.next(convertToParamMap({ tab: 'access' }));
+    expect(component.activeTab()).toBe('access');
+    query.next(convertToParamMap({}));
+    expect(component.activeTab()).toBe('performance');
+    query.next(convertToParamMap({ tab: 'delays' }));
+    expect(component.activeTab()).toBe('performance');
+    expect(component.performanceView()).toBe('measurements');
+    query.next(convertToParamMap({ tab: 'improvement' }));
+    expect(component.activeTab()).toBe('performance');
+    query.next(convertToParamMap({ tab: 'performance', benchmark: '115' }));
+    expect(component.linkedBenchmarkId()).toBe(115);
+    expect(component.performanceView()).toBe('measurements');
+    expect(component.activeTab()).toBe('performance');
+    params.next(convertToParamMap({ id: '2' }));
+    expect(component.performanceView()).toBe('results');
+    expect(fetch.mock.calls.map(call => call[0])).toEqual([1, 2]);
+    component.ngOnDestroy();
+    query.next(convertToParamMap({ benchmark: '124' }));
+    expect(component.linkedBenchmarkId()).toBe(115);
+  });
+
+  it('shows replay latency in milliseconds and legacy latency in seconds without losing recorded values', () => {
+    const distribution = { successful: { max: 3000, percentiles: { p50: 1200, p95: 2500, p99: 2900 } } };
+    const row = { dataset: 'requests/hash', configuration: { workload: { name: 'Coding requests' } },
+      metrics: { request_latency_ms: distribution } } as unknown as ModelProviderBenchmark;
+    expect(component.benchmarkLatency(row, 'p50')).toBe('1.20 s');
+    expect(component.benchmarkDatasetLabel(row)).toBe('Coding requests');
+    row.metrics = { request_totals: {} as any, request_latency: { successful: { percentiles: { p50: 1.2, p95: 2.5, p99: 2.9 } } } };
+    expect(component.benchmarkLatency(row, 'p95')).toBe('2.50 s');
+  });
+
+  it('defaults to an online worker instead of the first offline provider', async () => {
+    const offline = { ...pair, provider_type: 'logosnode', provider_name: 'Offline worker' } as ModelBenchmarkPair;
+    const online = { ...offline, model_provider_id: 2, provider_id: 3, provider_name: 'Online worker' };
+    service.getBenchmarks.mockResolvedValue({ ...empty, pairs: [offline, online] });
+    service.getBenchmarkWorkerLimits.mockImplementation(async (id: number) => {
+      if (id === offline.model_provider_id) throw { error: { error: { message: 'Worker is offline. Hardware limits are unavailable.' } } };
+      return { gpu_count: 1, current: {} };
+    });
+    await component.loadPerformance();
+    expect(component.selectedBenchmarkPair()).toEqual(online);
+    expect(component.benchmarkProviderUnavailable(offline)).toBe(true);
+    expect(component.benchmarkProviderLabel(online)).toBe('Online worker · Online');
+    await component.startBenchmark(offline);
+    expect(service.startBenchmark).not.toHaveBeenCalled();
+  });
+
+  it('preserves an explicit provider choice while online status refreshes', async () => {
+    const first = { ...pair, provider_type: 'logosnode' } as ModelBenchmarkPair;
+    const second = { ...first, model_provider_id: 2, provider_id: 3 };
+    component.selectedBenchmarkPairId.set(second.model_provider_id);
+    service.getBenchmarks.mockResolvedValue({ ...empty, pairs: [first, second] });
+    service.getBenchmarkWorkerLimits.mockResolvedValue({ gpu_count: 1, current: {} });
+    await component.loadPerformance();
+    expect(component.selectedBenchmarkPair()).toEqual(second);
+    await component.loadPerformance(1, true);
+    expect(service.getBenchmarkWorkerLimits).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps cloud providers usable when worker status cannot be determined', async () => {
+    const worker = { ...pair, provider_type: 'logosnode' } as ModelBenchmarkPair;
+    const cloud = { ...pair, model_provider_id: 2, provider_id: 3, provider_type: 'cloud' } as ModelBenchmarkPair;
+    service.getBenchmarks.mockResolvedValue({ ...empty, pairs: [worker, cloud] });
+    service.getBenchmarkWorkerLimits.mockRejectedValue(new Error('Network error'));
+    await component.loadPerformance();
+    expect(component.selectedBenchmarkPair()).toEqual(cloud);
+    expect(component.benchmarkAvailability().get(worker.model_provider_id)).toBe('unknown');
+    expect(component.benchmarkProviderUnavailable(cloud)).toBe(false);
+  });
+
+  it('blocks starting when every worker has no GPUs available', async () => {
+    const worker = { ...pair, provider_type: 'logosnode' } as ModelBenchmarkPair;
+    service.getBenchmarks.mockResolvedValue({ ...empty, pairs: [worker] });
+    service.getBenchmarkWorkerLimits.mockResolvedValue({ gpu_count: 0, current: {} });
+    await component.loadPerformance();
+    component.benchmarkConfirmPairId.set(worker.model_provider_id);
+    await component.startBenchmark(worker);
+    expect(service.startBenchmark).not.toHaveBeenCalled();
+    expect(component.benchmarkConfirmPairId()).toBeNull();
+  });
+
+  it('does not replace a newer status with a stale polling response', async () => {
+    const old = deferred<ModelBenchmarkResponse>();
+    service.getBenchmarks.mockReturnValueOnce(old.promise).mockResolvedValueOnce(empty);
+    const first = component.loadPerformance();
+    await component.loadPerformance(1, true);
+    old.resolve({ ...empty, runs: [run] });
+    await first;
+    expect(component.benchmarkRuns()).toEqual([]);
+    expect(component.performanceLoading()).toBe(false);
+  });
+
+  it('blocks further starts until the first start finishes', async () => {
+    const confirm = vi.spyOn(window, 'confirm');
+    const pending = deferred<unknown>();
+    service.startBenchmark.mockReturnValue(pending.promise);
+    const first = component.startBenchmark(pair);
+    await component.startBenchmark(pair);
+    expect(service.startBenchmark).toHaveBeenCalledTimes(1);
+    expect(confirm).not.toHaveBeenCalled();
+    pending.resolve({});
+    await first;
+    expect(component.benchmarkStartingPairId()).toBeNull();
+  });
+
+  it.each([
+    ['reconfiguring_worker', 'Applying vLLM settings · model may restart'],
+    ['waiting_for_model', 'Waiting for model readiness'],
+  ])('shows the %s preparation phase', (stage, expected) => {
+    expect(component.benchmarkStatusLabel({
+      ...run,
+      request: { ...run.request, provider_name: 'hochbruegge' },
+      result: { stage },
+    })).toBe(expected);
+  });
+
+  it('labels scheduled cutoffs as stopped while preserving real failures', () => {
+    const stopped = { ...run, status: 'failed' as const, error_message: 'window_closed_below_half', updated_at: '2026-11-11T07:00:01Z' };
+    expect(component.benchmarkStatusLabel(stopped)).toContain('Stopped · benchmark window ended');
+    expect(component.isBenchmarkWindowStop(stopped)).toBe(true);
+    const failed = { ...stopped, error_message: 'stalled' };
+    expect(component.benchmarkStatusLabel(failed)).toContain('Failed');
+    expect(component.isBenchmarkWindowStop(failed)).toBe(false);
+    expect(component.isBenchmarkWindowStop({ ...stopped, status: 'running' })).toBe(false);
+  });
+
+  it('does not present all started requests as completed', () => {
+    expect(component.benchmarkStatusLabel({ ...run,
+      result: { stage: 'benchmarking', started_samples: 10, total_samples: 10 },
+    })).toContain('10/10 requests started');
+    expect(component.benchmarkStatusLabel({ ...run,
+      result: { stage: 'benchmarking', started_samples: 10, completed_samples: 6, total_samples: 10 },
+    })).toContain('6/10 requests completed');
+  });
+
+  it('blocks repeated cancellation while cancellation is pending', async () => {
+    const pending = deferred<unknown>();
+    service.cancelBenchmark.mockReturnValue(pending.promise);
+    const first = component.cancelBenchmark(run);
+    await component.cancelBenchmark(run);
+    expect(service.cancelBenchmark).toHaveBeenCalledTimes(1);
+    pending.resolve({});
+    await first;
+    expect(component.benchmarkCancellingJobId()).toBeNull();
+  });
+  it('submits a full batch once and closes the confirmation dialog', async () => {
+    const batch = { repetitions: 20, configurations: [{ ...component.benchmarkSettings(), samples: 50 }] };
+    component.performanceView.set('run');
+    component.benchmarkBatch.set(batch);
+    component.benchmarkConfirmPairId.set(1);
+    await component.startBenchmark(pair);
+    expect(service.startBenchmark).toHaveBeenCalledWith(1, 50, component.benchmarkSettings(), batch);
+    expect(component.benchmarkConfirmPairId()).toBeNull();
+    expect(component.benchmarkTotalRuns()).toBe(20);
+    expect(component.performanceView()).toBe('results');
+  });
+  it('does not submit an invalid batch', async () => {
+    component.benchmarkBatchValid.set(false);
+    await component.startBenchmark(pair);
+    expect(service.startBenchmark).not.toHaveBeenCalled();
+  });
+
+  it('closes a stale confirmation when polling finds a competing run', async () => {
+    component.benchmarkPairs.set([pair]);
+    component.benchmarkConfirmPairId.set(pair.model_provider_id);
+    component.benchmarkRuns.set([run]);
+    await component.startBenchmark(pair);
+    expect(service.startBenchmark).not.toHaveBeenCalled();
+    expect(component.benchmarkConfirmPairId()).toBeNull();
+    expect(component.benchmarkStartError()).toContain('already running on this provider');
+  });
+
+  it('closes a stale confirmation when the provider endpoint becomes unavailable', async () => {
+    const unavailable = { ...pair, endpoint_configured: false };
+    component.benchmarkPairs.set([unavailable]);
+    component.benchmarkConfirmPairId.set(pair.model_provider_id);
+    await component.startBenchmark(unavailable);
+    expect(service.startBenchmark).not.toHaveBeenCalled();
+    expect(component.benchmarkConfirmPairId()).toBeNull();
+    expect(component.benchmarkStartError()).toContain('provider or settings changed');
+  });
+
+  it('keeps the setup and error visible when starting fails', async () => {
+    component.performanceView.set('run');
+    component.benchmarkSampleSize.set(1);
+    service.startBenchmark.mockRejectedValue(new Error('unavailable'));
+    await component.startBenchmark(pair);
+    expect(component.performanceView()).toBe('run');
+    expect(component.benchmarkSampleSize()).toBe(1);
+    expect(component.benchmarkStartError()).toBe('Could not start the benchmark.');
+  });
+
+  it('summarizes the actual batch sample sizes instead of the base value', () => {
+    component.benchmarkBatch.set({
+      repetitions: 2,
+      configurations: [1, 10].map(samples => ({ ...component.benchmarkSettings(), samples })),
+    });
+    expect(component.benchmarkSampleRange()).toBe('1–10');
+    expect(component.benchmarkSampleLabel()).toBe('1–10 samples');
+    expect(component.benchmarkTotalRuns()).toBe(4);
+  });
+
+  it('shows one sample when every batch configuration uses one sample', () => {
+    component.benchmarkBatch.set({
+      repetitions: 2,
+      configurations: [{ ...component.benchmarkSettings(), samples: 1 }],
+    });
+    expect(component.benchmarkSampleRange()).toBe('1');
+    expect(component.benchmarkSampleLabel()).toBe('1 sample');
+    component.benchmarkBatch.set(null);
+    expect(component.benchmarkSampleLabel()).toBe('50 samples');
+  });
+
+});
+
+describe('Benchmark provider picker', () => {
+  it('selects the online provider and preserves the form when navigating performance sections', async () => {
+    const offline = { model_provider_id: 1, provider_id: 1, provider_name: 'Offline worker',
+      provider_type: 'logosnode', endpoint_configured: true } as ModelBenchmarkPair;
+    const online = { ...offline, model_provider_id: 2, provider_id: 2, provider_name: 'Online worker' };
+    TestBed.configureTestingModule({
+      imports: [ModelDetails],
+      providers: [provideRouter([]), provideHttpClient(), {
+        provide: ModelManagementService, useValue: {
+          getBenchmarks: async () => ({ benchmarks: [], runs: [], pairs: [offline, online] }),
+          getBenchmarkWorkerLimits: async (id: number) => {
+            if (id === 1) throw { error: { detail: 'Worker is offline.' } };
+            return { gpu_count: 1, current: {} };
+          },
+          getBenchmarkDatasetMetadata: async () => ({ dataset: 'openai/gsm8k', subset: 'main', split: 'test',
+            splits: [{ subset: 'main', split: 'test' }], text_columns: ['question'] }),
+        },
+      }],
+    });
+    vi.spyOn(ModelDetails.prototype, 'ngOnInit').mockResolvedValue();
+    const fixture = TestBed.createComponent(ModelDetails);
+    const component = fixture.componentInstance;
+    component.model.set({ id: 1, name: 'Test model' } as any);
+    component.modelId.set(1);
+    component.loading.set(false);
+    component.activeTab.set('performance');
+    component.performanceView.set('run');
+    fixture.detectChanges();
+    await component.loadPerformance();
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    const picker = fixture.nativeElement.querySelector('.benchmark-basics select') as HTMLSelectElement;
+    expect(picker.value).toBe('2');
+    expect(picker.selectedOptions[0].textContent).toContain('Online worker · Online');
+    expect(picker.options[0].disabled).toBe(true);
+    const samples = fixture.nativeElement.querySelector('input[aria-label="Sample size"]') as HTMLInputElement;
+    samples.value = '7';
+    samples.dispatchEvent(new Event('input'));
+    const navigation = fixture.nativeElement.querySelector('nav[aria-label="Performance sections"]') as HTMLElement;
+    for (const view of ['measurements', 'analysis', 'results', 'run']) {
+      const button = navigation.querySelector(`[aria-controls="performance-${view}"]`) as HTMLButtonElement;
+      button.click();
+      fixture.detectChanges();
+      expect(button.getAttribute('aria-pressed')).toBe('true');
+      const visible = [...fixture.nativeElement.querySelectorAll('.performance-view')].filter((panel: any) => !panel.hidden);
+      expect(visible.map((panel: any) => panel.id)).toEqual([`performance-${view}`]);
+    }
+    const sections = fixture.nativeElement.querySelectorAll('#performance-analysis details[name="performance-analysis"]') as NodeListOf<HTMLDetailsElement>;
+    expect(Array.from(sections, section => section.open)).toEqual([true, false, false]);
+    expect(samples.value).toBe('7');
+    expect(picker.value).toBe('2');
+    expect(component.benchmarkSettingsOpen()).toBe(false);
+    const customize = fixture.nativeElement.querySelector('.benchmark-customize-button') as HTMLButtonElement;
+    customize.click();
+    fixture.detectChanges();
+    expect(component.benchmarkSettingsOpen()).toBe(true);
+    component.benchmarkSettings.update(value => ({ ...value, max_output_tokens: 256 }));
+    component.benchmarkSettingsOpen.set(false);
+    fixture.detectChanges();
+    expect(component.benchmarkSettings().max_output_tokens).toBe(256);
+    expect(samples.value).toBe('7');
+    fixture.destroy();
+    vi.restoreAllMocks();
+  });
+});
+
+describe('Benchmark deletion feedback', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('shows a rejected deletion outside the hidden overview while analysis stays selected', async () => {
+    const deleteBenchmark = vi.fn().mockRejectedValue(new Error('Service unavailable'));
+    TestBed.configureTestingModule({
+      imports: [ModelDetails],
+      providers: [provideRouter([]), provideHttpClient(), {
+        provide: ModelManagementService, useValue: { deleteBenchmark },
+      }],
+    });
+    vi.spyOn(ModelDetails.prototype, 'ngOnInit').mockResolvedValue();
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const fixture = TestBed.createComponent(ModelDetails);
+    const component = fixture.componentInstance;
+    component.model.set({ id: 1, name: 'Test model' } as any);
+    component.loading.set(false);
+    component.activeTab.set('performance');
+    component.performanceView.set('analysis');
+    fixture.detectChanges();
+
+    await component.deleteBenchmark({ id: 7, recorded_at: '2026-11-17T04:00:00Z' } as ModelProviderBenchmark);
+    fixture.detectChanges();
+
+    expect(deleteBenchmark).toHaveBeenCalledWith(7);
+    expect(component.performanceView()).toBe('analysis');
+    const error = fixture.nativeElement.querySelector('app-error-message') as HTMLElement;
+    expect(error.textContent).toContain('Could not delete the selected benchmark run.');
+    expect(error.closest('[hidden]')).toBeNull();
+    expect(component.benchmarkDeletingId()).toBeNull();
+    fixture.destroy();
+  });
+});

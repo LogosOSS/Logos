@@ -23,9 +23,7 @@ public class MeService {
     private final UserRepository userRepository;
     private final TeamRepository teamRepository;
     private final ApiKeyRepository apiKeyRepository;
-
-    public MeService(UserRepository userRepository, TeamRepository teamRepository,
-                     ApiKeyRepository apiKeyRepository) {
+    public MeService(UserRepository userRepository, TeamRepository teamRepository, ApiKeyRepository apiKeyRepository) {
         this.userRepository = userRepository;
         this.teamRepository = teamRepository;
         this.apiKeyRepository = apiKeyRepository;
