@@ -140,10 +140,44 @@ class AzureTeamModelAvailabilityMigrationTest {
             assertThat(gateway.findPermittedDeploymentsForModel(101, "manual-model"))
                 .extracting(GatewayDeployment::providerId).containsExactly(100);
 
+            verifySingleKeyLookupIsScopedToItsTeam(jdbc);
+
             connection.commit();
             liquibase.rollback(1, new Contexts(), new LabelExpression());
             assertThat(jdbc.queryForObject("SELECT count(*) FROM team_model_permissions", Integer.class)).isEqualTo(1);
         }
+    }
+
+    /** A big catalogue for other teams must not be sorted/deduplicated during one key's request. */
+    private static void verifySingleKeyLookupIsScopedToItsTeam(JdbcTemplate jdbc) {
+        jdbc.execute("""
+            INSERT INTO teams SELECT id, 'WORLDWIDE' FROM generate_series(1001, 3500) id;
+            INSERT INTO team_provider_permissions
+                SELECT id, provider_id FROM generate_series(1001, 3500) id
+                CROSS JOIN unnest(ARRAY[100, 200, 400]) provider_id;
+            INSERT INTO model_provider (model_id, provider_id)
+                SELECT model_id, 400 FROM generate_series(601, 840) model_id;
+            INSERT INTO team_model_permissions
+                SELECT id, model_id FROM generate_series(1001, 3500) id
+                CROSS JOIN generate_series(601, 624) model_id;
+            INSERT INTO api_keys SELECT id, id, true, false, NULL, 'test-key-' || id
+                FROM generate_series(1001, 3500) id;
+            INSERT INTO team_provider_permissions VALUES (1, 400);
+            INSERT INTO team_model_permissions VALUES (1, 601);
+            ANALYZE teams, providers, model_provider, team_provider_permissions, team_model_permissions, api_keys;
+            """);
+
+        assertThat(routes(jdbc, 101)).containsExactly("21:100", "601:400");
+        String plan = String.join("\n", jdbc.queryForList("""
+            EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)
+            SELECT model_id, provider_id
+            FROM allowed_key_model_deployments
+            WHERE api_key_id = 101 AND model_id = 601 AND provider_id = 400
+            """, String.class));
+        // A set-level distinct would process other teams even for this point lookup.
+        assertThat(plan).doesNotContain("HashAggregate", "GroupAggregate", "Unique");
+        assertThat(plan).containsPattern("Index Cond:.*team_id =");
+        jdbc.update("DELETE FROM team_model_permissions WHERE team_id > 1000 OR model_id = 601");
     }
 
     private static List<String> routes(JdbcTemplate jdbc, int keyId) {

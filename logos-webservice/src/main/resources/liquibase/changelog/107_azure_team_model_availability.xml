@@ -15,23 +15,26 @@
                 ADD COLUMN azure_synced_endpoint TEXT,
                 ADD COLUMN azure_synced_provider_url TEXT;
 
-            -- The inferred grant applies to a deployment pair, not to the model
-            -- on another provider that the team has separately been allowed to use.
+            -- Keep these as predicates on each eligible deployment pair. A
+            -- distinct UNION would aggregate grants from unrelated teams before
+            -- the caller's team can constrain this view.
             CREATE VIEW allowed_team_model_deployments AS
             SELECT tpp.team_id, mp.model_id, mp.provider_id
             FROM allowed_team_provider_grants tpp
             JOIN model_provider mp ON mp.provider_id = tpp.provider_id
-            JOIN team_model_permissions tmp
-              ON tmp.team_id = tpp.team_id AND tmp.model_id = mp.model_id
-            UNION
-            SELECT tpp.team_id, mp.model_id, mp.provider_id
-            FROM allowed_team_provider_grants tpp
-            JOIN team_azure_model_auto_access preference USING (team_id, provider_id)
-            JOIN providers p ON p.id = tpp.provider_id
-            JOIN model_provider mp ON mp.provider_id = p.id
-            WHERE p.provider_type = 'cloud' AND p.cloud_provider_type = 'azure'
-              AND mp.endpoint = mp.azure_synced_endpoint
-              AND p.base_url = mp.azure_synced_provider_url;
+            WHERE EXISTS (
+                SELECT 1 FROM team_model_permissions tmp
+                WHERE tmp.team_id = tpp.team_id AND tmp.model_id = mp.model_id
+            ) OR (
+                mp.endpoint = mp.azure_synced_endpoint
+                AND EXISTS (
+                    SELECT 1 FROM team_azure_model_auto_access preference
+                    JOIN providers p ON p.id = preference.provider_id
+                    WHERE preference.team_id = tpp.team_id AND preference.provider_id = mp.provider_id
+                      AND p.provider_type = 'cloud' AND p.cloud_provider_type = 'azure'
+                      AND p.base_url = mp.azure_synced_provider_url
+                )
+            );
 
             CREATE VIEW allowed_key_model_deployments AS
             SELECT ak.id AS api_key_id, tmd.model_id, tmd.provider_id
