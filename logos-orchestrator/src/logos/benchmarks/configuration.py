@@ -4,9 +4,19 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+QWEN_MTP_CONFIG = '{"method":"mtp","num_speculative_tokens":3}'
+QWEN_MTP_MODEL = "Qwen/Qwen3.8-27B"
+
+
+def canonical_kv_cache_dtype(value: str | None) -> str:
+    """Return the effective cache dtype name used for Nightly comparisons and planning."""
+    if value == "fp8_e4m3":
+        return "fp8"
+    return value or "auto"
+
 
 class ServingOverrides(BaseModel):
-    """Only vLLM settings supported by the benchmark editor may be overridden."""
+    """Allowlisted vLLM settings for benchmark runs."""
 
     model_config = ConfigDict(extra="forbid")
     tensor_parallel_size: int | None = Field(default=None, ge=1, le=64)
@@ -38,6 +48,7 @@ class ServingOverrides(BaseModel):
     enforce_eager: bool | None = None
     disable_custom_all_reduce: bool | None = None
     hf_overrides: dict | None = None
+    speculative_config: Literal["", QWEN_MTP_CONFIG] | None = None
 
 
 class BenchmarkSettings(BaseModel):

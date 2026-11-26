@@ -6,8 +6,7 @@ title: Nightly Benchmarks
 
 Logos admins manage each model/worker pair under **Model Details → Performance → Overview → Automatic benchmarks**.
 Each worker tile shows its schedule status. Select a tile to see its maintenance window and request workload.
-The scheduler uses the worker's current settings to build the plan when the nightly run starts.
-Trials use explicit serving limits when the current settings are automatic.
+The scheduler measures the worker's current settings first and uses each result to select a trial.
 
 Schedules are off by default and persist in PostgreSQL. The nightly plan is independent
 of the manual benchmark editor. Disabling a schedule cancels its active run and
@@ -78,7 +77,7 @@ always happens before selection, even when tonight's quota is already full.
 
 After a successful round, the scheduler stores the candidate and confirms the next production configuration.
 It then gives the other admitted pair its turn.
-Further rounds use the same saved inputs and refine the candidate until that pair's window ends.
+Further rounds can refine the candidate with the same saved inputs during that pair's window.
 The daily quota limits distinct pairs, not rounds.
 A failed baseline or a round without successful variants does not schedule another round.
 If the baseline fails, the scheduler stops the remaining variants and restores the worker.
@@ -110,42 +109,36 @@ every 15 s. These intervals do not guarantee an exact response time.
 
 ## Workload and Parameter Plan
 
-Each round starts with the current production configuration.
-The table shows an initial round, not a limit on the tests for the night.
-If explicit positive values are known, then it tests `max_num_seqs` and
-`max_num_batched_tokens` at approximately 75% and 125% of their current values.
-It changes only 1 parameter at a time. With sequence limit 16 and batch-token
-limit 4096, the candidate configurations are:
+Each round measures the current production configuration as the baseline.
+The scheduler selects up to 4 trials during the round.
+Each trial changes 1 parameter from the best eligible configuration measured in the round.
+The scheduler checks worker limits and excludes configurations it already tried.
 
-| Configuration | `max_num_seqs` | `max_num_batched_tokens` |
-|---|---:|---:|
-| Current configuration | 16 | 4096 |
-| Lower sequence limit | 12 | 4096 |
-| Higher sequence limit | 20 | 4096 |
-| Lower batch-token limit | 16 | 3072 |
-| Higher batch-token limit | 16 | 5120 |
+| Parameter | Trial values |
+|---|---|
+| `max_num_seqs` | Initial options for an automatic limit include 4 and 8. |
+| `max_num_batched_tokens` | Initial options for an automatic limit include 2048 and 4096. |
+| `kv_cache_dtype` | `auto` or `fp8` on supported CUDA deployments of Qwen2.5-Coder 7B AWQ, Qwen2.5-Coder 14B AWQ, and Qwen3.8-27B. |
+| `speculative_config` | Off or MTP with 3 draft tokens on supported Qwen3.8-27B deployments. This model has a built-in MTP draft head. |
 
-Invalid combinations are skipped. Automatic sequence limits use trial values 4 and 8.
-Automatic batch-token limits use trial values 2048 and 4096.
-Each trial sets both limits explicitly. A known limit remains fixed when the other limit is automatic.
-These values are test candidates, not inferred production defaults.
-The unchanged production configuration always runs first.
-Later rounds change the search radius around the saved candidate.
-The radii are 25%, 50%, 12.5%, 75%, 37.5%, 62.5% and 87.5%, then repeat.
-Worker hardware limits still apply. Repeated measurements remain possible.
+The scheduler calculates numerical options around the best measured configuration.
+It tests in an untried direction or reduces the step within a measured interval.
+If the scheduler has multiple options, then it asks `Qwen/Qwen2.5-Coder-14B-Instruct-AWQ` to return one candidate ID through the Logos gateway.
+The scheduler sends the candidate settings, aggregate measurements, GPU limits, and time left.
+The model must be ready on a separate worker and available to the managed Logos agent key.
+If the model is unavailable, the call times out, or the response is invalid, then the scheduler selects the candidate by rule.
+The rule gives priority to parameters with fewer trials near the best measured configuration.
 
 Without a saved request workload, every configuration uses GSM8K `main/test`, the `question` column, 50 requests,
 512 maximum output tokens, concurrent profile with concurrency 4, and seed 42.
 Quantization, context length and model weights are not search parameters.
 The fixed output cap is not itself an optimization parameter.
 
-Completed GuideLLM reports are stored in `model_provider_benchmarks` and appear
-in the existing performance comparison. Internal inference requests use the
-existing `log_entry` logging path. The status endpoint reports per-configuration
-outcomes, retries and benchmark IDs. Failed or incomplete runs are not stored
-as successful throughput measurements. With a saved request dataset and one
-existing serving replica, Logos can apply an eligible improvement over the
-production baseline. Hugging Face runs retain the original production settings.
+Logos stores completed GuideLLM reports in `model_provider_benchmarks` and shows them in the performance comparison.
+Internal benchmark requests use the `log_entry` logging path.
+The status endpoint shows the baseline in the plan because the scheduler selects later configurations during the round.
+The round report records each tested configuration, selection source, outcome, retries, and benchmark ID.
+Hugging Face runs retain the original production settings.
 
 ## Fixed Request Workloads
 
@@ -207,7 +200,7 @@ Benchmark replays, other users, failed requests and requests without FULL inputs
 The order is request arrival, newest first. The request ID resolves equal arrival times.
 The source model does not restrict selection. All tested models use the same selected inputs.
 
-Each tested model measures its production configuration first, then the previous winner and batching variants.
+Each round measures the production configuration first. The scheduler then selects a trial after each measurement.
 Every configuration uses all 50 saved requests with 4 concurrent requests.
 No request is replaced during a plan or after an application restart.
 Source-log deletion does not remove the saved inputs.
@@ -232,7 +225,7 @@ The fixed Dev pilot retains its reference across nights while its inputs and cap
 
 ## Iterative Optimization and the Fixed Reference
 
-Each night measures production settings first, then the previous winner and its neighbouring batching settings.
+Each round uses its own production baseline to assess trials.
 The first successful production measurement establishes the fixed reference for that workload and environment.
 The reference does not reuse measurements from another dataset or an earlier Hugging Face run.
 A change to the workload, captured hardware, worker version or other serving settings starts a separate series.
@@ -245,13 +238,10 @@ The candidate's p95 request latency cannot exceed 110% of the nightly baseline.
 Among eligible candidates, Logos saves the highest observed aggregate throughput and its parameters.
 The historical winner remains until an eligible measurement exceeds its recorded throughput.
 These checks prevent selection through shorter or truncated answers. They do not measure answer quality.
-After each completed plan, Logos selects the fastest eligible measurement from that plan.
-When it beats the production baseline and the round used a single existing
-serving replica, Logos applies its sequence and batch-token limits.
-Logos compares measurements from the same frozen dataset and environment.
-An older throughput record alone cannot trigger adoption.
-If no eligible configuration improves throughput, then the original production settings return.
-The optimizer keeps its historical reference after adoption. The next round measures the adopted settings as a fresh baseline.
+With a saved request dataset and 1 existing serving replica, Logos can repeat the fastest eligible trial as a confirmation run.
+The trial and its confirmation must both improve throughput and pass the comparison checks against the same baseline.
+If confirmation succeeds, then Logos applies the candidate settings. Otherwise, it restores the original settings.
+The next round measures the deployed settings as a fresh baseline.
 
 The PostgreSQL recovery journal records adoption intent before Logos changes the live lane.
 After the worker confirms the lane is ready, Logos stores the adopted benchmark and its parameters in `nightly_benchmarks.optimizer.production_adoption`.

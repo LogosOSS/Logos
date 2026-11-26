@@ -2,17 +2,33 @@
 
 import re
 
-from .configuration import ServingOverrides
+from .configuration import QWEN_MTP_CONFIG, QWEN_MTP_MODEL, ServingOverrides, canonical_kv_cache_dtype
 from .guidellm_runner import benchmark_model_lane, lane_serving_configuration
 
+_FP8_MODELS = {
+    QWEN_MTP_MODEL,
+    "Qwen/Qwen2.5-Coder-7B-Instruct-AWQ",
+    "Qwen/Qwen2.5-Coder-14B-Instruct-AWQ",
+}
 
-def worker_limits(snapshot: dict | None, model: str, *, lane: dict | None = None, lane_id: str | None = None) -> dict:
+
+def worker_limits(
+    snapshot: dict | None,
+    model: str,
+    *,
+    lane: dict | None = None,
+    lane_id: str | None = None,
+    baseline_config: dict | None = None,
+) -> dict:
     runtime = (snapshot or {}).get("runtime") or {}
     summary = runtime.get("devices") or {}
     devices = [(index, d) for index, d in enumerate(summary.get("devices", [])) if d.get("kind") == "nvidia"]
     known = bool(summary.get("nvidia_smi_available"))
     lane = benchmark_model_lane(snapshot, model, lane_id=lane_id) if lane is None else lane
     config = lane.get("lane_config") or {}
+    if baseline_config is not None:
+        config = {**config, "vllm_config": baseline_config}
+        lane = {**lane, "lane_config": config}
     selectors = [runtime.get("gpu_devices", "all")]
     if lane.get("is_static"):
         selectors.append(config.get("gpu_devices", ""))
@@ -43,18 +59,84 @@ def worker_limits(snapshot: dict | None, model: str, *, lane: dict | None = None
         )
         and runtime.get("gpu_devices", "all") != "none"
     )
+    current = lane_serving_configuration(lane)
+    night_choices = _nightly_vllm_choices(model, lane, devices, current) if known and not metal else {}
     return {
         "metal_batching": metal,
         "gpus": gpus,
         "attention_backend_restrictions": restrictions,
         "gpu_count": len(devices) if known else None,
         "gpu_memory_bytes": int(min(memories) * 1024**2) if memories and min(memories) > 0 else None,
-        "current": lane_serving_configuration(lane),
+        "current": current,
+        "nightly_vllm_choices": night_choices,
     }
 
 
-def validate_worker_overrides(overrides: ServingOverrides, limits: dict) -> None:
+def _nightly_vllm_choices(model: str, lane: dict, devices: list, current: dict) -> dict[str, tuple[str, ...]]:
+    config = lane.get("lane_config") or {}
+    pins = str(config.get("gpu_devices") or "").split(",")
+    version = re.match(r"v?(\d+)\.(\d+)\.(\d+)", str(lane.get("nightly_vllm_version") or ""))
+    if not config.get("vllm") or version is None or not all(pin.strip().isdigit() for pin in pins):
+        return {}
+    # Only the GPU group Nightly actually holds needs to support the variant.
+    capabilities = {
+        str(extra.get("index")): extra.get("compute_capability")
+        for _, device in devices
+        if device.get("health") != "faulted" and (extra := device.get("extra"))
+    }
+    pinned_caps = [str(capabilities.get(pin.strip())) for pin in pins]
+    if any(not re.fullmatch(r"[1-9][0-9]*\.[0-9]+", cap) for cap in pinned_caps):
+        return {}
+    min_sm = min(int(cap.split(".")[0]) for cap in pinned_caps)
+    if tuple(map(int, version.groups())) < (0, 26, 0) or lane.get("nightly_blocked_vllm_fields"):
+        return {}
+    backend = current.get("attention_backend") or ""
+    cache = canonical_kv_cache_dtype(current.get("kv_cache_dtype"))
+    speculative = current.get("speculative_config", "")
+    speculative_modes = ("", QWEN_MTP_CONFIG)
+    if (
+        min_sm < 8
+        or backend not in {"", "FLASHINFER", "FLASH_ATTN", "TRITON_ATTN"}
+        or cache not in {"auto", "fp8"}
+        or speculative not in speculative_modes
+    ):
+        return {}
+    choices = {}
+    if model in _FP8_MODELS and current.get("dtype") != "float32" and (backend != "FLASH_ATTN" or min_sm >= 9):
+        choices["kv_cache_dtype"] = ("auto", "fp8")
+    if model == QWEN_MTP_MODEL:
+        choices["speculative_config"] = speculative_modes
+    return choices
+
+
+def nightly_variation_values(limits: dict) -> dict[str, tuple[str, ...]]:
+    """Return supported non-batching parameter values for this worker and lane."""
+    return limits.get("nightly_vllm_choices", {})
+
+
+def nightly_tuning_configuration(limits: dict) -> dict:
+    """Resolve candidate defaults separately from the captured serving configuration."""
+    current = limits["current"].copy()
+    choices = nightly_variation_values(limits)
+    if "kv_cache_dtype" in choices:
+        current["kv_cache_dtype"] = canonical_kv_cache_dtype(current.get("kv_cache_dtype"))
+    if "speculative_config" in choices:
+        current["speculative_config"] = current.get("speculative_config") or ""
+    return current
+
+
+def validate_worker_overrides(overrides: ServingOverrides, limits: dict, *, nightly: bool = False) -> None:
     requested = overrides.model_dump(exclude_none=True)
+    if "speculative_config" in requested and requested["speculative_config"] not in nightly_variation_values(
+        limits
+    ).get("speculative_config", ()):
+        raise ValueError("This worker or lane does not support the requested Nightly speculative decoding mode.")
+    if (
+        nightly
+        and "kv_cache_dtype" in requested
+        and requested["kv_cache_dtype"] not in nightly_variation_values(limits).get("kv_cache_dtype", ())
+    ):
+        raise ValueError("This worker or lane does not support the requested Nightly KV cache dtype.")
     if not requested:
         restriction = limits.get("attention_backend_restrictions", {}).get(limits["current"].get("attention_backend"))
         if restriction:

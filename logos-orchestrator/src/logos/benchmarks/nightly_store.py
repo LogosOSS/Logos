@@ -549,7 +549,9 @@ def finish_recovery_jobs(job_ids: list[int]) -> None:
         db.session.commit()
 
 
-def record_comparison(benchmark_id, baseline_id, parameters, original, search=None):
+def record_comparison(
+    benchmark_id, baseline_id, parameters, original, search=None, *, selection_source=None, confirms_benchmark_id=None
+):
     """Attach an explicit same-night baseline; never infer a comparison from dates."""
     with DBManager() as db:
         db.session.execute(
@@ -565,6 +567,8 @@ def record_comparison(benchmark_id, baseline_id, parameters, original, search=No
                             "baseline_id": baseline_id,
                             "parameters": parameters,
                             "original": {key: original.get(key) for key in parameters},
+                            **({"selection_source": selection_source} if selection_source else {}),
+                            **({"confirms_benchmark_id": confirms_benchmark_id} if confirms_benchmark_id else {}),
                             **(
                                 {
                                     "reference_id": search["reference_id"],
@@ -583,15 +587,12 @@ def record_comparison(benchmark_id, baseline_id, parameters, original, search=No
         db.session.commit()
 
 
-def adoption_candidate(pair_id, search, report):
-    """Read successful measurements for the reserved deployment before adoption."""
-    from logos.benchmarks import optimization
-
-    ids = [item["benchmark_id"] for item in report if item.get("status") == "success" and item.get("benchmark_id")]
+def round_measurements(pair_id, ids):
+    """Read stored metrics only for the deployment whose schedule owns these IDs."""
     if not ids:
-        return None
+        return []
     with DBManager() as db:
-        runs = list(
+        return list(
             db.session.execute(
                 text(
                     "SELECT id, configuration, metrics, sample_size FROM model_provider_benchmarks "
@@ -600,7 +601,14 @@ def adoption_candidate(pair_id, search, report):
                 {"pair": pair_id, "ids": ids},
             ).mappings()
         )
-    return optimization.adoption_candidate(search, runs, report)
+
+
+def adoption_candidate(pair_id, search, report):
+    """Read successful measurements for the reserved deployment before adoption."""
+    from logos.benchmarks import optimization
+
+    ids = [item["benchmark_id"] for item in report if item.get("status") == "success" and item.get("benchmark_id")]
+    return optimization.adoption_candidate(search, round_measurements(pair_id, ids), report)
 
 
 def selection_summary(pair_id, workload_id=None, *, length_comparison_id=None):
