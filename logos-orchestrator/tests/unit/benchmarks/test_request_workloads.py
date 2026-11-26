@@ -5,7 +5,8 @@ from unittest.mock import MagicMock, Mock
 
 import pytest
 
-from logos.benchmarks import dev_nightly_pilot, optimization
+from logos.benchmarks import dev_nightly_pilot
+from logos.benchmarks.nightly import baseline_settings
 from logos.benchmarks.workloads import build_snapshot, replay_request, request_body
 
 
@@ -55,9 +56,8 @@ def test_dev_pilot_plans_50_distinct_contextual_requests_with_natural_outputs():
     assert all("```" in body["messages"][1]["content"] for body in bodies)
     assert sum(any(message["role"] == "assistant" for message in body["messages"]) for body in bodies) == 40
     current = {"max_num_seqs": 5, "max_num_batched_tokens": 2304}
-    plan = optimization.plan(current, optimization.context(current, {}, workload, {}))
-    assert len(plan) > 1
-    assert all(run.samples == 50 and run.workload_id == workload["id"] for run in plan)
+    settings = baseline_settings(current, workload)
+    assert settings.samples == 50 and settings.workload_id == workload["id"]
 
 
 @pytest.mark.parametrize("state", ["previous", "fixed", "natural", "installed", "changed", "disabled"])

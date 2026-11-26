@@ -415,14 +415,14 @@ def test_finish_persists_winner_reference_and_chart_eligibility_atomically(datab
         "workload_id": "a" * 64,
     }
     with engine.begin() as connection:
-        for identifier, throughput in [(1, 40), (2, 50)]:
+        for identifier, throughput in [(1, 40), (2, 50), (3, 49)]:
             configuration = {
                 "workload": {"id": "a" * 64},
                 "nightly": {
                     "baseline_id": 1,
                     "reference_id": 1,
                     "series_key": "series",
-                    "parameters": {"max_num_seqs": 16 * identifier},
+                    "parameters": {"max_num_seqs": 16 if identifier == 1 else 32},
                 },
             }
             metrics = {
@@ -438,9 +438,19 @@ def test_finish_persists_winner_reference_and_chart_eligibility_atomically(datab
                 ),
                 {"id": identifier, "config": json.dumps(configuration), "metrics": json.dumps(metrics)},
             )
-    report = [{"configuration": i, "status": "success", "benchmark_id": i} for i in (1, 2)]
+    report = [
+        {"configuration": 1, "status": "success", "benchmark_id": 1, "kind": "baseline"},
+        {"configuration": 2, "status": "success", "benchmark_id": 2, "kind": "trial"},
+        {
+            "configuration": 3,
+            "status": "success",
+            "benchmark_id": 3,
+            "kind": "confirmation",
+            "confirms_benchmark_id": 2,
+        },
+    ]
     candidate = store.adoption_candidate(31, search, report)
-    assert candidate["benchmark_id"] == 2
+    assert candidate["benchmark_id"] == 3
     assert store.adoption_candidate(32, search, report) is None
     if adopt:
         report.append({"status": "adopted", **candidate})
@@ -448,10 +458,10 @@ def test_finish_persists_winner_reference_and_chart_eligibility_atomically(datab
     assert store.status(31)["optimizer"]["best_parameters"] == {"max_num_seqs": 32}
     assert store.status(31)["optimizer"]["reference_id"] == 1
     if adopt:
-        assert store.status(31)["optimizer"]["production_adoption"]["benchmark_id"] == 2
+        assert store.status(31)["optimizer"]["production_adoption"]["benchmark_id"] == 3
     with engine.connect() as connection:
         payload = connection.execute(text("SELECT payload FROM benchmark_completion_events")).scalar_one()
-        assert payload["benchmark_id"] == 2
+        assert payload["benchmark_id"] == (3 if adopt else 2)
         assert payload["changes"] == [{"parameter": "max_num_seqs", "before": None, "after": 32}]
         assert (
             connection.execute(

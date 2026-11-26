@@ -6,7 +6,11 @@ from unittest.mock import Mock
 import pytest
 from fastapi import HTTPException, Request
 
+from logos.benchmarks import optimization
+from logos.benchmarks.configuration import QWEN_MTP_MODEL
+from logos.benchmarks.guidellm_runner import extract_serving_configuration
 from logos.benchmarks.nightly import CAPACITY_WAITING
+from logos.benchmarks.worker_limits import nightly_tuning_configuration, worker_limits
 from logos.dbutils.dbrequest import NightlySelectionStatusRequest, NightlyUpdateRequest, NightlyWindowRequest
 from logos.maintenance_window import MaintenanceWindow
 
@@ -117,6 +121,47 @@ async def test_status_only_exposes_an_active_trial_from_the_nightly_reservation(
     else:
         trial.assert_not_called()
         assert result["active_trial"] is None
+
+
+@pytest.mark.parametrize(("reported", "effective"), [("", "auto"), ("fp8_e4m3", "fp8")])
+async def test_live_deployment_and_nightly_planning_share_cache_identity(routes, monkeypatch, reported, effective):
+    router, request, scheduler, registry = routes
+    monkeypatch.setattr(router, "target_for", lambda _: {**TARGET, "model_name": QWEN_MTP_MODEL})
+    snapshot = registry.peek_runtime_snapshot.return_value
+    snapshot["runtime"]["devices"] = {
+        "nvidia_smi_available": True,
+        "devices": [{"kind": "nvidia", "extra": {"index": 0, "compute_capability": "12.0"}}],
+    }
+    snapshot["runtime"]["lanes"][0].update(
+        model=QWEN_MTP_MODEL,
+        nightly_vllm_version="0.34.0",
+        lane_config={"vllm": True, "gpu_devices": "0", "vllm_config": {**LIVE, "kv_cache_dtype": reported}},
+    )
+    serving = extract_serving_configuration(snapshot, QWEN_MTP_MODEL)
+    scheduler.preview_configuration.return_value = serving
+    tuning = nightly_tuning_configuration(worker_limits(snapshot, QWEN_MTP_MODEL))
+    assert tuning["kv_cache_dtype"] == effective
+    measured = optimization.context(tuning, snapshot, WORKLOAD, {})
+    monkeypatch.setattr(
+        router.store,
+        "status",
+        Mock(
+            return_value={
+                "status": "completed",
+                "workload_id": WORKLOAD["id"],
+                "recovery_required": False,
+                "optimizer": measured["state"],
+            }
+        ),
+    )
+    monkeypatch.setattr(router.workloads, "load", Mock(return_value=WORKLOAD))
+    monkeypatch.setattr(router.workloads, "list_for_model", Mock(return_value=[WORKLOAD]))
+    monkeypatch.setattr(router.store, "selection_summary", Mock(return_value={}))
+
+    result = await router.nightly_status(NightlySelectionStatusRequest(model_provider_id=31), request)
+
+    assert result["deployment"]["series_key"] == measured["series_key"]
+    assert result["deployment"]["configuration"]["kv_cache_dtype"] == reported
 
 
 async def test_only_gpu_budget_capable_workers_can_enable_nightly_rotation(routes, monkeypatch):

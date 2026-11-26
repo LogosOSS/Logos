@@ -178,6 +178,47 @@ async def test_configured_benchmark_waits_for_worker_configuration():
     assert planner.prepare_benchmark_lane.await_count == 2
 
 
+async def test_nightly_trial_resets_an_omitted_flag_to_the_original_lane():
+    from logos.benchmarks.configuration import ServingOverrides
+    from logos.benchmarks.reservations import benchmark_reservations
+
+    planner, _, _ = _configured_planner()
+    baseline = {"max_num_seqs": 0, "extra_args": ["--trust-remote-code"]}
+    prior_trial = {**baseline, "extra_args": [*baseline["extra_args"], "--max-num-batched-tokens", "4"]}
+    expected = {**baseline, "max_num_seqs": 8}
+
+    def snapshot(config):
+        return {
+            "runtime": {
+                "devices": {"nvidia_smi_available": True, "devices": [{"kind": "nvidia"}]},
+                "lanes": [
+                    {
+                        "lane_id": "model-lane",
+                        "model": "org/model",
+                        "runtime_state": "loaded",
+                        "lane_config": {"vllm": True, "vllm_config": config},
+                    }
+                ],
+            }
+        }
+
+    planner._registry.peek_runtime_snapshot.side_effect = [
+        snapshot(prior_trial),
+        snapshot(prior_trial),
+        snapshot(expected),
+    ]
+    planner._registry.send_command.return_value = {"lane_config": {"vllm_config": expected}}
+    benchmark_reservations.reserve_nightly(7, "org/model", -31)
+    benchmark_reservations.pin_lane(7, "org/model", -31, "model-lane")
+    try:
+        assert await planner.prepare_configured_benchmark_lane(
+            7, "org/model", ServingOverrides(max_num_seqs=8), baseline_config=baseline
+        )
+    finally:
+        benchmark_reservations.release(-31)
+    assert planner._registry.send_command.call_args.args[2]["updates"]["vllm_config"] == expected
+
+
 async def test_nightly_configuration_checks_only_the_pinned_replica():
     from logos.benchmarks.configuration import ServingOverrides
     from logos.benchmarks.reservations import benchmark_reservations
