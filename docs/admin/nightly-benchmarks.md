@@ -265,7 +265,10 @@ A blue ring marks its benchmark. Select **Deployed** to find it or **Show all** 
 If the live settings cannot be matched, select **Last adoption** to find the last confirmed adoption in its timeline.
 The timeline separates workloads and test settings. Measurements can span worker releases.
 Expand **What does Logos check?** for the nightly adoption checks and examples of the request latency limit.
-Expand **Currently deployed → Configuration & selection details** to inspect **Serving settings** and **Run selection**.
+**Parameter changes** under **Currently deployed** shows only the values that differ from the round baseline.
+It shows the active trial during a benchmark or the latest saved trial for the selected worker.
+Expand **Configuration & selection details** for **Run selection**.
+Expand **Serving settings** inside these details to see the full worker configuration.
 If a batching limit is unavailable, it shows **Not reported**.
 If no benchmark matches, then **Last confirmed adoption** can show the last adopted result and link to its benchmark.
 If a limit is unavailable and there is no saved adoption, then the summary shows **Live benchmark unverified**.

@@ -99,6 +99,95 @@ def status(pair_id: int) -> dict:
         )
 
 
+def active_trial(pair_id: int, provider_id: int, job_id: int, worker_session: str) -> dict | None:
+    """Read the requested changes for an active job in its current Nightly reservation."""
+    with DBManager() as db:
+        row = (
+            db.session.execute(
+                text(
+                    "SELECT n.report, n.recovery->'vllm_config' AS original, "
+                    "j.request_payload->'serving_overrides' AS overrides "
+                    "FROM nightly_benchmarks n JOIN jobs j ON j.id = :job "
+                    "WHERE n.model_provider_id = :pair_id AND n.enabled AND n.status = 'running' "
+                    "AND n.recovery->>'provider_id' = :provider_id "
+                    "AND j.environment = 'model-provider-benchmark' AND j.status IN ('pending', 'running') "
+                    "AND j.request_payload->>'nightly' = 'true' "
+                    "AND j.request_payload->>'model_provider_id' = :pair "
+                    "AND j.request_payload->>'provider_id' = :provider_id "
+                    "AND j.request_payload->>'provider_session_id' = :worker_session "
+                    "AND COALESCE(j.request_payload->>'recovery_fenced', 'false') <> 'true'"
+                ),
+                {
+                    "job": job_id,
+                    "pair_id": pair_id,
+                    "pair": str(pair_id),
+                    "provider_id": str(provider_id),
+                    "worker_session": worker_session,
+                },
+            )
+            .mappings()
+            .first()
+        )
+    if not row:
+        return None
+    baseline_id = next(
+        (
+            outcome["benchmark_id"]
+            for outcome in row["report"]
+            if outcome.get("configuration") == 1 and outcome.get("status") == "success" and outcome.get("benchmark_id")
+        ),
+        None,
+    )
+    changes = _active_trial_changes(row["original"], row["overrides"]) if baseline_id else []
+    return {"baseline_id": baseline_id, "changes": changes}
+
+
+def _active_trial_changes(original: dict | None, overrides: dict | None) -> list[dict]:
+    from logos.benchmarks.guidellm_runner import lane_serving_configuration
+
+    original = original or {}
+    captured = lane_serving_configuration({"lane_config": {"vllm_config": original}})
+    # Only the known Nightly variation controls belong in this response.
+    # The journal and request can also contain arbitrary worker arguments.
+    captured["speculative_config"] = original.get("speculative_config")
+    changes = []
+    for key in ("max_num_seqs", "max_num_batched_tokens", "kv_cache_dtype", "speculative_config"):
+        after = (overrides or {}).get(key)
+        if after is None:
+            continue
+        before = _trial_value(key, captured.get(key))
+        after = _trial_value(key, after)
+        if after not in (None, "Custom") and before != after:
+            changes.append({"parameter": key, "before": before, "after": after})
+    return changes
+
+
+def _trial_value(key: str, value: int | str | None) -> int | str | None:
+    if key == "max_num_seqs" and (value is None or type(value) is int and value == 0):
+        return "Auto"
+    if key in ("max_num_seqs", "max_num_batched_tokens"):
+        return value if type(value) is int and value > 0 else None
+    if key == "kv_cache_dtype":
+        if value in (None, "", "auto"):
+            return "Auto"
+        return "fp8" if value in ("fp8", "fp8_e4m3") else "Custom"
+    if value in (None, ""):
+        return "Off"
+    try:
+        option = json.loads(value)
+    except (TypeError, ValueError):
+        return "Custom"
+    if (
+        isinstance(option, dict)
+        and option.keys() == {"method", "num_speculative_tokens"}
+        and option["method"] in ("mtp", "qwen3_5_mtp")
+        and type(option["num_speculative_tokens"]) is int
+        and option["num_speculative_tokens"] == 3
+    ):
+        return "3 draft tokens"
+    return "Custom"
+
+
 def set_window(pair_id: int, window: MaintenanceWindow, expected: MaintenanceWindow) -> bool:
     """Save only the requested pair's window if it still matches the editor."""
     default = MaintenanceWindow.from_env()

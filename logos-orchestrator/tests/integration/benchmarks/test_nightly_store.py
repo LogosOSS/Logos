@@ -119,6 +119,58 @@ def test_rotation_window_is_saved_per_pair_and_rejects_a_stale_editor(database):
     assert store.claim(31, date(2026, 11, 25), window=custom)
 
 
+def test_active_nightly_trial_is_scoped_to_its_live_job_and_preserves_the_round_baseline(database):
+    import json
+
+    engine, _ = database
+    store.set_enabled(31, enabled=True, expected=False)
+    assert store.claim(31, date(2026, 11, 25))
+    recovery = {
+        "provider_id": 1,
+        "vllm_config": {
+            "max_num_seqs": 5,
+            "extra_args": ["--max-num-batched-tokens", "2560", "--token=do-not-return"],
+            "kv_cache_dtype": "fp8_e4m3",
+        },
+    }
+    job = {
+        "nightly": True,
+        "model_provider_id": 31,
+        "provider_id": 1,
+        "provider_session_id": "worker-session",
+        "serving_overrides": {
+            "max_num_seqs": 2,
+            "max_num_batched_tokens": 2560,
+            "kv_cache_dtype": "fp8",
+            "speculative_config": '{"method":"mtp","num_speculative_tokens":3}',
+            "hf_overrides": {"token": "do-not-return"},
+        },
+    }
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO jobs (id, environment, status, request_payload) "
+                "VALUES (41, 'model-provider-benchmark', 'running', CAST(:payload AS jsonb))"
+            ),
+            {"payload": json.dumps(job)},
+        )
+    store.save(31, "running", [], recovery)
+    assert store.active_trial(31, 1, 41, "worker-session") == {"baseline_id": None, "changes": []}
+    store.save(31, "running", [{"configuration": 1, "status": "success", "benchmark_id": 71}], recovery)
+    assert store.active_trial(31, 1, 41, "worker-session") == {
+        "baseline_id": 71,
+        "changes": [
+            {"parameter": "max_num_seqs", "before": 5, "after": 2},
+            {"parameter": "speculative_config", "before": "Off", "after": "3 draft tokens"},
+        ],
+    }
+    assert store.active_trial(31, 1, 41, "old-session") is None
+    assert store.active_trial(32, 1, 41, "worker-session") is None
+    assert store.active_trial(31, 2, 41, "worker-session") is None
+    store.fence_recovery_jobs([41])
+    assert store.active_trial(31, 1, 41, "worker-session") is None
+
+
 def test_moving_the_window_can_run_the_same_pair_again_without_spending_another_daily_slot(database):
     default = MaintenanceWindow.from_env()
     afternoon = MaintenanceWindow(time(13, 10), time(13, 30), default.timezone)

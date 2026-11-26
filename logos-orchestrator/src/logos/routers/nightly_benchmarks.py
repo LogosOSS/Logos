@@ -13,6 +13,7 @@ from logos.benchmarks.deployment import deployment_snapshot
 from logos.benchmarks.guidellm_runner import extract_serving_configuration
 from logos.benchmarks.nightly import baseline_settings, local_now, schedule_window
 from logos.benchmarks.nightly_overview import overview
+from logos.benchmarks.reservations import benchmark_reservations
 from logos.dbutils.dbmanager import DBManager
 from logos.dbutils.dbrequest import (
     BenchmarkWorkloadRequest,
@@ -70,6 +71,15 @@ async def nightly_status(data: NightlySelectionStatusRequest, request: Request):
     if search and not any(item["id"] == workload["id"] for item in result["workloads"]):
         result["workloads"].append(workloads.metadata(workload))
     result["model_id"] = target.get("model_id")
+    result["active_trial"] = None
+    worker_session = (snapshot or {}).get("session_id")
+    provider_id, model_name = target["provider_id"], target["model_name"]
+    if result["status"] == "running" and result["recovery_required"] and worker_session:
+        job_id = benchmark_reservations.owner(provider_id, model_name, exact=True)
+        if job_id and job_id > 0 and benchmark_reservations.is_nightly_reserved(provider_id, model_name):
+            result["active_trial"] = store.active_trial(
+                data.model_provider_id, provider_id, job_id, str(worker_session)
+            )
     with DBManager() as db:
         active_benchmark = db.session.execute(
             text(

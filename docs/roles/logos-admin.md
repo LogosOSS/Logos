@@ -287,8 +287,10 @@ Select the same column again to reverse the order. Missing values stay at the en
 ![Performance overview with nightly rotation tiles, a worker selection, deployed settings and throughput timeline](../static/img/roles/logos-admin-nightly-results.png)
 
 Read **Currently deployed** below **Automatic benchmarks** in **Performance → Overview**.
-The summary shows live batching limits above the benchmark measurement.
-Expand **Configuration & selection details** for **Serving settings** and **Run selection**.
+**Parameter changes** shows the values that differ from the round baseline for the active or latest saved trial.
+If no trial changes are available, then the summary shows the live batching limits.
+Expand **Configuration & selection details** for **Run selection**.
+Expand **Serving settings** to see the full worker configuration.
 The view identifies measurements with matching settings and the same measurement environment.
 Measurements from another environment appear with a historical label. They do not verify current performance.
 If a batching limit is unavailable, it shows **Not reported**.
