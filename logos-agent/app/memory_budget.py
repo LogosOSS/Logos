@@ -1,7 +1,7 @@
 """How many sessions the host's memory can hold at once.
 
-Every session container, and every helper container a session runs in its
-place, may use up to ``LOGOS_AGENT_SESSION_MEMORY_MB``. A paused session
+Every session container and its helpers use the same memory limit. It comes
+from the runner default or an explicit manual session limit. A paused session
 keeps its memory too. The admission signal of the runner is spare *serving*
 capacity, which says nothing about the host the containers run on, so the
 parallel ceiling alone can promise sessions far more memory than the host
@@ -68,6 +68,14 @@ class Budget:
 
 
 _current: Budget | None = None
+
+
+def override_ceiling_mb() -> int | None:
+    """An override must be able to fit alone, without exceeding known host RAM."""
+    budget = current()
+    if budget is None:
+        return None
+    return budget.budget_mb if budget.host_mb is None else min(budget.budget_mb, budget.host_mb)
 
 
 def compute(host_mb: int | None) -> Budget | None:

@@ -259,6 +259,29 @@
           <span class="field__hint">Pages on the dev environment to capture after deploying.</span>
         </label>
 
+        <label class="field">
+          <span class="field__label">RAM limit (MiB) <span class="field__optional">(optional)</span></span>
+          <input
+            class="input"
+            type="text"
+            inputmode="numeric"
+            [ngModel]="formRam()"
+            (ngModelChange)="formRam.set($event)"
+            [placeholder]="controls()?.session_memory_mb ? String(controls()?.session_memory_mb) : ''"
+            [attr.aria-invalid]="formRamError() ? 'true' : null"
+            [attr.aria-describedby]="formRamError() ? 'session-ram-hint session-ram-error' : 'session-ram-hint'"
+          />
+          <span class="field__hint" id="session-ram-hint">
+            Only applies to this session. Leave blank to use the runner default.
+            @if (formRamMax(); as max) {
+              @if (max >= 512) { Allowed: 512–{{ max | number }} MiB. }
+            }
+          </span>
+          @if (formRamError(); as error) {
+            <span class="field__hint field__hint--error" id="session-ram-error">{{ error }}</span>
+          }
+        </label>
+
         <div class="field field--wide">
           <div class="checkboxes">
             <label class="checkbox">
@@ -563,6 +586,9 @@
               }
             </span>
           </span>
+          @if (session.status === 'queued' && session.memory_override_mb != null) {
+            <span class="session__memory">Requested RAM <strong>{{ session.memory_override_mb | number }} MiB</strong></span>
+          }
           @if (session.status !== 'queued') {
             <span class="session__memory">
               @if (isActive(session.status)) {

@@ -241,6 +241,38 @@ describe('Agents', () => {
     expect(root.querySelector('.agent-message ol')?.getAttribute('start')).toBe('2');
   });
 
+  it('keeps long messages compact and expandable without discarding their body', async () => {
+    const session = makeSession({ status: 'running' });
+    agentService.sessions = [session];
+    vi.spyOn(agentService, 'getMessages').mockResolvedValue({ messages: [{
+      id: 'long', actor: 'main', truncated: false, text: 'Proving the estimate. '.repeat(30) + '\n\nFinal detail.',
+    }], omitted: 0 });
+    await component.refresh();
+    await component.select(session);
+    fixture.detectChanges();
+    const details = fixture.nativeElement.querySelector('.agent-message details') as HTMLDetailsElement;
+    expect(details.open).toBe(false);
+    expect(details.querySelector('summary')?.textContent).toContain('Proving the estimate');
+    details.open = true;
+    expect(details.querySelectorAll('p')[1].textContent).toBe('Final detail.');
+  });
+
+  it('queues one manual RAM override and rejects invalid values', async () => {
+    await component.refresh();
+    component.openForm();
+    component.formWorkspaceId.set(1);
+    component.formTask.set('Fix the flaky test');
+    component.formRam.set('9000');
+    expect(component.canSubmit()).toBe(false);
+    component.formRam.set('6144.5');
+    expect(component.canSubmit()).toBe(false);
+    component.formRam.set('6144');
+    expect(component.canSubmit()).toBe(true);
+    await component.submit();
+    expect(agentService.createBodies[0].memory_override_mb).toBe(6144);
+    expect(component.formRam()).toBe('');
+  });
+
   it('keeps legacy output in diagnostics and discards message reads from a previous selection', async () => {
     const [first, second] = [makeSession({ id: 1 }), makeSession({ id: 2 })];
     agentService.sessions = [first, second];
