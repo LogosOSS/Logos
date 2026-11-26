@@ -13,9 +13,11 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
-from app import main
+from fastapi import HTTPException
 from fastapi.routing import APIRoute
 from starlette.status import HTTP_204_NO_CONTENT
+
+from app import main
 
 
 @pytest.fixture(scope="module")
@@ -112,8 +114,9 @@ class TestScreenshotContainment:
     async def test_an_oversized_screenshot_is_not_served(self, monkeypatch, tmp_path):
         from dataclasses import replace
 
-        from app import main
         from fastapi import HTTPException
+
+        from app import main
 
         self._patch_root(monkeypatch, tmp_path)
         monkeypatch.setattr(main, "settings", replace(main.settings, screenshot_max_bytes=4))
@@ -132,6 +135,7 @@ class TestScreenshotContainment:
         # any test that reads body_iterator by hand and still ship zero
         # bytes to the browser.
         import httpx
+
         from app.auth import require_agent_operator
 
         self._patch_root(monkeypatch, tmp_path)
@@ -158,8 +162,9 @@ class TestScreenshotContainment:
         # into runner space (its own /proc/self included): resolving such a
         # link as the trusted root would make every file under it pass the
         # containment check and be served.
-        from app.main import get_screenshot
         from fastapi import HTTPException
+
+        from app.main import get_screenshot
 
         self._patch_root(monkeypatch, tmp_path)
         outside = tmp_path / "outside"
@@ -179,8 +184,9 @@ class TestScreenshotContainment:
     async def test_a_symlinked_file_is_not_served(self, monkeypatch, tmp_path):
         # The same trick one level down: a link named like a screenshot,
         # into a file outside the session's artefact directory.
-        from app.main import get_screenshot
         from fastapi import HTTPException
+
+        from app.main import get_screenshot
 
         self._patch_root(monkeypatch, tmp_path)
         outside = tmp_path / "outside"
@@ -196,8 +202,9 @@ class TestScreenshotContainment:
         assert exc.value.status_code == 404
 
     async def test_a_dangling_symlink_file_is_not_served(self, monkeypatch, tmp_path):
-        from app.main import get_screenshot
         from fastapi import HTTPException
+
+        from app.main import get_screenshot
 
         self._patch_root(monkeypatch, tmp_path)
         directory = tmp_path / "7" / "screenshots"
@@ -210,8 +217,9 @@ class TestScreenshotContainment:
         assert exc.value.status_code == 404
 
     async def test_a_traversal_name_is_refused(self, monkeypatch, tmp_path):
-        from app.main import get_screenshot
         from fastapi import HTTPException
+
+        from app.main import get_screenshot
 
         self._patch_root(monkeypatch, tmp_path)
 
@@ -221,8 +229,9 @@ class TestScreenshotContainment:
         assert exc.value.status_code == 400
 
     async def test_a_missing_file_is_not_found(self, monkeypatch, tmp_path):
-        from app.main import get_screenshot
         from fastapi import HTTPException
+
+        from app.main import get_screenshot
 
         self._patch_root(monkeypatch, tmp_path)
         (tmp_path / "7" / "screenshots").mkdir(parents=True)
@@ -336,11 +345,11 @@ class TestRunningWorkAgain:
         "priority_reason": "a review is waiting",
     }
 
-    def install(self, monkeypatch, *, status_value="failed"):
+    def install(self, monkeypatch, *, status_value="failed", memory_override_mb=None):
         from app import db, main, sessions
 
         created: list[dict] = []
-        rows = {20: {**self.ROW, "status": status_value}}
+        rows = {20: {**self.ROW, "status": status_value, "memory_override_mb": memory_override_mb}}
 
         async def get_session(session_id):
             return rows.get(session_id)
@@ -376,6 +385,14 @@ class TestRunningWorkAgain:
         assert created[0]["reply_target"] == "issue:858"
         assert created[0]["trigger_ref"] == "pr-858-review-5088907839"
         assert created[0]["priority"] == 80
+
+    async def test_a_manual_override_is_kept_when_an_operator_retries(self, monkeypatch):
+        from app import memory_budget
+
+        created = self.install(monkeypatch, memory_override_mb=6144)
+        monkeypatch.setattr(memory_budget, "current", lambda: memory_budget.Budget(8192, 16384, "test"))
+        await main.retry_session(20, principal=_principal())
+        assert created[0]["memory_override_mb"] == 6144
 
     async def test_deploying_is_decided_per_attempt(self, monkeypatch):
         created = self.install(monkeypatch)
@@ -574,7 +591,7 @@ class TestTheSchedulerPassAnEndpointStarts:
         await self.assert_one_held_pass(passes, release)
 
     async def test_creating_a_session_runs_a_pass(self, monkeypatch):
-        from app import db, model_policy
+        from app import db, memory_budget, model_policy
         from app.schemas import SessionCreate
 
         passes, release = self.install(monkeypatch)
@@ -585,7 +602,8 @@ class TestTheSchedulerPassAnEndpointStarts:
         async def refresh():
             return SimpleNamespace(allows=lambda _model: True)
 
-        async def create_session(**_kwargs):
+        async def create_session(**kwargs):
+            assert kwargs["memory_override_mb"] == 6144
             return 21
 
         async def get_session(session_id):
@@ -597,7 +615,11 @@ class TestTheSchedulerPassAnEndpointStarts:
         monkeypatch.setattr(db, "get_session", get_session)
         monkeypatch.setattr(main, "_summary_fields", lambda row: dict(row))
 
-        await main.create_session(SessionCreate(workspace_id=3, task="Fix the flaky test"), principal=_principal())
+        monkeypatch.setattr(memory_budget, "current", lambda: memory_budget.Budget(8192, 8192, "test"))
+        await main.create_session(
+            SessionCreate(workspace_id=3, task="Fix the flaky test", memory_override_mb=6144),
+            principal=_principal(),
+        )
 
         await self.assert_one_held_pass(passes, release)
 
@@ -607,6 +629,7 @@ async def test_session_messages_require_operator_and_read_only_the_selected_arti
     from unittest.mock import AsyncMock
 
     import httpx
+
     from app.auth import require_agent_operator
 
     monkeypatch.setattr(main, "artifact_dir", lambda sid: tmp_path / str(sid))
@@ -631,3 +654,29 @@ async def test_session_messages_require_operator_and_read_only_the_selected_arti
         path.unlink()
         path.symlink_to(tmp_path / "outside")
         assert (await client.get("/sessions/7/messages")).status_code == 503
+
+
+@pytest.mark.parametrize("value", [0, 511, 1_048_577, 6144.5, "6144", True])
+def test_rejects_invalid_manual_memory_values(value):
+    from pydantic import ValidationError
+
+    from app.schemas import SessionCreate
+
+    with pytest.raises(ValidationError, match="memory_override_mb"):
+        SessionCreate(workspace_id=3, task="Fix the flaky test", memory_override_mb=value)
+
+
+@pytest.mark.parametrize(("budget", "status_code"), [(None, 409), (4096, 422)])
+async def test_cannot_queue_manual_memory_without_a_sufficient_budget(monkeypatch, budget, status_code):
+    from app import memory_budget
+    from app.schemas import SessionCreate
+
+    monkeypatch.setattr(
+        memory_budget, "current", lambda: None if budget is None else memory_budget.Budget(budget, 8192, "test")
+    )
+    with pytest.raises(HTTPException) as exc:
+        await main.create_session(
+            SessionCreate(workspace_id=3, task="Fix the flaky test", memory_override_mb=6144),
+            principal=_principal(),
+        )
+    assert exc.value.status_code == status_code

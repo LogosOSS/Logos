@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+    <changeSet id="106-manual-agent-session-memory" author="LogosOSS">
+        <sql>
+            ALTER TABLE agent_sessions ADD COLUMN memory_override_mb INTEGER
+                CHECK (memory_override_mb BETWEEN 512 AND 1048576);
+        </sql>
+        <rollback>
+            <sql>ALTER TABLE agent_sessions DROP COLUMN memory_override_mb;</sql>
+        </rollback>
+    </changeSet>
+</databaseChangeLog>

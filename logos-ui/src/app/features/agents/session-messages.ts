@@ -1,3 +1,4 @@
+import { NgTemplateOutlet } from '@angular/common';
 import { ChangeDetectionStrategy, Component, computed, input } from '@angular/core';
 import { AgentMessage } from '../../shared/models/agent.model';
 
@@ -5,12 +6,27 @@ import { AgentMessage } from '../../shared/models/agent.model';
   selector: 'app-session-messages',
   templateUrl: './session-messages.html',
   styleUrl: './session-messages.scss',
+  imports: [NgTemplateOutlet],
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class SessionMessagesComponent {
   readonly source = input.required<AgentMessage[]>({ alias: 'messages' });
   readonly active = input.required<boolean>();
-  readonly messages = computed(() => this.source().map(message => ({ ...message, blocks: messageBlocks(message.text) })));
+  readonly messages = computed(() =>
+    this.source().map(message => {
+      const blocks = messageBlocks(message.text);
+      const first = blocks.find(block => block.kind !== 'code');
+      const preview = (first && ('text' in first ? first.text : first.items[0]) || 'Code output')
+        .replace(/\s+/g, ' ').trim();
+      return {
+        ...message,
+        blocks,
+        label: message.actor === 'main' ? 'Agent' : 'Subagent · ' + message.actor.slice(6),
+        compact: message.text.length > 440 || message.text.split('\n').length > 8,
+        preview,
+      };
+    }),
+  );
 }
 
 type MessageBlock =

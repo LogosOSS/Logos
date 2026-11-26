@@ -691,6 +691,7 @@ async def create_session(
     open_pull_request: bool,
     deploy_to_dev: bool,
     screenshot_paths: Sequence[str],
+    memory_override_mb: int | None = None,
     no_push: bool = False,
     trigger_kind: str | None = None,
     trigger_ref: str | None = None,
@@ -811,7 +812,8 @@ async def create_session(
                          open_pull_request, deploy_to_dev, screenshot_paths,
                          no_push, trigger_kind, trigger_ref, branch_name,
                          reply_target, reaction_target, priority, priority_reason,
-                         repo_url, repo_slug, team_repository_id, verification_command, repo_base_branch)
+                         repo_url, repo_slug, team_repository_id, verification_command,
+                         repo_base_branch, memory_override_mb)
                     VALUES
                         (:workspace_id, :task, :model, 'queued', :created_by,
                          :open_pr, :deploy, CAST(:paths AS jsonb),
@@ -819,7 +821,8 @@ async def create_session(
                          :reply_target,
                          :reaction_target,
                          :priority, :priority_reason,
-                         :repo_url, :repo_slug, :team_repository_id, :verification_command, :repo_base_branch)
+                         :repo_url, :repo_slug, :team_repository_id, :verification_command,
+                         :repo_base_branch, :memory_override_mb)
                     RETURNING id
                     """),
                 {
@@ -852,6 +855,7 @@ async def create_session(
                     "team_repository_id": team_repository_id,
                     "verification_command": verification_command,
                     "repo_base_branch": repo_base_branch,
+                    "memory_override_mb": memory_override_mb,
                 },
             )
         ).scalar_one()
@@ -1075,7 +1079,8 @@ _SESSION_SELECT = """
            s.reply_target, s.reaction_target,
            s.priority, s.priority_reason, s.environment_notes,
            s.repo_url, s.repo_slug, s.team_repository_id, s.verification_command, s.repo_base_branch,
-           s.push_repo_slug, s.memory_mb, s.memory_peak_bytes, s.subagent_count, s.progress_percent,
+           s.push_repo_slug, s.memory_mb, s.memory_override_mb, s.memory_peak_bytes,
+           s.subagent_count, s.progress_percent,
            s.progress_active_s, s.progress_reported_at, s.active_seconds, s.active_since,
            t.name AS team_name,
            COALESCE(s.tokens_in, 0) AS tokens_in,
@@ -1244,7 +1249,7 @@ async def next_queued_session(*, include_triggered: bool = True) -> dict[str, An
             (
                 await db.execute(
                     text("""
-                    SELECT s.id, s.model, s.workspace_id
+                    SELECT s.id, s.model, s.workspace_id, s.memory_override_mb
                       FROM agent_sessions s
                      WHERE s.status = 'queued'
                        AND (:include_triggered OR s.trigger_ref IS NULL)

@@ -9,9 +9,10 @@ import os
 import uuid
 
 import pytest
-from app import analysis_triggers, db
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+from app import analysis_triggers, db
 
 # Taken before the shared fixture stubs it for the tests without a database.
 REAL_SESSION_MEMORY_MB = db.session_memory_mb
@@ -58,7 +59,7 @@ async def database(monkeypatch):
                 priority integer, priority_reason text, environment_notes text,
                 repo_url text, repo_slug text, team_repository_id integer, verification_command text,
                 repo_base_branch text, push_repo_slug text, egress_token_hash text,
-                memory_mb integer, memory_peak_bytes bigint, subagent_count integer,
+                memory_mb integer, memory_override_mb integer, memory_peak_bytes bigint, subagent_count integer,
                 progress_percent integer, progress_active_s bigint, progress_reported_at timestamptz,
                 active_seconds double precision NOT NULL DEFAULT 0, active_since timestamptz,
                 tokens_in bigint, tokens_out bigint, cost_usd numeric)"""))
@@ -260,6 +261,19 @@ async def test_the_claim_records_the_memory_of_the_session(database):
     assert claimed["memory_mb"] == 2048
     assert await REAL_SESSION_MEMORY_MB(session_id) == 2048
     assert await db.reserved_memory_mb(4096) == 2048
+
+
+async def test_manual_memory_override_survives_queuing_and_counts_only_at_claim(database):
+    manual = await db.create_session(**_session(memory_override_mb=6144))
+    queued = await REAL_NEXT_QUEUED()
+    assert queued["id"] == manual
+    assert queued["memory_override_mb"] == 6144
+    assert (await db.get_session(manual))["memory_mb"] is None
+    assert await db.reserved_memory_mb(1024) == 0
+
+    claimed = await db.claim_session(manual, max_active=2, memory_mb=queued["memory_override_mb"])
+    assert claimed["memory_mb"] == claimed["memory_override_mb"] == 6144
+    assert await db.reserved_memory_mb(1024) == 6144
 
 
 async def test_a_cancellation_can_only_transfer_the_reservation_it_read(database):

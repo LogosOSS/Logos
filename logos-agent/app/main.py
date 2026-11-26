@@ -257,7 +257,9 @@ async def get_capacity(_: Principal = Depends(require_agent_operator)) -> Capaci
     if blocked:
         may_start, reason = False, blocked
     elif may_start:
-        memory_block = await memory_admission_block(control)
+        next_session = await db.next_queued_session() if counts.get(SessionStatus.QUEUED.value, 0) else None
+        memory_override = (next_session or {}).get("memory_override_mb")
+        memory_block = await memory_admission_block(control, override_mb=memory_override)
         if memory_block:
             may_start, reason = False, memory_block
     # The local-only model policy gates admission as hard as load does, so
@@ -459,6 +461,16 @@ async def list_sessions(
     return [SessionSummary(**_summary_fields(row)) for row in rows]
 
 
+def _validate_memory_override(memory_mb: int | None) -> None:
+    if memory_mb is None:
+        return
+    ceiling = memory_budget.override_ceiling_mb()
+    if ceiling is None:
+        raise HTTPException(409, "Custom RAM limits require a known runner memory budget.")
+    if memory_mb > ceiling:
+        raise HTTPException(422, f"Custom RAM limit must not exceed {ceiling} MiB on this runner.")
+
+
 @app.post(
     "/sessions",
     response_model=SessionSummary,
@@ -466,6 +478,7 @@ async def list_sessions(
     tags=["sessions"],
 )
 async def create_session(body: SessionCreate, principal: Principal = Depends(require_agent_operator)) -> SessionSummary:
+    _validate_memory_override(body.memory_override_mb)
     workspace = await db.get_workspace(body.workspace_id)
     if workspace is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workspace not found")
@@ -519,6 +532,7 @@ async def create_session(body: SessionCreate, principal: Principal = Depends(req
             open_pull_request=body.open_pull_request,
             deploy_to_dev=body.deploy_to_dev,
             screenshot_paths=body.screenshot_paths,
+            memory_override_mb=body.memory_override_mb,
             # An idle workspace that last worked on another repository moves
             # to this one's branch; a busy one is refused (db.WorkspaceBusy).
             point_workspace_at=target.get("repo_base_branch") or "main",
@@ -589,10 +603,13 @@ async def retry_session(session_id: int, principal: Principal = Depends(require_
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Session is {row['status']}; retry it once it has finished",
         )
+    memory_override_mb = row.get("memory_override_mb")
+    _validate_memory_override(memory_override_mb)
     try:
         new_id = await db.create_session(
             workspace_id=row["workspace_id"],
             task=row["task"],
+            memory_override_mb=memory_override_mb,
             model=row.get("model"),
             created_by=principal.username or "operator",
             open_pull_request=bool(row.get("open_pull_request")),

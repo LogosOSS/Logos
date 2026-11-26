@@ -297,12 +297,20 @@ async def reserved_memory_mb() -> int:
     return await db.reserved_memory_mb(settings.session_memory_mb) + sum(_held_memory.values())
 
 
-async def memory_admission_block(control: controls.Controls) -> str:
+async def memory_admission_block(control: controls.Controls, *, override_mb: int | None = None) -> str:
     """Why the host's memory budget has no room for one more session, or an empty string."""
     budget = memory_budget.current()
+    if override_mb is not None:
+        ceiling = memory_budget.override_ceiling_mb()
+        if ceiling is None:
+            return "the runner memory budget is unavailable for a custom RAM limit"
+        if override_mb > ceiling:
+            return f"the requested {override_mb} MiB exceeds this runner's {ceiling} MiB limit"
     if budget is None:
         return ""
-    return budget.admission_block(reserved_mb=await reserved_memory_mb(), session_mb=control.session_memory_mb)
+    return budget.admission_block(
+        reserved_mb=await reserved_memory_mb(), session_mb=override_mb or control.session_memory_mb
+    )
 
 
 # The memory each session was started with, from the claim or, after a
@@ -1329,7 +1337,8 @@ class SessionManager:
             if not may_start:
                 return
             # The host's memory: what live sessions reserved, plus this one.
-            if await memory_admission_block(control):
+            override_mb = candidate.get("memory_override_mb")
+            if await memory_admission_block(control, override_mb=override_mb):
                 return
             if not self._capacity_sample_available(reading):
                 return
@@ -1342,12 +1351,11 @@ class SessionManager:
             # The memory is written by the claim itself, so the next admission
             # counts it, and kept for the session's life: a later change of
             # the per-session memory applies to sessions started later.
-            taken = await db.claim_session(
-                int(candidate["id"]), max_active=control.max_parallel, memory_mb=control.session_memory_mb
-            )
+            limit_mb = override_mb or control.session_memory_mb
+            taken = await db.claim_session(int(candidate["id"]), max_active=control.max_parallel, memory_mb=limit_mb)
             if taken:
                 self._spend_capacity_sample(reading)
-                taken = {**taken, "memory_mb": control.session_memory_mb}
+                taken = {**taken, "memory_mb": limit_mb}
                 _remember_memory(taken)
             claimed = [taken] if taken else []
             # The claim is what makes these rows this pass's to launch, so

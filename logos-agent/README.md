@@ -169,6 +169,12 @@ containers get the same limit; a new session starts only while the memory
 that starting, running, paused and finalizing sessions reserved, plus its
 own, fits in the budget (`app/memory_budget.py`).
 
+A manually queued session can request its own limit in MiB in **New session**.
+A blank field uses the runner default. A custom limit must fit within the
+known host and runner memory budget on its own; it can wait until the
+necessary memory is free. Explicit retries keep the override. The runner
+default and automated session limits are unchanged.
+
 If Docker cleanup fails, a container keeps its reservation until Docker
 confirms it has stopped. On restart the runner inventories managed containers
 before starting the scheduler. For a leftover container that still runs after
