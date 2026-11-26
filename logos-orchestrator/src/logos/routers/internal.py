@@ -44,6 +44,7 @@ from logos.benchmarks.nightly import (
 from logos.benchmarks.progress import observe_response
 from logos.benchmarks.reservations import benchmark_reservations
 from logos.benchmarks.worker_limits import validate_worker_overrides, worker_limits
+from logos.billing import provider_spend
 from logos.capacity.capacity_planner import RestoreRecordError
 from logos.client_tags import cancel as cancel_client_tag
 from logos.dbutils.dbmanager import DBManager
@@ -771,6 +772,10 @@ async def internal_run_model_benchmark(data: InternalBenchmarkRequest, request: 
             "max_output_tokens": data.max_output_tokens,
             "provider_session_id": runtime_snapshot.get("session_id") if runtime_snapshot else None,
         }
+        if provider_type == "cloud":
+            # The benchmark runner sends directly to the provider and can
+            # make multiple billable calls. Do not start an unbounded run.
+            provider_spend.reserve(provider_id)
         job_id = db.create_job_record(
             payload=job_payload,
             api_key_id=None,

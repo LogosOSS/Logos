@@ -9,6 +9,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.UUID;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -60,6 +61,7 @@ public class InferenceGatewayController {
     private final GatewayOrchestratorProxy orchestratorProxy;
     private final ObjectMapper objectMapper;
     private final GatewayInFlightLimit inFlightLimit;
+    private final ProviderSpendCapService providerSpend;
 
     public InferenceGatewayController(
             @Value("${logos.gateway.enabled:true}") boolean enabled,
@@ -68,7 +70,7 @@ public class InferenceGatewayController {
             GatewayCloudForwarder cloudForwarder,
             GatewayCloudRateLimiter cloudRateLimiter,
             GatewayOrchestratorProxy orchestratorProxy,
-            ObjectMapper objectMapper, GatewayInFlightLimit inFlightLimit) {
+            ObjectMapper objectMapper, GatewayInFlightLimit inFlightLimit, ProviderSpendCapService providerSpend) {
         this.enabled = enabled;
         this.authService = authService;
         this.cloudAccounting = cloudAccounting;
@@ -77,6 +79,7 @@ public class InferenceGatewayController {
         this.orchestratorProxy = orchestratorProxy;
         this.objectMapper = objectMapper;
         this.inFlightLimit = inFlightLimit;
+        this.providerSpend = providerSpend;
     }
 
     @RequestMapping(
@@ -154,23 +157,34 @@ public class InferenceGatewayController {
                 // never be missing from the request log.
                 final Integer logId;
                 final Map<String, String> upstreamHeaders;
+                String inferencePath = GatewayRouteResolver.normalizeInferencePath(path);
+                UUID spendAttempt = null;
+                byte[] outboundBody = body;
                 try {
                     upstreamHeaders = imageToolHeaders(ctx.key(), decision.deployment(), root);
                     cloudRateLimiter.enforce(ctx.key(), body);
+                    spendAttempt = providerSpend.reserve(decision.deployment(), inferencePath, request.getQueryString(), root);
+                    if (spendAttempt != null) {
+                        // Send the exact object that was validated for the cap.
+                        // An upstream must not interpret duplicate JSON keys differently.
+                        outboundBody = objectMapper.writeValueAsBytes(root);
+                    }
                     logId = cloudAccounting.admitAndReserve(
-                        ctx.key(), decision.deployment(), body, logLevel, arrivedAt,
+                        ctx.key(), decision.deployment(), outboundBody, logLevel, arrivedAt,
                         GatewayReasoningEffort.from(root));
                 } catch (ResponseStatusException e) {
+                    providerSpend.releaseUndispatched(spendAttempt);
                     cloudAccounting.recordRejected(ctx.key(), decision.deployment(), logLevel,
                         "HTTP " + e.getStatusCode().value() + ": " + e.getReason(),
                         e.getStatusCode().value() == HttpStatus.TOO_MANY_REQUESTS.value());
                     throw e;
-                } catch (RuntimeException e) {
+                } catch (IOException | RuntimeException e) {
+                    providerSpend.releaseUndispatched(spendAttempt);
                     cloudAccounting.recordRejected(ctx.key(), decision.deployment(), logLevel,
                         "Gateway error: " + e.getClass().getSimpleName(), false);
                     throw e;
                 }
-                String inferencePath = GatewayRouteResolver.normalizeInferencePath(path);
+                UUID dispatchedAttempt = spendAttempt;
                 log.debug("Cloud forward {} {} model={} reason={}",
                     request.getMethod(), path, modelName, decision.reason());
                 return cloudForwarder.forward(
@@ -178,12 +192,15 @@ public class InferenceGatewayController {
                     inferencePath,
                     request.getQueryString(),
                     request.getMethod(),
-                    body,
+                    outboundBody,
                     copyHeaders(request),
                     upstreamHeaders,
                     GatewayLoggingLevel.storesPayloads(logLevel),
-                    result -> cloudAccounting.settleSuccess(
-                        logId, result.usage(), result.responseBody(), result.serviceTier(), result.timings()),
+                    result -> {
+                        providerSpend.settle(dispatchedAttempt, result);
+                        cloudAccounting.settleSuccess(
+                            logId, result.usage(), result.responseBody(), result.serviceTier(), result.timings());
+                    },
                     (err, result) -> cloudAccounting.settleFailure(logId, err, result));
             }
             log.debug("Orchestrator proxy {} {} reason={}",

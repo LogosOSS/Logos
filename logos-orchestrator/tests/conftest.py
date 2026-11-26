@@ -358,3 +358,31 @@ def _sync_write_queue():
     write_queue.set_write_queue(write_queue.WriteQueue(sync=True))
     yield
     write_queue.set_write_queue(write_queue.WriteQueue(sync=True))
+
+
+@pytest.fixture(autouse=True)
+def _uncapped_cloud_by_default(monkeypatch):
+    """Cloud forwarding unit tests have no shared budget database."""
+    from logos.billing import provider_spend
+
+    class UncappedDb:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info):
+            pass
+
+        @property
+        def session(self):
+            return self
+
+        def execute(self, *args):
+            return self
+
+        def scalar_one(self):
+            return "uncapped"
+
+        def commit(self):
+            pass
+
+    monkeypatch.setattr(provider_spend, "DBManager", UncappedDb)

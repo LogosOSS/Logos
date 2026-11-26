@@ -1,6 +1,7 @@
 package de.tum.cit.aet.logos.logoswebservice.gateway;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -49,6 +50,7 @@ class GatewayImageGenerationToolTest {
     private final GatewayCloudAccounting cloudAccounting = mock(GatewayCloudAccounting.class);
     private final GatewayCloudRateLimiter cloudRateLimiter = mock(GatewayCloudRateLimiter.class);
     private final GatewayOrchestratorProxy orchestratorProxy = mock(GatewayOrchestratorProxy.class);
+    private final ProviderSpendCapService spendCap = mock(ProviderSpendCapService.class);
     private InferenceGatewayController controller;
 
     @BeforeEach
@@ -73,7 +75,8 @@ class GatewayImageGenerationToolTest {
         when(cloudAccounting.admitAndReserve(any(), any(), any(), any(), any(), any())).thenReturn(1);
         controller = new InferenceGatewayController(true, authService, cloudAccounting,
             new GatewayCloudForwarder(new ObjectMapper(), cloudAccounting), cloudRateLimiter,
-            orchestratorProxy, new ObjectMapper(), new GatewayInFlightLimit(0));
+            orchestratorProxy, new ObjectMapper(), new GatewayInFlightLimit(0),
+            spendCap);
     }
 
     @AfterEach
@@ -113,6 +116,23 @@ class GatewayImageGenerationToolTest {
 
     private static final String IMAGE_REQUEST = "{\"model\":\"gpt-5.6-luna\",\"input\":\"draw\","
         + "\"tools\":[{\"type\":\"image_generation\",\"model\":\"gpt-image-1.5\"}]}";
+
+    @Test
+    void providerCapDeniesBeforeUpstreamOrKeyCostReservation() throws IOException {
+        GatewayDeployment deployment = openai(1, "gpt-4o-2024-08-06");
+        when(authService.deploymentsForModel(any(), eq(deployment.modelName()))).thenReturn(List.of(deployment));
+        when(spendCap.reserve(eq(deployment), eq("/v1/responses"), any(), any()))
+            .thenThrow(new ResponseStatusException(HttpStatus.PAYMENT_REQUIRED, "Provider monthly spend limit reached"));
+
+        assertThatExceptionOfType(ResponseStatusException.class)
+            .isThrownBy(() -> post("""
+                {"model":"gpt-4o-2024-08-06","input":"hi","max_output_tokens":32}
+                """))
+            .satisfies(ex -> assertThat(ex.getStatusCode()).isEqualTo(HttpStatus.PAYMENT_REQUIRED));
+        assertThat(upstreamCalled.get()).isFalse();
+        verify(cloudAccounting, never()).admitAndReserve(any(), any(), any(), any(), any(), any());
+        verify(orchestratorProxy, never()).proxy(any(), any(), any());
+    }
 
     @Test
     void anAzureRequestWithTheImageToolNamesTheImageDeploymentAndStaysInTheGateway() throws Exception {

@@ -2269,3 +2269,54 @@ def test_log_request_completion_omits_prefix_hit_when_unreported(monkeypatch, ca
         {"prompt_tokens": 1000, "completion_tokens": 100},
     )
     assert "prefix_hit" not in line
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_provider_spend_denial_never_dispatches(monkeypatch, stream):
+    from fastapi import HTTPException
+
+    attempts = []
+    upstream_calls = []
+
+    def deny(provider_id, model_id, *, url, payload):
+        attempts.append((provider_id, model_id, url, payload))
+        raise HTTPException(402, "Provider monthly spend limit reached")
+
+    def unexpected_dispatch(*args, **kwargs):
+        upstream_calls.append(args)
+        raise AssertionError("A denied request must not reach the HTTP executor")
+
+    monkeypatch.setattr(main.provider_spend, "reserve", deny)
+    monkeypatch.setattr(
+        main,
+        "_context_resolver",
+        SimpleNamespace(prepare_headers_and_payload=lambda context, payload: ({}, payload)),
+        raising=False,
+    )
+    pipeline, _, _ = _make_pipeline()
+    pipeline.executor.execute_sync = unexpected_dispatch
+    pipeline.executor.execute_streaming = unexpected_dispatch
+    monkeypatch.setattr(main, "_pipeline", pipeline, raising=False)
+    url = "https://api.anthropic.com/v1/messages"
+    context = SimpleNamespace(
+        provider_type="cloud",
+        forward_url=url,
+        model_name="claude-haiku-4-5-20251001",
+        anthropic_dialect=None,
+        messages_upstream=False,
+    )
+    payload = {
+        "model": context.model_name,
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_tokens": 10,
+    }
+    if stream:
+        response = await main._streaming_response(context, payload, None, 12, 27, -1, {}, {})
+        assert response.status_code == 402
+    else:
+        with pytest.raises(HTTPException, match="Provider monthly spend limit reached") as exc:
+            await main._sync_response(context, payload, None, 12, 27, -1, {}, {})
+        assert exc.value.status_code == 402
+    assert attempts == [(12, 27, url, payload)]
+    assert not upstream_calls

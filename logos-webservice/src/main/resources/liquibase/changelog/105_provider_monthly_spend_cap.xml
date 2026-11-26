@@ -1,0 +1,309 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.20.xsd">
+    <changeSet id="105-provider-monthly-spend-cap" author="logos">
+        <sql splitStatements="false"><![CDATA[
+            CREATE TABLE provider_spend_policies (
+                provider_id integer NOT NULL REFERENCES providers (id) ON DELETE CASCADE,
+                effective_month date NOT NULL CHECK (EXTRACT(DAY FROM effective_month) = 1),
+                limit_micro_cents bigint CHECK (limit_micro_cents >= 0),
+                PRIMARY KEY (provider_id, effective_month)
+            );
+
+            CREATE TABLE provider_spend_months (
+                provider_id integer NOT NULL REFERENCES providers (id) ON DELETE CASCADE,
+                month_start date NOT NULL CHECK (EXTRACT(DAY FROM month_start) = 1),
+                held_micro_cents numeric(24,0) NOT NULL DEFAULT 0 CHECK (held_micro_cents >= 0),
+                charged_micro_cents numeric(24,0) NOT NULL DEFAULT 0 CHECK (charged_micro_cents >= 0),
+                bound_violation boolean NOT NULL DEFAULT false,
+                PRIMARY KEY (provider_id, month_start)
+            );
+
+            CREATE TABLE provider_spend_attempts (
+                attempt_id uuid PRIMARY KEY,
+                provider_id integer NOT NULL,
+                month_start date NOT NULL,
+                model_id integer NOT NULL,
+                priced_at timestamptz NOT NULL,
+                reserved_micro_cents bigint NOT NULL CHECK (reserved_micro_cents >= 0),
+                charged_micro_cents bigint CHECK (charged_micro_cents >= 0),
+                FOREIGN KEY (provider_id, month_start)
+                    REFERENCES provider_spend_months (provider_id, month_start) ON DELETE CASCADE
+            );
+
+            CREATE OR REPLACE FUNCTION logos_current_provider_spend_policy(p_provider_id integer, p_at timestamptz)
+            RETURNS provider_spend_policies
+            LANGUAGE sql STABLE SET search_path = public, pg_catalog AS $fn$
+                SELECT policy.* FROM provider_spend_policies policy
+                 WHERE policy.provider_id = p_provider_id
+                   AND policy.effective_month <= date_trunc('month', p_at AT TIME ZONE 'UTC')::date
+                 ORDER BY policy.effective_month DESC
+                 LIMIT 1
+            $fn$;
+
+            -- The names are official, fixed upstream versions whose documented input
+            -- windows are <= 1M tokens. Do not infer a binding bound from a
+            -- client value, a deployment alias, or discovered capabilities.
+            CREATE OR REPLACE FUNCTION logos_provider_spend_input_ceiling(p_kind text, p_model text)
+            RETURNS integer
+            LANGUAGE sql IMMUTABLE SET search_path = public, pg_catalog AS $fn$
+                SELECT CASE
+                    WHEN p_kind = 'messages' AND p_model IN (
+                        'claude-haiku-4-5-20251001', 'claude-sonnet-4-20250514',
+                        'claude-sonnet-4-5-20250929', 'claude-opus-4-20250514',
+                        'claude-opus-4-1-20250805', 'claude-opus-4-5-20251101',
+                        'claude-opus-4-6-20260205', 'claude-opus-4-7-20260416')
+                        THEN 1000000
+                    WHEN p_kind IN ('chat', 'responses') AND p_model IN (
+                        'gpt-4o-2024-05-13', 'gpt-4o-2024-08-06', 'gpt-4o-2024-11-20',
+                        'gpt-4o-mini-2024-07-18', 'gpt-4.1-2025-04-14',
+                        'gpt-4.1-mini-2025-04-14', 'gpt-4.1-nano-2025-04-14',
+                        'gpt-5-2025-08-07', 'gpt-5-mini-2025-08-07', 'gpt-5-nano-2025-08-07')
+                        THEN 2000000
+                    END
+            $fn$;
+
+            CREATE OR REPLACE FUNCTION logos_provider_spend_output_limit(p_kind text, p_payload jsonb)
+            RETURNS integer
+            LANGUAGE plpgsql IMMUTABLE SET search_path = public, pg_catalog AS $fn$
+            DECLARE
+                v_allowed text[];
+                v_output jsonb;
+                v_turn jsonb;
+                v_block jsonb;
+            BEGIN
+                IF jsonb_typeof(p_payload) IS DISTINCT FROM 'object' THEN
+                    RETURN NULL;
+                END IF;
+                IF p_kind = 'chat' THEN
+                    v_allowed := ARRAY['model', 'messages', 'max_tokens', 'max_completion_tokens', 'stream',
+                        'stream_options', 'temperature', 'top_p', 'stop', 'n', 'timeout_s', 'service_tier',
+                        'frequency_penalty', 'presence_penalty', 'seed', 'user', 'reasoning_effort'];
+                    v_output := COALESCE(p_payload->'max_completion_tokens', p_payload->'max_tokens');
+                    IF p_payload ? 'n' AND p_payload->'n' <> '1'::jsonb THEN
+                        RETURN NULL;
+                    END IF;
+                    IF p_payload ? 'max_completion_tokens' AND p_payload ? 'max_tokens' THEN
+                        RETURN NULL;
+                    END IF;
+                ELSIF p_kind = 'messages' THEN
+                    v_allowed := ARRAY['model', 'messages', 'system', 'max_tokens', 'stop_sequences',
+                        'stream', 'temperature', 'top_k', 'top_p', 'timeout_s'];
+                    v_output := p_payload->'max_tokens';
+                    IF p_payload ? 'system' AND jsonb_typeof(p_payload->'system') <> 'string' THEN
+                        RETURN NULL;
+                    END IF;
+                ELSIF p_kind = 'responses' THEN
+                    v_allowed := ARRAY['model', 'input', 'instructions', 'max_output_tokens',
+                        'stream', 'temperature', 'top_p', 'timeout_s', 'service_tier'];
+                    v_output := p_payload->'max_output_tokens';
+                    IF jsonb_typeof(p_payload->'input') IS DISTINCT FROM 'string'
+                        OR (p_payload ? 'instructions' AND jsonb_typeof(p_payload->'instructions') <> 'string') THEN
+                        RETURN NULL;
+                    END IF;
+                ELSE
+                    RETURN NULL;
+                END IF;
+
+                IF EXISTS (SELECT 1 FROM jsonb_object_keys(p_payload) AS fields(key)
+                             WHERE fields.key <> ALL (v_allowed))
+                    OR jsonb_typeof(v_output) IS DISTINCT FROM 'number'
+                    OR v_output::text !~ '^[0-9]{1,7}$' THEN
+                    RETURN NULL;
+                END IF;
+                IF v_output::text::integer NOT BETWEEN 1 AND 1000000 THEN
+                    RETURN NULL;
+                END IF;
+                IF p_kind <> 'responses' THEN
+                    IF jsonb_typeof(p_payload->'messages') IS DISTINCT FROM 'array' THEN
+                        RETURN NULL;
+                    END IF;
+                    FOR v_turn IN SELECT * FROM jsonb_array_elements(p_payload->'messages')
+                    LOOP
+                        IF jsonb_typeof(v_turn) IS DISTINCT FROM 'object' THEN
+                            RETURN NULL;
+                        END IF;
+                        IF jsonb_typeof(v_turn->'role') IS DISTINCT FROM 'string'
+                            OR EXISTS (SELECT 1 FROM jsonb_object_keys(v_turn) AS fields(key)
+                                      WHERE fields.key <> ALL (ARRAY['role', 'content', 'name'])) THEN
+                            RETURN NULL;
+                        END IF;
+                        IF p_kind = 'messages' AND jsonb_typeof(v_turn->'content') = 'array' THEN
+                            FOR v_block IN SELECT * FROM jsonb_array_elements(v_turn->'content') LOOP
+                                IF jsonb_typeof(v_block) IS DISTINCT FROM 'object' THEN
+                                    RETURN NULL;
+                                END IF;
+                                IF v_block->>'type' IS DISTINCT FROM 'text'
+                                    OR jsonb_typeof(v_block->'text') IS DISTINCT FROM 'string'
+                                    OR EXISTS (SELECT 1 FROM jsonb_object_keys(v_block) AS fields(key)
+                                                WHERE fields.key <> ALL (ARRAY['type', 'text'])) THEN
+                                    RETURN NULL;
+                                END IF;
+                            END LOOP;
+                        ELSIF jsonb_typeof(v_turn->'content') IS DISTINCT FROM 'string' THEN
+                            RETURN NULL;
+                        END IF;
+                    END LOOP;
+                END IF;
+                RETURN v_output::text::integer;
+            END
+            $fn$;
+
+            CREATE OR REPLACE FUNCTION logos_reserve_provider_spend(
+                p_attempt uuid, p_provider_id integer, p_model_id integer, p_kind text, p_payload jsonb
+            ) RETURNS text
+            LANGUAGE plpgsql SET search_path = public, pg_catalog AS $fn$
+            DECLARE
+                v_now timestamptz := clock_timestamp();
+                v_month date := date_trunc('month', v_now AT TIME ZONE 'UTC')::date;
+                v_policy provider_spend_policies;
+                v_expected numeric;
+                v_input bigint;
+                v_output bigint;
+                v_per_request bigint;
+                v_prior provider_spend_attempts;
+                v_output_limit integer;
+                v_input_limit integer;
+            BEGIN
+                IF NOT EXISTS (SELECT 1 FROM providers WHERE id = p_provider_id AND provider_type = 'cloud') THEN
+                    RETURN 'unbounded';
+                END IF;
+                SELECT * INTO v_policy FROM logos_current_provider_spend_policy(p_provider_id, v_now);
+                IF v_policy.limit_micro_cents IS NULL THEN
+                    RETURN 'uncapped';
+                END IF;
+                IF v_policy.limit_micro_cents = 0 THEN
+                    RETURN 'exhausted';
+                END IF;
+                v_output_limit := logos_provider_spend_output_limit(p_kind, p_payload);
+                SELECT logos_provider_spend_input_ceiling(p_kind, name)
+                  INTO v_input_limit
+                  FROM models WHERE id = p_model_id AND name = p_payload->>'model';
+                IF p_attempt IS NULL OR v_input_limit IS NULL OR v_output_limit IS NULL THEN
+                    RETURN 'unbounded';
+                END IF;
+
+                -- Take the largest published rate across matching cache,
+                -- reasoning, service, and context tiers. The allowlisted
+                -- requests cannot invoke extra billable tools or modalities.
+                SELECT MAX(tp.price_per_k_unit) FILTER (WHERE tt.name IN (
+                           'billed_input_uncached', 'billed_input_cache_read',
+                           'billed_input_cache_write', 'billed_input_cache_write_1h')),
+                       MAX(tp.price_per_k_unit) FILTER (WHERE tt.name IN (
+                           'billed_output_text', 'billed_output_reasoning')),
+                       MAX(tp.price_per_k_unit) FILTER (WHERE tt.name = 'billed_requests')
+                  INTO v_input, v_output, v_per_request
+                  FROM token_prices tp JOIN token_types tt ON tt.id = tp.type_id
+                 WHERE (tp.provider_id IS NULL OR tp.provider_id = p_provider_id)
+                   AND (tp.model_id IS NULL OR tp.model_id = p_model_id)
+                   AND tp.valid_from <= v_now
+                   AND ((tp.unit = 'token' AND tt.name <> 'billed_requests')
+                        OR (tp.unit = 'request' AND tt.name = 'billed_requests'));
+                IF logos_resolve_unit_price('billed_input_uncached', p_model_id, p_provider_id,
+                                               v_now, 0, NULL) IS NULL
+                    OR logos_resolve_unit_price('billed_output_text', p_model_id, p_provider_id,
+                                               v_now, 0, NULL) IS NULL
+                    OR v_input IS NULL OR v_output IS NULL THEN
+                    RETURN 'unbounded';
+                END IF;
+                v_expected := CEIL((v_input_limit::numeric * v_input
+                                   + v_output_limit::numeric * v_output
+                                   + COALESCE(v_per_request, 0)) / 1000);
+                IF v_expected < 0 OR v_expected > v_policy.limit_micro_cents THEN
+                    RETURN 'exhausted';
+                END IF;
+
+                INSERT INTO provider_spend_months (provider_id, month_start)
+                    VALUES (p_provider_id, v_month) ON CONFLICT DO NOTHING;
+                -- Serialize only attempts on this provider and month. Lock
+                -- before the idempotency check so simultaneous repeats and
+                -- settlement cannot change the budget twice.
+                PERFORM 1 FROM provider_spend_months
+                 WHERE provider_id = p_provider_id AND month_start = v_month FOR UPDATE;
+                SELECT * INTO v_prior FROM provider_spend_attempts WHERE attempt_id = p_attempt;
+                IF FOUND THEN
+                    IF v_prior.provider_id <> p_provider_id OR v_prior.model_id <> p_model_id
+                        OR v_prior.month_start <> v_month OR v_prior.charged_micro_cents IS NOT NULL THEN
+                        RETURN 'unbounded';
+                    END IF;
+                    RETURN 'duplicate';
+                END IF;
+
+                UPDATE provider_spend_months
+                   SET held_micro_cents = held_micro_cents + v_expected
+                 WHERE provider_id = p_provider_id AND month_start = v_month
+                   AND NOT bound_violation
+                   AND charged_micro_cents + held_micro_cents + v_expected <= v_policy.limit_micro_cents;
+                IF NOT FOUND THEN
+                    RETURN 'exhausted';
+                END IF;
+                INSERT INTO provider_spend_attempts (
+                    attempt_id, provider_id, month_start, model_id, priced_at, reserved_micro_cents
+                ) VALUES (p_attempt, p_provider_id, v_month, p_model_id, v_now, v_expected::bigint);
+                RETURN 'reserved';
+            END
+            $fn$;
+
+            CREATE OR REPLACE FUNCTION logos_settle_provider_spend(
+                p_attempt uuid, p_usage jsonb, p_service_tier text, p_not_dispatched boolean DEFAULT false
+            ) RETURNS boolean
+            LANGUAGE plpgsql SET search_path = public, pg_catalog AS $fn$
+            DECLARE
+                v_attempt provider_spend_attempts;
+                v_price bigint;
+            BEGIN
+                SELECT * INTO v_attempt FROM provider_spend_attempts WHERE attempt_id = p_attempt;
+                IF NOT FOUND OR v_attempt.charged_micro_cents IS NOT NULL THEN
+                    RETURN false;
+                END IF;
+                IF p_not_dispatched THEN
+                    v_price := 0;
+                ELSE
+                    -- Only provider-reported complete usage can lower the
+                    -- hold. Missing or estimated usage is not proof of no bill.
+                    IF jsonb_typeof(p_usage->'prompt_tokens') IS DISTINCT FROM 'number'
+                        OR jsonb_typeof(p_usage->'completion_tokens') IS DISTINCT FROM 'number'
+                        OR p_usage ? 'usage_estimated'
+                        OR (p_usage->>'prompt_tokens')::numeric < 0
+                        OR (p_usage->>'completion_tokens')::numeric < 0 THEN
+                        RETURN false;
+                    END IF;
+                    v_price := logos_price_usage(
+                        v_attempt.model_id, v_attempt.provider_id, v_attempt.priced_at, p_service_tier,
+                        p_usage || '{"billed_requests":1}'::jsonb);
+                    IF v_price IS NULL OR v_price < 0 THEN
+                        RETURN false;
+                    END IF;
+                END IF;
+
+                PERFORM 1 FROM provider_spend_months
+                 WHERE provider_id = v_attempt.provider_id AND month_start = v_attempt.month_start FOR UPDATE;
+                UPDATE provider_spend_attempts SET charged_micro_cents = v_price
+                 WHERE attempt_id = p_attempt AND charged_micro_cents IS NULL;
+                IF NOT FOUND THEN
+                    RETURN false;
+                END IF;
+                UPDATE provider_spend_months
+                   SET held_micro_cents = held_micro_cents - v_attempt.reserved_micro_cents,
+                       charged_micro_cents = charged_micro_cents + v_price,
+                       bound_violation = bound_violation OR v_price > v_attempt.reserved_micro_cents
+                 WHERE provider_id = v_attempt.provider_id AND month_start = v_attempt.month_start;
+                RETURN true;
+            END
+            $fn$;
+        ]]></sql>
+        <rollback>
+            <sql splitStatements="false">
+                DROP FUNCTION logos_settle_provider_spend(uuid, jsonb, text, boolean);
+                DROP FUNCTION logos_reserve_provider_spend(uuid, integer, integer, text, jsonb);
+                DROP FUNCTION logos_provider_spend_output_limit(text, jsonb);
+                DROP FUNCTION logos_provider_spend_input_ceiling(text, text);
+                DROP FUNCTION logos_current_provider_spend_policy(integer, timestamptz);
+                DROP TABLE provider_spend_attempts;
+                DROP TABLE provider_spend_months;
+                DROP TABLE provider_spend_policies;
+            </sql>
+        </rollback>
+    </changeSet>
+</databaseChangeLog>
