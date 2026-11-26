@@ -1030,6 +1030,9 @@ class SessionManager:
                 continue
             sid = int(session["id"])
             permissions = await db.sandbox_permissions(int(link), str(session["repo_slug"]))
+            # Manual private sessions can discover issues through this broker,
+            # but must leave neither commits nor comments on the remote.
+            manual_private = bool(session.get("no_push")) and not session.get("trigger_kind")
 
             async def record(line: str, sid: int = sid) -> None:
                 await db.add_event(sid, EventKind.LOG, {"lines": [line]})
@@ -1040,7 +1043,7 @@ class SessionManager:
                         session,
                         artifacts=artifact_dir(sid),
                         state=state_dir(sid),
-                        may_comment=bool(permissions["agent_may_comment"]),
+                        may_comment=bool(permissions["agent_may_comment"]) and not manual_private,
                         record=record,
                     )
             except Exception:

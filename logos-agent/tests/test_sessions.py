@@ -6997,3 +6997,23 @@ class TestRequestedReviewDelivery:
 
         assert recorded["reviews"] == []
         assert "a.py:3 this is wrong" in recorded["summaries"][0][1]
+
+
+@pytest.mark.asyncio
+async def test_private_manual_session_can_read_but_not_comment_through_github_broker(monkeypatch, tmp_path):
+    from unittest.mock import AsyncMock
+
+    from app import sessions
+
+    monkeypatch.setattr(sessions, "artifact_dir", lambda _sid: tmp_path)
+    monkeypatch.setattr(sessions, "state_dir", lambda _sid: tmp_path)
+    monkeypatch.setattr(sessions.db, "sandbox_permissions", AsyncMock(return_value={"agent_may_comment": True}))
+    process = AsyncMock()
+    monkeypatch.setattr(sessions.github_broker, "process", process)
+    session = {"id": 42, "team_repository_id": 5, "repo_slug": "example/math", "no_push": True}
+    await sessions.manager.serve_github_requests([session])
+    assert process.await_args.kwargs["may_comment"] is False
+
+    # Read-only triggered reviews still honor the repository's comment policy.
+    await sessions.manager.serve_github_requests([{**session, "trigger_kind": "review-request"}])
+    assert process.await_args.kwargs["may_comment"] is True

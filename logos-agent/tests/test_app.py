@@ -573,7 +573,8 @@ class TestTheSchedulerPassAnEndpointStarts:
 
         await self.assert_one_held_pass(passes, release)
 
-    async def test_creating_a_session_runs_a_pass(self, monkeypatch):
+    @pytest.mark.parametrize("no_push", [False, True])
+    async def test_creating_a_session_runs_a_pass(self, monkeypatch, no_push):
         from app import db, model_policy
         from app.schemas import SessionCreate
 
@@ -585,7 +586,8 @@ class TestTheSchedulerPassAnEndpointStarts:
         async def refresh():
             return SimpleNamespace(allows=lambda _model: True)
 
-        async def create_session(**_kwargs):
+        async def create_session(**kwargs):
+            assert kwargs["no_push"] is no_push
             return 21
 
         async def get_session(session_id):
@@ -597,9 +599,30 @@ class TestTheSchedulerPassAnEndpointStarts:
         monkeypatch.setattr(db, "get_session", get_session)
         monkeypatch.setattr(main, "_summary_fields", lambda row: dict(row))
 
-        await main.create_session(SessionCreate(workspace_id=3, task="Fix the flaky test"), principal=_principal())
+        await main.create_session(
+            SessionCreate(workspace_id=3, task="Check the flaky test", no_push=no_push, open_pull_request=not no_push),
+            principal=_principal(),
+        )
 
         await self.assert_one_held_pass(passes, release)
+
+
+@pytest.mark.parametrize("option,value", [("open_pull_request", True), ("deploy_to_dev", True), ("screenshot_paths", ["/models"])])
+async def test_manual_private_session_rejects_publication_options(monkeypatch, option, value):
+    from unittest.mock import AsyncMock
+
+    from app.schemas import SessionCreate
+    from fastapi import HTTPException
+
+    monkeypatch.setattr(main.db, "get_workspace", AsyncMock(return_value={"id": 3}))
+    create = AsyncMock()
+    monkeypatch.setattr(main.db, "create_session", create)
+    options = {"workspace_id": 3, "task": "Draft a proof", "no_push": True, "open_pull_request": False}
+    options[option] = value
+    with pytest.raises(HTTPException) as error:
+        await main.create_session(SessionCreate(**options), principal=_principal())
+    assert error.value.status_code == 400
+    create.assert_not_awaited()
 
 
 async def test_session_messages_require_operator_and_read_only_the_selected_artifact(monkeypatch, tmp_path):

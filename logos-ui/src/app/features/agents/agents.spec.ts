@@ -567,6 +567,20 @@ describe('Agents', () => {
       expect(component.error()).toBeNull();
     });
 
+    it('suppresses publishing and deployment for a private session', async () => {
+      component.formNoPush.set(true);
+      component.formOpenPr.set(true);
+      component.formDeploy.set(true);
+      component.formScreenshots.set('/dashboard');
+      await component.submit();
+      expect(agentService.createBodies[0]).toEqual(expect.objectContaining({
+        no_push: true,
+        open_pull_request: false,
+        deploy_to_dev: false,
+        screenshot_paths: [],
+      }));
+    });
+
     it('sends no linked repository for the platform repository', async () => {
       component.formDeploy.set(true);
       component.formScreenshots.set('/dashboard /models');

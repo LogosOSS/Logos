@@ -177,6 +177,7 @@ export interface CreateSessionRequest {
   task: string;
   model?: string | null;
   open_pull_request: boolean;
+  no_push?: boolean;
   deploy_to_dev: boolean;
   screenshot_paths: string[];
   /** A linked team repository to work on; null works on the platform repository. */

@@ -469,6 +469,11 @@ async def create_session(body: SessionCreate, principal: Principal = Depends(req
     workspace = await db.get_workspace(body.workspace_id)
     if workspace is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workspace not found")
+    if body.no_push and (body.open_pull_request or body.deploy_to_dev or body.screenshot_paths):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Private sessions cannot open a pull request, deploy, or capture deployed screenshots",
+        )
     if body.deploy_to_dev and not settings.deploy_enabled:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -517,6 +522,7 @@ async def create_session(body: SessionCreate, principal: Principal = Depends(req
             model=body.model,
             created_by=principal.username,
             open_pull_request=body.open_pull_request,
+            no_push=body.no_push,
             deploy_to_dev=body.deploy_to_dev,
             screenshot_paths=body.screenshot_paths,
             # An idle workspace that last worked on another repository moves

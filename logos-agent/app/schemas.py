@@ -130,6 +130,8 @@ class SessionCreate(BaseModel):
     model: str | None = Field(default=None, max_length=200)
     # Open a pull request when the work finishes and the diff is non-empty.
     open_pull_request: bool = True
+    # Manual private work may read its repository but must not publish to GitHub.
+    no_push: bool = False
     # Deploy the resulting build to the dev environment after the PR is opened.
     # Refused unless the service is configured with deploy_enabled.
     deploy_to_dev: bool = False
