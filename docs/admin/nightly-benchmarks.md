@@ -119,7 +119,11 @@ The scheduler checks worker limits and excludes configurations it already tried.
 | `max_num_seqs` | Initial options for an automatic limit include 4 and 8. |
 | `max_num_batched_tokens` | Initial options for an automatic limit include 2048 and 4096. |
 | `kv_cache_dtype` | `auto` or `fp8` on supported CUDA deployments of Qwen2.5-Coder 7B AWQ, Qwen2.5-Coder 14B AWQ, and Qwen3.8-27B. |
-| `speculative_config` | Off or MTP with 3 draft tokens on supported Qwen3.8-27B deployments. This model has a built-in MTP draft head. |
+| `enable_prefix_caching` | Enabled or disabled on supported CUDA deployments of Qwen2.5-Coder 7B and 14B AWQ. |
+| `speculative_config` | Off or N-gram with up to 3 draft tokens on supported CUDA deployments of Qwen2.5-Coder 7B and 14B AWQ. Off or MTP with 3 draft tokens on supported Qwen3.8-27B deployments. |
+
+The N-gram preset looks for matching sequences of 2 to 5 tokens in the request and generated text.
+Both Qwen2.5-Coder settings can be tested on the benchmark worker with its existing model.
 
 The scheduler calculates numerical options around the best measured configuration.
 It tests in an untried direction or reduces the step within a measured interval.

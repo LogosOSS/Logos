@@ -3,7 +3,7 @@ import copy
 import pytest
 
 from logos.benchmarks import optimization as optimizer
-from logos.benchmarks.configuration import QWEN_MTP_CONFIG
+from logos.benchmarks.configuration import NGRAM_CONFIG, QWEN_MTP_CONFIG
 
 
 def measured(identifier, throughput, *, sequences=16):
@@ -172,6 +172,16 @@ def adoption_report():
             "confirms_benchmark_id": 11,
         },
     ]
+
+
+@pytest.mark.parametrize("parameters", [{"enable_prefix_caching": False}, {"speculative_config": NGRAM_CONFIG}])
+def test_adoption_preserves_each_categorical_override(parameters):
+    baseline, candidate, confirmation = measured(10, 40), measured(11, 55), measured(12, 50)
+    for run in (candidate, confirmation):
+        run["configuration"]["nightly"]["parameters"] = parameters
+    search = {"series_key": "series", "workload_id": "a" * 64}
+    adoption = optimizer.adoption_candidate(search, [baseline, candidate, confirmation], adoption_report())
+    assert adoption["parameters"] == parameters
 
 
 @pytest.mark.parametrize("throughput", [39, 40, 41])

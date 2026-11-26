@@ -12,6 +12,7 @@ from sqlalchemy import bindparam, create_engine, text
 from sqlalchemy.orm import Session
 
 from logos.benchmarks import nightly_store as store
+from logos.benchmarks.configuration import NGRAM_CONFIG
 from logos.benchmarks.nightly import CAPACITY_WAITING, NIGHTLY_WINDOW
 from logos.maintenance_window import MaintenanceWindow
 
@@ -131,6 +132,7 @@ def test_active_nightly_trial_is_scoped_to_its_live_job_and_preserves_the_round_
             "max_num_seqs": 5,
             "extra_args": ["--max-num-batched-tokens", "2560", "--token=do-not-return"],
             "kv_cache_dtype": "fp8_e4m3",
+            "enable_prefix_caching": True,
         },
     }
     job = {
@@ -142,7 +144,8 @@ def test_active_nightly_trial_is_scoped_to_its_live_job_and_preserves_the_round_
             "max_num_seqs": 2,
             "max_num_batched_tokens": 2560,
             "kv_cache_dtype": "fp8",
-            "speculative_config": '{"method":"mtp","num_speculative_tokens":3}',
+            "enable_prefix_caching": False,
+            "speculative_config": NGRAM_CONFIG,
             "hf_overrides": {"token": "do-not-return"},
         },
     }
@@ -161,7 +164,8 @@ def test_active_nightly_trial_is_scoped_to_its_live_job_and_preserves_the_round_
         "baseline_id": 71,
         "changes": [
             {"parameter": "max_num_seqs", "before": 5, "after": 2},
-            {"parameter": "speculative_config", "before": "Off", "after": "3 draft tokens"},
+            {"parameter": "enable_prefix_caching", "before": True, "after": False},
+            {"parameter": "speculative_config", "before": "Off", "after": "N-gram · 3 draft tokens"},
         ],
     }
     assert store.active_trial(31, 1, 41, "old-session") is None

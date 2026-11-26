@@ -151,7 +151,8 @@ export class DeployedConfiguration implements OnDestroy {
     configuration: { serving: this.deployment()?.configured_settings },
   }).filter(item => item.captured));
   readonly keyParameters = computed(() => this.servingParameters()
-    .filter(item => ['max_num_seqs', 'max_num_batched_tokens'].includes(item.key)));
+    .filter(item => ['max_num_seqs', 'max_num_batched_tokens'].includes(item.key)
+      || (item.captured && ['enable_prefix_caching', 'speculative_config'].includes(item.key))));
   readonly hasUnreportedBatchingLimit = computed(() => this.keyParameters().some(item => !item.captured));
   readonly selection = computed(() => this.state()?.selection);
   readonly excludedComparisons = computed(() => this.selection()?.comparisons.filter(comparison => comparison.issues.length) ?? []);

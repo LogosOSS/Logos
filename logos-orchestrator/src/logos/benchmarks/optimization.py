@@ -8,7 +8,7 @@ from logos.benchmarks.configuration import ServingOverrides, canonical_kv_cache_
 from logos.benchmarks.workloads import canonical
 
 BATCHING_KEYS = {"max_num_seqs", "max_num_batched_tokens"}
-VARIED_KEYS = BATCHING_KEYS | {"kv_cache_dtype", "speculative_config"}
+VARIED_KEYS = BATCHING_KEYS | {"kv_cache_dtype", "enable_prefix_caching", "speculative_config"}
 
 
 def context(current, snapshot, workload, previous):
@@ -262,6 +262,8 @@ def adoption_candidate(search, runs, report):
         if any(type(parameters[key]) is not int or parameters[key] <= 0 for key in BATCHING_KEYS & parameters.keys()):
             continue
         if parameters.get("kv_cache_dtype", "auto") not in {"auto", "fp8"}:
+            continue
+        if type(parameters.get("enable_prefix_caching", False)) is not bool:
             continue
         try:
             overrides = ServingOverrides(**parameters)

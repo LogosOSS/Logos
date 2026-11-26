@@ -4937,6 +4937,7 @@ class LaneManager:
             loaded_models=loaded_models,
             lane_config=lc,
             nightly_vllm_version=nightly_vllm_version,
+            nightly_prefix_caching_checked=nightly_vllm_version is not None,
             nightly_blocked_vllm_fields=nightly_blocked_vllm_fields,
             backend_metrics=backend_metrics,
             reported_vram_mb=vram_reported_mb,
@@ -4959,8 +4960,11 @@ class LaneManager:
         }
         fields = {"kv_cache_dtype", "speculative_config"}
         if flags & {"--config", "--kv-transfer-config", "--attention-config", "--attention-backend"}:
-            return sorted(fields)
-        return sorted(field for field in fields if "--" + field.replace("_", "-") in flags)
+            return sorted(fields | {"enable_prefix_caching"})
+        blocked = {field for field in fields if "--" + field.replace("_", "-") in flags}
+        if flags & {"--enable-prefix-caching", "--no-enable-prefix-caching"}:
+            blocked.add("enable_prefix_caching")
+        return sorted(blocked)
 
     async def _query_process_vram_map(self, pids: list[int]) -> dict[int, float]:
         """Query per-process VRAM from nvidia-smi for the given PIDs."""

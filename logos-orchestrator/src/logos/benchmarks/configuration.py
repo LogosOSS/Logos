@@ -1,11 +1,29 @@
 """Validated settings for the next benchmark, independent of stored results."""
 
+import json
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 QWEN_MTP_CONFIG = '{"method":"mtp","num_speculative_tokens":3}'
 QWEN_MTP_MODEL = "Qwen/Qwen3.8-27B"
+NGRAM_CONFIG = '{"method":"ngram","num_speculative_tokens":3,"prompt_lookup_min":2,"prompt_lookup_max":5}'
+SPECULATIVE_LABELS = {"": "Off", QWEN_MTP_CONFIG: "MTP · 3 draft tokens", NGRAM_CONFIG: "N-gram · 3 draft tokens"}
+
+
+def canonical_speculative_config(value: str | None) -> str:
+    """Recognize only the tuning presets and keep arbitrary worker arguments private."""
+    if not value:
+        return ""
+    try:
+        config = json.loads(value)
+    except (TypeError, ValueError):
+        return "custom"
+    if not isinstance(config, dict) or any(type(setting) not in (str, int) for setting in config.values()):
+        return "custom"
+    if config.get("method") == "qwen3_5_mtp":
+        config["method"] = "mtp"
+    return next((preset for preset in (QWEN_MTP_CONFIG, NGRAM_CONFIG) if config == json.loads(preset)), "custom")
 
 
 def canonical_kv_cache_dtype(value: str | None) -> str:
@@ -48,7 +66,7 @@ class ServingOverrides(BaseModel):
     enforce_eager: bool | None = None
     disable_custom_all_reduce: bool | None = None
     hf_overrides: dict | None = None
-    speculative_config: Literal["", QWEN_MTP_CONFIG] | None = None
+    speculative_config: Literal["", QWEN_MTP_CONFIG, NGRAM_CONFIG] | None = None
 
 
 class BenchmarkSettings(BaseModel):

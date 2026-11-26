@@ -550,8 +550,14 @@ def _speculative_decoding_requested(vc: Any) -> bool:
     """
     if vc is None:
         return False
-    if str(getattr(vc, "speculative_config", "") or "").strip():
-        return True
+    speculative_config = str(getattr(vc, "speculative_config", "") or "").strip()
+    if speculative_config:
+        try:
+            config = json.loads(speculative_config)
+        except ValueError:
+            return True
+        if not isinstance(config, dict) or config.get("method") != "ngram":
+            return True
     return any(str(a).startswith("--speculative-config") for a in (getattr(vc, "extra_args", None) or []))
 
 

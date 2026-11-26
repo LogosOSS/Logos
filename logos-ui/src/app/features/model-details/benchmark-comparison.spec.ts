@@ -76,6 +76,26 @@ describe('Benchmark parameter isolation', () => {
     expect(isolatedRuns([baseline, sequences, tokens, both], baseline, 'max_num_batched_tokens').map(row => row.id)).toEqual([1, 3]);
   });
 
+  it('isolates prefix caching and N-gram on the same saved workload', () => {
+    const preset = '{"method":"ngram","num_speculative_tokens":3,"prompt_lookup_min":2,"prompt_lookup_max":5}';
+    const variant = (id: number, prefix: boolean, speculative?: string) => {
+      const result = run(id);
+      result.configuration['workload'] = { id: 'frozen', request_count: 50 };
+      result.configuration['nightly'] = { series_key: 'nightly' };
+      result.configuration['serving'] = {
+        ...(result.configuration['serving'] as object),
+        max_num_seqs: 5, max_num_batched_tokens: 2560, enable_prefix_caching: prefix,
+        ...(speculative === undefined ? {} : { speculative_config: speculative }),
+      };
+      return result;
+    };
+    const baseline = variant(1, true, ''), prefix = variant(2, false, ''), ngram = variant(3, true, preset);
+    const all = [baseline, prefix, ngram, variant(4, false, preset), variant(5, true)];
+    expect(isolatedRuns(all, baseline, 'enable_prefix_caching').map(row => row.id)).toEqual([2, 1]);
+    expect(isolatedRuns(all, baseline, 'speculative_config').map(row => row.id)).toEqual([3, 1]);
+    expect(isolatedRuns(all, baseline, 'max_num_seqs').map(row => row.id)).toEqual([1]);
+  });
+
   it('compares request body options, ignoring object key order and job-specific transport details', () => {
     const baseline = run(1);
     const other = run(2, 2, 4);

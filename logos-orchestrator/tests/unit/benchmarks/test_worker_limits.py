@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi import HTTPException
 
-from logos.benchmarks.configuration import QWEN_MTP_CONFIG, QWEN_MTP_MODEL, ServingOverrides
+from logos.benchmarks.configuration import NGRAM_CONFIG, QWEN_MTP_CONFIG, QWEN_MTP_MODEL, ServingOverrides
 from logos.benchmarks.worker_limits import (
     nightly_tuning_configuration,
     nightly_variation_values,
@@ -56,6 +56,7 @@ def nightly_snapshot(model=QWEN_MTP_MODEL, *, version="0.34.0", capability="12.0
     status["runtime"]["lanes"][0].update(
         model=model,
         nightly_vllm_version=version,
+        nightly_prefix_caching_checked=True,
         nightly_blocked_vllm_fields=list(blocked),
         lane_config={"vllm": True, "gpu_devices": "0", "vllm_config": config or {}},
     )
@@ -77,12 +78,53 @@ def test_nightly_values_use_the_lane_gpus_and_resolve_tuning_defaults():
 
 
 @pytest.mark.parametrize("size", [7, 14])
-def test_smaller_qwen_variants_offer_cache_precision_without_mtp(size):
+def test_smaller_qwen_variants_offer_cache_precision_and_ngram_without_mtp(size):
     model = f"Qwen/Qwen2.5-Coder-{size}B-Instruct-AWQ"
     limits = worker_limits(nightly_snapshot(model), model)
-    assert nightly_variation_values(limits) == {"kv_cache_dtype": ("auto", "fp8")}
+    assert nightly_variation_values(limits) == {
+        "kv_cache_dtype": ("auto", "fp8"),
+        "speculative_config": ("", NGRAM_CONFIG),
+    }
     with pytest.raises(ValueError, match="does not support"):
         validate_worker_overrides(ServingOverrides(speculative_config=QWEN_MTP_CONFIG), limits)
+
+
+@pytest.mark.parametrize("size", [7, 14])
+def test_turing_qwen_offers_prefix_caching_and_ngram(size):
+    model = f"Qwen/Qwen2.5-Coder-{size}B-Instruct-AWQ"
+    config = {"attention_backend": "TRITON_ATTN", "enable_prefix_caching": True, "speculative_config": ""}
+    status = nightly_snapshot(model, capability="7.5", config=config)
+    limits = worker_limits(status, model)
+    assert nightly_variation_values(limits) == {
+        "enable_prefix_caching": (False, True),
+        "speculative_config": ("", NGRAM_CONFIG),
+    }
+    overrides = ServingOverrides(enable_prefix_caching=False, speculative_config=NGRAM_CONFIG)
+    validate_worker_overrides(overrides, limits, nightly=True)
+    # Restart validation must use the original config even when the live lane is already running the trial.
+    config.update(enable_prefix_caching=False, speculative_config=NGRAM_CONFIG)
+    assert nightly_variation_values(worker_limits(status, model)) == nightly_variation_values(limits)
+    validate_worker_overrides(
+        ServingOverrides(enable_prefix_caching=True, speculative_config=""),
+        worker_limits(
+            status,
+            model,
+            baseline_config=config,
+        ),
+        nightly=True,
+    )
+
+
+@pytest.mark.parametrize("checked,blocked", [(False, ()), (True, ("enable_prefix_caching",))])
+def test_nightly_prefix_override_requires_unambiguous_worker_telemetry(checked, blocked):
+    model = "Qwen/Qwen2.5-Coder-14B-Instruct-AWQ"
+    status = nightly_snapshot(model, capability="7.5", blocked=blocked, config={"enable_prefix_caching": True})
+    status["runtime"]["lanes"][0]["nightly_prefix_caching_checked"] = checked
+    limits = worker_limits(status, model)
+    assert nightly_variation_values(limits) == {"speculative_config": ("", NGRAM_CONFIG)}
+    with pytest.raises(ValueError, match="prefix caching"):
+        validate_worker_overrides(ServingOverrides(enable_prefix_caching=False), limits, nightly=True)
+    validate_worker_overrides(ServingOverrides(enable_prefix_caching=False), limits)
 
 
 @pytest.mark.parametrize(

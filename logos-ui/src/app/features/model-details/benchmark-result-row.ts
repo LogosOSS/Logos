@@ -1,5 +1,6 @@
 import { ModelProviderBenchmark } from '../../shared/models/provider.model';
 import { comparisonValue } from './benchmark-comparison';
+import { speculativeDecodingLabel } from './benchmark-configuration';
 
 export interface NightlyParameterChange {
   parameter: string;
@@ -11,23 +12,13 @@ const labels = new Map([
   ['max_num_seqs', 'Sequences'],
   ['max_num_batched_tokens', 'Batch tokens'],
   ['kv_cache_dtype', 'KV cache dtype'],
+  ['enable_prefix_caching', 'Prefix caching'],
   ['speculative_config', 'Speculative decoding'],
 ]);
 
 function parameterValue(parameter: string, value: unknown): string {
-  if (parameter === 'speculative_config') {
-    if (value === '' || value == null) return 'Off';
-    if (typeof value === 'string') {
-      if (/^\d+ draft tokens?$/.test(value)) return `MTP · ${value}`;
-      try {
-        const config = JSON.parse(value);
-        if (['mtp', 'qwen3_5_mtp'].includes(config?.method) && Number.isInteger(config?.num_speculative_tokens)) {
-          const count = config.num_speculative_tokens;
-          return `MTP · ${count} draft ${count === 1 ? 'token' : 'tokens'}`;
-        }
-      } catch { /* Historical values can be plain text. */ }
-    }
-  }
+  if (parameter === 'speculative_config') return speculativeDecodingLabel(value ?? '');
+  if (parameter === 'enable_prefix_caching') return value === true ? 'Enabled' : value === false ? 'Disabled' : 'Not reported';
   if (parameter === 'kv_cache_dtype' && value === 'fp8_e4m3') return 'fp8';
   if (parameter === 'max_num_batched_tokens' && value == null) return 'Not reported';
   if (value == null || value === '' || value === 'auto' || (parameter === 'max_num_seqs' && value === 0)) return 'Auto';
@@ -67,7 +58,9 @@ export function benchmarkResultRow(run: ModelProviderBenchmark, runs: readonly M
   const requested = run.configuration['requested_overrides'] as Record<string, unknown> | undefined;
   const parameterChanges = nightly ? recordedNightlyChanges(run) : [];
   const changes = nightly ? parameterChanges.map(change => `${change.label}: ${change.before} → ${change.after}`)
-    : Object.entries(requested ?? {}).map(([key, value]) => `${labels.get(key) ?? key} → ${typeof value === 'object' ? JSON.stringify(value) : value}`);
+    : Object.entries(requested ?? {}).map(([key, value]) => `${labels.get(key) ?? key} → ${
+      key === 'enable_prefix_caching' || key === 'speculative_config' ? parameterValue(key, value)
+        : typeof value === 'object' ? JSON.stringify(value) : value}`);
   return { run, runId: run.id, measuredFrom: Number.isFinite(measured) ? measured : null,
     before, after, isBaseline, measurement, changes,
     selectionNote: nightly?.eligible_for_selection === false ? 'Not eligible for automatic adoption: ' + (nightly.selection_issues?.join(' · ') || 'workload, output completeness, token counts or p95 latency failed the comparison checks.') : null, baselineId: nightly?.baseline_id,

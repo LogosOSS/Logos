@@ -2,14 +2,14 @@
 
 import re
 
-from .configuration import QWEN_MTP_CONFIG, QWEN_MTP_MODEL, ServingOverrides, canonical_kv_cache_dtype
+from .configuration import NGRAM_CONFIG, QWEN_MTP_CONFIG, QWEN_MTP_MODEL, ServingOverrides, canonical_kv_cache_dtype
 from .guidellm_runner import benchmark_model_lane, lane_serving_configuration
 
-_FP8_MODELS = {
-    QWEN_MTP_MODEL,
+_QWEN_CODER_AWQ_MODELS = {
     "Qwen/Qwen2.5-Coder-7B-Instruct-AWQ",
     "Qwen/Qwen2.5-Coder-14B-Instruct-AWQ",
 }
+_FP8_MODELS = _QWEN_CODER_AWQ_MODELS | {QWEN_MTP_MODEL}
 
 
 def worker_limits(
@@ -72,7 +72,7 @@ def worker_limits(
     }
 
 
-def _nightly_vllm_choices(model: str, lane: dict, devices: list, current: dict) -> dict[str, tuple[str, ...]]:
+def _nightly_vllm_choices(model: str, lane: dict, devices: list, current: dict) -> dict[str, tuple[str | bool, ...]]:
     config = lane.get("lane_config") or {}
     pins = str(config.get("gpu_devices") or "").split(",")
     version = re.match(r"v?(\d+)\.(\d+)\.(\d+)", str(lane.get("nightly_vllm_version") or ""))
@@ -87,29 +87,45 @@ def _nightly_vllm_choices(model: str, lane: dict, devices: list, current: dict) 
     pinned_caps = [str(capabilities.get(pin.strip())) for pin in pins]
     if any(not re.fullmatch(r"[1-9][0-9]*\.[0-9]+", cap) for cap in pinned_caps):
         return {}
-    min_sm = min(int(cap.split(".")[0]) for cap in pinned_caps)
-    if tuple(map(int, version.groups())) < (0, 26, 0) or lane.get("nightly_blocked_vllm_fields"):
+    min_cap = min(tuple(map(int, cap.split("."))) for cap in pinned_caps)
+    min_sm = min_cap[0]
+    if tuple(map(int, version.groups())) < (0, 26, 0):
         return {}
+    blocked = set(lane.get("nightly_blocked_vllm_fields") or ())
     backend = current.get("attention_backend") or ""
     cache = canonical_kv_cache_dtype(current.get("kv_cache_dtype"))
     speculative = current.get("speculative_config", "")
-    speculative_modes = ("", QWEN_MTP_CONFIG)
+    speculative_modes = ("", QWEN_MTP_CONFIG if model == QWEN_MTP_MODEL else NGRAM_CONFIG)
     if (
-        min_sm < 8
-        or backend not in {"", "FLASHINFER", "FLASH_ATTN", "TRITON_ATTN"}
-        or cache not in {"auto", "fp8"}
+        backend not in ({"", "FLASHINFER", "FLASH_ATTN", "TRITON_ATTN"} if min_sm >= 8 else {"", "TRITON_ATTN"})
+        or cache not in ({"auto", "fp8"} if min_sm >= 8 else {"auto"})
         or speculative not in speculative_modes
+        or blocked - {"enable_prefix_caching"}
     ):
         return {}
     choices = {}
-    if model in _FP8_MODELS and current.get("dtype") != "float32" and (backend != "FLASH_ATTN" or min_sm >= 9):
+    if (
+        model in _FP8_MODELS
+        and min_sm >= 8
+        and current.get("dtype") != "float32"
+        and (backend != "FLASH_ATTN" or min_sm >= 9)
+    ):
         choices["kv_cache_dtype"] = ("auto", "fp8")
-    if model == QWEN_MTP_MODEL:
+    if (
+        model in _QWEN_CODER_AWQ_MODELS
+        and lane.get("nightly_prefix_caching_checked") is True
+        and "enable_prefix_caching" not in blocked
+        and type(current.get("enable_prefix_caching")) is bool
+    ):
+        choices["enable_prefix_caching"] = (False, True)
+    if (model == QWEN_MTP_MODEL and min_sm >= 8) or (
+        model in _QWEN_CODER_AWQ_MODELS and min_cap >= (7, 5) and current.get("pipeline_parallel_size", 1) == 1
+    ):
         choices["speculative_config"] = speculative_modes
     return choices
 
 
-def nightly_variation_values(limits: dict) -> dict[str, tuple[str, ...]]:
+def nightly_variation_values(limits: dict) -> dict[str, tuple[str | bool, ...]]:
     """Return supported non-batching parameter values for this worker and lane."""
     return limits.get("nightly_vllm_choices", {})
 
@@ -127,16 +143,15 @@ def nightly_tuning_configuration(limits: dict) -> dict:
 
 def validate_worker_overrides(overrides: ServingOverrides, limits: dict, *, nightly: bool = False) -> None:
     requested = overrides.model_dump(exclude_none=True)
-    if "speculative_config" in requested and requested["speculative_config"] not in nightly_variation_values(
-        limits
-    ).get("speculative_config", ()):
-        raise ValueError("This worker or lane does not support the requested Nightly speculative decoding mode.")
-    if (
-        nightly
-        and "kv_cache_dtype" in requested
-        and requested["kv_cache_dtype"] not in nightly_variation_values(limits).get("kv_cache_dtype", ())
+    choices = nightly_variation_values(limits)
+    if "speculative_config" in requested and requested["speculative_config"] not in choices.get(
+        "speculative_config", ()
     ):
-        raise ValueError("This worker or lane does not support the requested Nightly KV cache dtype.")
+        raise ValueError("This worker or lane does not support the requested Nightly speculative decoding mode.")
+    if nightly:
+        for key, label in (("kv_cache_dtype", "KV cache dtype"), ("enable_prefix_caching", "prefix caching mode")):
+            if key in requested and requested[key] not in choices.get(key, ()):
+                raise ValueError(f"This worker or lane does not support the requested Nightly {label}.")
     if not requested:
         restriction = limits.get("attention_backend_restrictions", {}).get(limits["current"].get("attention_backend"))
         if restriction:
@@ -158,6 +173,8 @@ def validate_worker_overrides(overrides: ServingOverrides, limits: dict, *, nigh
     if count == 0:
         raise ValueError("This worker has no available NVIDIA GPUs for this model.")
     effective = {**limits["current"], **requested}
+    if requested.get("speculative_config") == NGRAM_CONFIG and int(effective.get("pipeline_parallel_size") or 1) != 1:
+        raise ValueError("Nightly N-gram decoding requires pipeline parallel size 1.")
     backend = effective.get("attention_backend")
     restriction = limits.get("attention_backend_restrictions", {}).get(backend)
     if restriction:

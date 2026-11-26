@@ -695,7 +695,11 @@ const SHOTS = [
     file: "roles/logos-admin-benchmark-comparison.png",
     user: ADMIN,
     full: true,
-    go: (p, ids) => analysisView(p, ids, "Compare parameter values"),
+    go: async (p, ids) => {
+      await analysisView(p, ids, "Compare parameter values");
+      await p.getByRole("combobox", { name: "Parameter", exact: true }).selectOption("speculative_config");
+      await p.getByRole("figure", { name: /N-gram decoding/ }).waitFor();
+    },
   },
   {
     file: "roles/logos-admin-benchmark-configuration.png",
