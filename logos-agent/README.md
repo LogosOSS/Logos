@@ -172,7 +172,9 @@ own, fits in the budget (`app/memory_budget.py`).
 A manually queued session can request its own limit in MiB in **New session**.
 A blank field uses the runner default. A custom limit must fit within the
 known host and runner memory budget on its own; it can wait until the
-necessary memory is free. Explicit retries keep the override. The runner
+necessary memory is free. Custom limits use the actual reserved total rather
+than the count derived from the default, while still respecting the configured
+parallel cap and operator controls. Explicit retries keep the override. The runner
 default and automated session limits are unchanged.
 
 If Docker cleanup fails, a container keeps its reservation until Docker

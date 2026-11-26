@@ -250,15 +250,14 @@ async def get_capacity(_: Principal = Depends(require_agent_operator)) -> Capaci
     running = counts.get(SessionStatus.RUNNING.value, 0)
     paused = counts.get(SessionStatus.PAUSED.value, 0)
     control = await controls.current()
-    may_start, reason = capacity.start_decision(
-        reading, running=running, paused=paused, max_parallel=control.max_parallel
-    )
-    blocked = control.admission_block()
+    next_session = await db.next_queued_session() if counts.get(SessionStatus.QUEUED.value, 0) else None
+    memory_override = (next_session or {}).get("memory_override_mb")
+    max_parallel = control.parallel_for(memory_override)
+    may_start, reason = capacity.start_decision(reading, running=running, paused=paused, max_parallel=max_parallel)
+    blocked = control.admission_block(memory_override)
     if blocked:
         may_start, reason = False, blocked
     elif may_start:
-        next_session = await db.next_queued_session() if counts.get(SessionStatus.QUEUED.value, 0) else None
-        memory_override = (next_session or {}).get("memory_override_mb")
         memory_block = await memory_admission_block(control, override_mb=memory_override)
         if memory_block:
             may_start, reason = False, memory_block
@@ -284,7 +283,7 @@ async def get_capacity(_: Principal = Depends(require_agent_operator)) -> Capaci
         sessions_running=running,
         sessions_queued=counts.get(SessionStatus.QUEUED.value, 0),
         sessions_paused=paused,
-        max_parallel=control.max_parallel,
+        max_parallel=max_parallel,
         may_start=may_start,
         reason=reason,
     )

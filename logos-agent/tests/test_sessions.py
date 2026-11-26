@@ -15,7 +15,6 @@ from functools import partial
 from pathlib import Path
 
 import pytest
-
 from app.config import settings
 from app.schemas import (
     ACTIVE_STATUSES,
@@ -5422,9 +5421,22 @@ class TestAdmissionMeasuresTheRightLane:
     it is about to claim would actually be served by.
     """
 
-    @pytest.mark.parametrize("override_mb", [None, 6144])
-    async def test_the_lane_and_memory_measured_are_the_candidate_s(self, monkeypatch, override_mb):
-        from app import capacity, memory_budget, model_policy, sessions
+    @pytest.mark.parametrize(
+        ("override_mb", "budget_mb", "mode", "parallel_override", "admitted"),
+        [
+            (None, 8192, "running", None, True),
+            (6144, 8192, "running", None, True),
+            (1024, 3072, "running", None, True),
+            (None, 3072, "running", None, False),
+            (1024, 3072, "running", 0, False),
+            (1024, 3072, "paused", None, False),
+            (1024, 3072, "draining", None, False),
+        ],
+    )
+    async def test_the_lane_and_memory_measured_are_the_candidate_s(
+        self, monkeypatch, override_mb, budget_mb, mode, parallel_override, admitted
+    ):
+        from app import capacity, controls, memory_budget, model_policy, sessions
 
         policy = model_policy.ModelPolicy(
             local_models=frozenset({"model-a", "model-b"}),
@@ -5440,7 +5452,12 @@ class TestAdmissionMeasuresTheRightLane:
         )
         lanes: list = []
         claims: list = []
-        memory_budget.set_for_tests(memory_budget.Budget(8192, 16384, "test"))
+        memory_budget.set_for_tests(memory_budget.Budget(budget_mb, 16384, "test"))
+
+        async def current():
+            return controls.Controls(mode=mode, max_parallel_override=parallel_override, session_memory_override=4096)
+
+        monkeypatch.setattr(controls, "current", current)
 
         async def reserved(_default):
             return 1024
@@ -5460,7 +5477,9 @@ class TestAdmissionMeasuresTheRightLane:
         async def claim(_limit, *, include_triggered: bool = True):
             return []
 
-        async def claim_session(_session_id, *, max_active=None, memory_mb=None):
+        async def claim_session(_session_id, *, max_active=None, memory_mb=None, **reservation):
+            assert reservation["memory_budget_mb"] == budget_mb
+            assert reservation["legacy_default_mb"] == sessions.settings.session_memory_mb
             claims.append(memory_mb)
             return None
 
@@ -5481,8 +5500,9 @@ class TestAdmissionMeasuresTheRightLane:
         # decides whether to hand capacity back — and admission measures the
         # one model it is about to admit.
         assert lanes[0] == policy.local_deployments
-        assert lanes[-1] == frozenset({("15", "2")})
-        assert claims == [override_mb or sessions.settings.session_memory_mb]
+        if admitted:
+            assert lanes[-1] == frozenset({("15", "2")})
+        assert claims == ([override_mb or 4096] if admitted else [])
 
     async def test_an_unrelated_model_without_telemetry_does_not_hold_back_the_default(self, monkeypatch):
         """A queued session on the default alias starts while another lane of the key is unknown."""

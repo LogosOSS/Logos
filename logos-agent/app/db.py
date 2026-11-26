@@ -1293,7 +1293,12 @@ async def next_queued_session(*, include_triggered: bool = True) -> dict[str, An
 
 
 async def claim_session(
-    session_id: int, *, max_active: int | None = None, memory_mb: int | None = None
+    session_id: int,
+    *,
+    max_active: int | None = None,
+    memory_mb: int | None = None,
+    memory_budget_mb: int | None = None,
+    legacy_default_mb: int | None = None,
 ) -> dict[str, Any] | None:
     """Take this exact queued session, or nothing.
 
@@ -1316,10 +1321,13 @@ async def claim_session(
 
     ``memory_mb`` is written in the same transaction: from the moment the
     row is ``starting`` the memory budget counts what the session's
-    containers will actually get.
+    containers will actually get. If a budget is known, lock admission and
+    compare against all occupying rows, with a fallback for older sessions.
     """
+    if memory_budget_mb is not None and not (memory_mb and legacy_default_mb):
+        raise ValueError("a memory budget requires a session limit and a legacy fallback")
     async with sessionmaker()() as db:
-        if max_active is not None:
+        if max_active is not None or memory_budget_mb is not None:
             # Serialize claims across replicas so two schedulers cannot
             # both count the same last free slot. Held through the claim.
             await db.execute(text("SELECT pg_advisory_xact_lock(hashtext('logos-agent-admission'))"))
@@ -1365,6 +1373,14 @@ async def claim_session(
                                   WHERE active.status = ANY(:occupying)) < CAST(:max_active AS INTEGER)
                            )
                        AND (
+                             CAST(:memory_budget_mb AS BIGINT) IS NULL
+                             OR COALESCE((
+                                 SELECT SUM(COALESCE(active.memory_mb, CAST(:legacy_default_mb AS INTEGER)))
+                                   FROM agent_sessions active
+                                  WHERE active.status = ANY(:occupying)
+                             ), 0) + CAST(:memory_mb AS INTEGER) <= CAST(:memory_budget_mb AS BIGINT)
+                           )
+                       AND (
                              s.trigger_ref IS NULL
                              OR NOT EXISTS (
                                  SELECT 1 FROM agent_sessions manual
@@ -1383,6 +1399,9 @@ async def claim_session(
                 {
                     "session_id": session_id,
                     "max_active": max_active,
+                    "memory_mb": memory_mb,
+                    "memory_budget_mb": memory_budget_mb,
+                    "legacy_default_mb": legacy_default_mb,
                     "occupying": [
                         SessionStatus.STARTING.value,
                         SessionStatus.RUNNING.value,

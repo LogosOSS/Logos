@@ -4,7 +4,6 @@ from functools import partial
 from unittest.mock import AsyncMock
 
 import pytest
-
 from app import controls, docker_engine, memory_budget, sessions
 
 # Taken before the shared fixture replaces it for every other test.
