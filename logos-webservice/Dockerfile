@@ -8,6 +8,9 @@ FROM maven:3.10-eclipse-temurin-25@sha256:4ed0327629de542aefd6ea9fd5da0c52e80143
 COPY install-temurin.sh /tmp/install-temurin.sh
 RUN sh /tmp/install-temurin.sh jdk && rm /tmp/install-temurin.sh
 ENV JAVA_VERSION=jdk-25.0.5.1+2
+# Allow cold CI builds more time to recover from transient Maven Central
+# throttling. Resolver honors Retry-After and still fails when retries run out.
+ENV MAVEN_ARGS="-Daether.transport.http.retryHandler.count=5"
 WORKDIR /build
 COPY pom.xml .
 
