@@ -23,7 +23,6 @@ from logos_worker_node.models import (
     WorkerRuntimeStatus,
     merged_vllm_engine_overrides,
 )
-from logos_worker_node.node_config import NIGHTLY_BENCHMARK_CAPABILITIES
 from logos_worker_node.vllm_process import resolve_startup_gmu
 
 logger = logging.getLogger(__name__)
@@ -331,16 +330,7 @@ async def build_runtime_status(app: FastAPI) -> WorkerRuntimeStatus:
     configured = _configured_vllm_by_model(cfg)
     startup_gmu = _startup_gmu_by_model(cfg, profiles_registry, devices)
 
-    nightly_opt_ins = {}
-    if cfg.logos:
-        for model in cfg.logos.configured_models:
-            capability = cfg.logos.capabilities_overrides.get(model, {})
-            enabled = [key for key in NIGHTLY_BENCHMARK_CAPABILITIES if capability.get(key) is True]
-            if enabled:
-                nightly_opt_ins[model] = enabled
-
     return WorkerRuntimeStatus(
-        nightly_benchmark_opt_ins=nightly_opt_ins,
         supports_nightly_gpu_budget=_supports_nightly_gpu_budget(cfg.worker.gpu_devices, devices),
         worker_name=cfg.worker.name,
         worker_id=bridge.worker_id,

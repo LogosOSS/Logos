@@ -119,16 +119,11 @@ The scheduler checks worker limits and excludes configurations it already tried.
 | `max_num_seqs` | Initial options for an automatic limit include 4 and 8. |
 | `max_num_batched_tokens` | Initial options for an automatic limit include 2048 and 4096. |
 | `kv_cache_dtype` | `auto` or `fp8` on supported CUDA deployments of Qwen2.5-Coder 7B AWQ, Qwen2.5-Coder 14B AWQ, and Qwen3.8-27B. |
-| `enable_prefix_caching` | Enabled or disabled on compatible CUDA deployments with `nightly_prefix_caching: true`. |
-| `speculative_config` | Off or N-gram with up to 3 draft tokens on compatible CUDA deployments with `nightly_ngram: true`. Off or MTP with 3 draft tokens on supported Qwen3.8-27B deployments. |
+| `enable_prefix_caching` | Enabled or disabled on compatible CUDA deployments. |
+| `speculative_config` | Off or N-gram with up to 3 draft tokens on compatible CUDA deployments. MTP with 3 draft tokens is also available on supported Qwen3.8-27B deployments. |
 
 The N-gram preset looks for matching sequences of 2 to 5 tokens in the request and generated text.
-To allow trials, open **Providers**, expand the worker, and select the model.
-Open **Edit configuration** or **Edit settings**, then find **Nightly benchmarks** under **Advanced settings**.
-Turn on **Allow prefix caching trials**, **Allow N-gram trials**, or both, and select **Save**.
-These switches let Nightly try the settings while keeping the current serving configuration in place.
-Nightly checks the vLLM version, GPU and serving configuration before it tests a value.
-You can also set the initial opt-ins under `logos.capabilities_models` in a new worker's `config.yml`.
+Logos automatically makes these variants available to the scheduler based on the GPU, vLLM version and serving configuration.
 
 The scheduler calculates numerical options around the best measured configuration.
 It tests in an untried direction or reduces the step within a measured interval.

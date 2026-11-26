@@ -60,8 +60,7 @@ def worker_limits(
         and runtime.get("gpu_devices", "all") != "none"
     )
     current = lane_serving_configuration(lane)
-    opt_ins = (runtime.get("nightly_benchmark_opt_ins") or {}).get(model, [])
-    night_choices = _nightly_vllm_choices(model, lane, devices, current, opt_ins) if known and not metal else {}
+    night_choices = _nightly_vllm_choices(model, lane, devices, current) if known and not metal else {}
     return {
         "metal_batching": metal,
         "gpus": gpus,
@@ -73,9 +72,7 @@ def worker_limits(
     }
 
 
-def _nightly_vllm_choices(
-    model: str, lane: dict, devices: list, current: dict, opt_ins: list[str]
-) -> dict[str, tuple[str | bool, ...]]:
+def _nightly_vllm_choices(model: str, lane: dict, devices: list, current: dict) -> dict[str, tuple[str | bool, ...]]:
     config = lane.get("lane_config") or {}
     pins = str(config.get("gpu_devices") or "").split(",")
     version = re.match(r"v?(\d+)\.(\d+)\.(\d+)", str(lane.get("nightly_vllm_version") or ""))
@@ -98,15 +95,11 @@ def _nightly_vllm_choices(
     backend = current.get("attention_backend") or ""
     cache = canonical_kv_cache_dtype(current.get("kv_cache_dtype"))
     speculative = current.get("speculative_config", "")
-    ngram_modes = ("", NGRAM_CONFIG)
-    mtp_modes = ("", QWEN_MTP_CONFIG)
-    ngram_supported = (
-        "nightly_ngram" in opt_ins
-        and min_cap >= (7, 5)
-        and current.get("pipeline_parallel_size", 1) == 1
-        and speculative in ngram_modes
-    )
-    speculative_modes = mtp_modes if model == QWEN_MTP_MODEL and not ngram_supported else ngram_modes
+    speculative_modes = ("",)
+    if model == QWEN_MTP_MODEL and min_sm >= 8:
+        speculative_modes += (QWEN_MTP_CONFIG,)
+    if min_cap >= (7, 5) and current.get("pipeline_parallel_size", 1) == 1:
+        speculative_modes += (NGRAM_CONFIG,)
     if (
         backend not in ({"", "FLASHINFER", "FLASH_ATTN", "TRITON_ATTN"} if min_sm >= 8 else {"", "TRITON_ATTN"})
         or cache not in ({"auto", "fp8"} if min_sm >= 8 else {"auto"})
@@ -123,16 +116,13 @@ def _nightly_vllm_choices(
     ):
         choices["kv_cache_dtype"] = ("auto", "fp8")
     if (
-        "nightly_prefix_caching" in opt_ins
-        and lane.get("nightly_prefix_caching_checked") is True
+        lane.get("nightly_prefix_caching_checked") is True
         and "enable_prefix_caching" not in blocked
         and type(current.get("enable_prefix_caching")) is bool
     ):
         choices["enable_prefix_caching"] = (False, True)
-    if ngram_supported:
-        choices["speculative_config"] = ngram_modes
-    elif model == QWEN_MTP_MODEL and min_sm >= 8:
-        choices["speculative_config"] = mtp_modes
+    if len(speculative_modes) > 1:
+        choices["speculative_config"] = speculative_modes
     return choices
 
 

@@ -27,6 +27,7 @@ CAPABILITY_CHECKS: dict[str, tuple[Callable[[Any], bool], str]] = {
     "gpu_devices": (lambda v: isinstance(v, str) and bool(_GPU_DEVICES.match(v.strip())), 'a list like "0,1"'),
     "base_residency_mb": (lambda v: _is_number(v) and v > 0, "a number > 0"),
     "min_context_fraction": (lambda v: _is_number(v) and 0 <= v <= 1, "a number from 0 to 1"),
+    # Accept saved legacy Nightly flags when admins edit the node configuration.
     "nightly_prefix_caching": (lambda v: isinstance(v, bool), "a boolean"),
     "nightly_ngram": (lambda v: isinstance(v, bool), "a boolean"),
 }

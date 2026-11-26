@@ -312,27 +312,6 @@ async def test_runtime_publishes_configured_vllm_and_startup_gmu():
 
 
 @pytest.mark.asyncio
-async def test_runtime_publishes_only_explicit_nightly_opt_ins():
-    config = AppConfig.model_validate(
-        {
-            "logos": {
-                "capabilities_models": [
-                    {"model": "org/cached", "nightly_prefix_caching": True, "nightly_ngram": False},
-                    {"model": "org/speculative", "nightly_ngram": True},
-                    {"model": "org/invalid", "nightly_ngram": "true"},
-                    "org/default",
-                ]
-            }
-        }
-    )
-    runtime = await build_runtime_status(_make_app([], _NvidiaCollector(), config=config))
-    assert runtime.nightly_benchmark_opt_ins == {
-        "org/cached": ["nightly_prefix_caching"],
-        "org/speculative": ["nightly_ngram"],
-    }
-
-
-@pytest.mark.asyncio
 async def test_runtime_startup_gmu_default_when_no_profile_or_override():
     config = AppConfig.model_validate({"logos": {"capabilities_models": ["org/unseen"]}})
     runtime = await build_runtime_status(_make_app([], _NvidiaCollector(), config=config))

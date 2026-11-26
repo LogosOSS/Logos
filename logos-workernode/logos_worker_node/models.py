@@ -1024,7 +1024,6 @@ class LaneTransferStatus(BaseModel):
 class WorkerRuntimeStatus(BaseModel):
     supports_benchmark_restart: bool = True
     supports_nightly_gpu_budget: bool = False
-    nightly_benchmark_opt_ins: dict[str, list[str]] = Field(default_factory=dict)
     worker_name: str
     worker_id: str
     service_version: str

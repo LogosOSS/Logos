@@ -13,13 +13,9 @@ logos:
   enabled: true
   capabilities_models:
     - model: Qwen/Qwen2.5-Coder-7B-Instruct-AWQ
-      nightly_prefix_caching: true
-      nightly_ngram: true
       tensor_parallel_size: 2
       kv_cache_memory_bytes: 4G
     - model: Qwen/Qwen2.5-Coder-14B-Instruct-AWQ
-      nightly_prefix_caching: true
-      nightly_ngram: true
       tensor_parallel_size: 2
       kv_cache_memory_bytes: 4G
     - model: solidrust/Mistral-7B-Instruct-v0.3-AWQ

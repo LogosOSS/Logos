@@ -684,14 +684,12 @@
     <div class="row-text">
       <label class="label" [for]="'adv-' + f.key">
         {{ f.label }}
-        @if (f.kind !== 'toggle') {
-          @if (isSet(f.key)) {
-            <span class="set-dot" title="Set" aria-label="Set"></span>
-          }
-          <code class="key">{{ f.key }}</code>
+        @if (isSet(f.key)) {
+          <span class="set-dot" title="Set" aria-label="Set"></span>
         }
+        <code class="key">{{ f.key }}</code>
       </label>
-      <p class="hint" [id]="'adv-help-' + f.key">{{ f.help }}</p>
+      <p class="hint">{{ f.help }}</p>
     </div>
     <div class="row-control">
       @switch (f.kind) {
@@ -701,22 +699,6 @@
             <option value="true">On</option>
             <option value="false">Off</option>
           </select>
-        }
-        @case ('toggle') {
-          @let enabled = adv()!.values[f.key] === 'true';
-          <button
-            type="button"
-            class="nightly-switch"
-            role="switch"
-            [id]="'adv-' + f.key"
-            [attr.aria-label]="f.label"
-            [attr.aria-describedby]="'adv-help-' + f.key"
-            [attr.aria-checked]="enabled"
-            (click)="setNightlyOptIn(f.key, !enabled)"
-          >
-            <span class="nightly-switch-track" aria-hidden="true"></span>
-            <span aria-hidden="true">{{ enabled ? 'On' : 'Off' }}</span>
-          </button>
         }
         @case ('select') {
           <select class="num sel" [id]="'adv-' + f.key" [value]="adv()!.values[f.key]" (change)="setAdv(f.key, $any($event.target).value)">
@@ -776,16 +758,14 @@
           </div>
         }
       }
-      @if (f.kind !== 'toggle') {
-        <button
-          class="link link--reset"
-          type="button"
-          [class.link--hidden]="!isSet(f.key)"
-          (click)="setAdv(f.key, '')"
-        >
-          Use default
-        </button>
-      }
+      <button
+        class="link link--reset"
+        type="button"
+        [class.link--hidden]="!isSet(f.key)"
+        (click)="setAdv(f.key, '')"
+      >
+        Use default
+      </button>
     </div>
     @if (advFieldError(f.key); as e) {
       <p class="ferr row-error" role="alert"><i class="pi pi-exclamation-circle" aria-hidden="true"></i>{{ e }}</p>

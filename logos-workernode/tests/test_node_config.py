@@ -114,10 +114,10 @@ def test_plans_put_capability_before_overrides_and_skip_bookkeeping(tmp_path):
     assert plans["org/plain"]["extra_args"] == ["--seed", "1"]
 
 
-def test_nightly_opt_ins_do_not_change_the_calibration_plan():
+def test_legacy_nightly_flags_do_not_change_the_calibration_plan():
     entry = {"model_name": "org/model", "capability": {"tensor_parallel_size": 1}, "overrides": {}}
-    opted_in = {**entry, "capability": {**entry["capability"], "nightly_prefix_caching": True, "nightly_ngram": True}}
-    assert plans_from_entries([entry], []) == plans_from_entries([opted_in], [])
+    legacy = {**entry, "capability": {**entry["capability"], "nightly_prefix_caching": True, "nightly_ngram": True}}
+    assert plans_from_entries([entry], []) == plans_from_entries([legacy], [])
 
 
 def test_plans_without_entries_are_empty():
