@@ -192,6 +192,16 @@ Select it to open **Gated model**. Select **Go to Hugging Face** to request acce
 
 ### Model details
 
+#### Access
+
+Open **Model Details → Access** to see which teams and custom keys can use the model.
+The **Model** column shows manual grants. **Azure auto** marks the hosting provider that makes the model available even without a manual grant.
+Use a provider checkbox to grant or revoke access to that provider for the team.
+
+![Model Details Access tab with separate automatic Azure and manual model grants](/img/roles/logos-admin-model-details-access.png)
+
+#### Performance
+
 Open **Model Details → Performance → Request measurements** to inspect request times.
 This view uses timing metadata. It does not use prompt or response content.
 The view shows local and cloud providers. It has one row for each

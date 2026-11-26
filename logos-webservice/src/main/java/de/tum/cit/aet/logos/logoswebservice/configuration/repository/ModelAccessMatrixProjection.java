@@ -11,4 +11,5 @@ public interface ModelAccessMatrixProjection {
     Boolean getModelGrant();
     Integer getProviderId();
     Boolean getProviderGrant();
+    Boolean getDeploymentAccess();
 }

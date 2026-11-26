@@ -29,6 +29,7 @@ import de.tum.cit.aet.logos.logoswebservice.configuration.repository.PermissionC
 import de.tum.cit.aet.logos.logoswebservice.configuration.repository.ProviderRepository;
 import de.tum.cit.aet.logos.logoswebservice.configuration.repository.TeamModelPermissionRepository;
 import de.tum.cit.aet.logos.logoswebservice.configuration.repository.TeamProviderPermissionRepository;
+import de.tum.cit.aet.logos.logoswebservice.identity.repository.ApiKeyRepository;
 
 @Service
 public class PermissionService {
@@ -74,15 +75,18 @@ public class PermissionService {
     private final ProviderRepository providerRepo;
     private final PermissionAuditContext audit;
     private final AuditLogService settingsAudit;
+    private final ApiKeyRepository apiKeyRepository;
 
     public PermissionService(ApiKeyModelPermissionRepository apiKeyModelRepo,
                              ApiKeyProviderPermissionRepository apiKeyProviderRepo,
                              TeamModelPermissionRepository teamModelRepo,
                              TeamProviderPermissionRepository teamProviderRepo,
                              ProviderRepository providerRepo,
-                             PermissionAuditContext audit, AuditLogService settingsAudit) {
+                             PermissionAuditContext audit, AuditLogService settingsAudit,
+                             ApiKeyRepository apiKeyRepository) {
         this.audit = audit;
         this.settingsAudit = settingsAudit;
+        this.apiKeyRepository = apiKeyRepository;
         this.apiKeyModelRepo = apiKeyModelRepo;
         this.apiKeyProviderRepo = apiKeyProviderRepo;
         this.teamModelRepo = teamModelRepo;
@@ -232,6 +236,16 @@ public class PermissionService {
         audit.withCause("direct", () -> teamProviderRepo.revoke(teamId, providerId));
         audit.withCause("cascade", () -> teamModelRepo.deleteCascadeForTeam(teamId));
     }
+
+    public List<EffectiveModelDeployment> getEffectiveModelDeployments(int keyId) {
+        return apiKeyRepository.findEffectiveModelDeployments(keyId).stream()
+            .map(row -> new EffectiveModelDeployment(row.getModelId(), row.getModelName(),
+                row.getProviderId(), row.getProviderName(), row.getProviderType()))
+            .toList();
+    }
+
+    public record EffectiveModelDeployment(
+        int modelId, String modelName, int providerId, String providerName, String providerType) {}
 
     public List<Integer> getTeamAzureAutoAccess(int teamId) {
         Set<Integer> allowed = eligibleIds(teamId, false);

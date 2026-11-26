@@ -4,7 +4,7 @@ import { firstValueFrom } from 'rxjs';
 import {
   AnalyzeAllResult,
   Team, AdminUser, TeamDetail, TeamMember, TeamApiKey,
-  ProviderItem, ProviderModelItem, TeamModelPermission, TeamLimitsPayload,
+  ProviderItem, ProviderModelItem, TeamModelPermission, TeamLimitsPayload, EffectiveModelDeployment,
   TeamProviderBudget,
   ApiKeyUpdatePayload, CreateApiKeyPayload, MyTeam, TeamRepository,
   TeamRepositoryPayload, TeamWorkflowsResponse, ReviewRecommendationPayload,
@@ -297,6 +297,12 @@ export class TeamManagementService {
     return firstValueFrom(
       this.http.get<PermissionCatalogProvider[]>(`/api/admin/api-keys/${keyId}/permission-catalog`),
     );
+  }
+
+  getKeyEffectiveModelDeployments(keyId: number): Promise<EffectiveModelDeployment[]> {
+    return firstValueFrom(this.http.get<EffectiveModelDeployment[]>(
+      `/api/admin/api-keys/${keyId}/effective-model-deployments`,
+    ));
   }
 
   getApiKeyProviderPermissions(keyId: number): Promise<number[]> {

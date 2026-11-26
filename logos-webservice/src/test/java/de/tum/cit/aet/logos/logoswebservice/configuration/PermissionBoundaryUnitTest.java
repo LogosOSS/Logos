@@ -50,6 +50,7 @@ class PermissionBoundaryUnitTest {
     @Mock PermissionAuditContext audit;
     @Mock de.tum.cit.aet.logos.logoswebservice.audit.AuditLogService settingsAudit;
     @Mock ApiKeyAdminService apiKeyAdminService;
+    @Mock de.tum.cit.aet.logos.logoswebservice.identity.repository.ApiKeyRepository apiKeyRepository;
 
     private PermissionService permissionService;
     private PermissionController controller;
@@ -58,7 +59,7 @@ class PermissionBoundaryUnitTest {
     @BeforeEach
     void setUp() {
         permissionService = new PermissionService(
-            apiKeyModelRepo, apiKeyProviderRepo, teamModelRepo, teamProviderRepo, providerRepo, audit, settingsAudit);
+            apiKeyModelRepo, apiKeyProviderRepo, teamModelRepo, teamProviderRepo, providerRepo, audit, settingsAudit, apiKeyRepository);
         org.mockito.Mockito.lenient().doAnswer(invocation -> {
             invocation.getArgument(1, Runnable.class).run();
             return null;

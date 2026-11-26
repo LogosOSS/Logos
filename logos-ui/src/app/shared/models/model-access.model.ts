@@ -1,8 +1,7 @@
 /**
  * Response of GET /api/admin/models/{id}/access — the read-only access
- * matrix of a single model. A grant only counts when both dimensions line
- * up (model grant AND at least one grant for a hosting provider), which the
- * backend pre-computes as effectiveAccess.
+ * matrix of a single model. Manual model and hosting-provider grants are
+ * distinct from effective access, which can also be granted automatically.
  */
 export interface ModelAccessModel {
   id: number;
@@ -35,6 +34,7 @@ export interface TeamAccess {
   team_name: string;
   model_grant: boolean;
   provider_grants: ProviderGrant[];
+  automatic_provider_ids: number[];
   effective_access: boolean;
 }
 

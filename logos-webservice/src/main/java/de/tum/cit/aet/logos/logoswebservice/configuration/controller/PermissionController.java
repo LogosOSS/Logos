@@ -52,6 +52,15 @@ public class PermissionController {
         return ResponseEntity.ok(permissionService.getPermissionCatalog(permissionService.teamForKey(keyId)));
     }
 
+    @GetMapping("/api-keys/{keyId}/effective-model-deployments")
+    @PreAuthorize("hasAnyAuthority('" + Role.Names.LOGOS_ADMIN + "', '" + Role.Names.APP_ADMIN + "')")
+    public ResponseEntity<?> getEffectiveModelDeployments(
+            @PathVariable Integer keyId,
+            @RequestAttribute("authContext") AuthContext auth) {
+        enforceKeyAccess(keyId, auth);
+        return ResponseEntity.ok(permissionService.getEffectiveModelDeployments(keyId));
+    }
+
     @GetMapping("/api-keys/{keyId}/model-permissions")
     @PreAuthorize("hasAnyAuthority('" + Role.Names.LOGOS_ADMIN + "', '" + Role.Names.APP_ADMIN + "')")
     public ResponseEntity<?> getApiKeyModelPermissions(

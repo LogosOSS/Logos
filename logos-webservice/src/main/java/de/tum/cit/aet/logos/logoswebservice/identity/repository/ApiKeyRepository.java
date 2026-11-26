@@ -214,6 +214,24 @@ public interface ApiKeyRepository extends JpaRepository<ApiKey, Integer> {
         """, nativeQuery = true)
     List<ModelAccessProjection> findAccessibleModelsByKey(@Param("keyId") int keyId);
 
+    @Query(value = """
+        SELECT m.id AS model_id, p.id AS provider_id,
+               m.name AS model_name, p.name AS provider_name, p.provider_type::text AS provider_type
+        FROM allowed_key_model_deployments d
+        JOIN models m ON m.id = d.model_id
+        JOIN providers p ON p.id = d.provider_id
+        WHERE d.api_key_id = :keyId
+        ORDER BY m.name, p.name
+        """, nativeQuery = true)
+    List<ModelAccessProjection> findEffectiveModelDeployments(@Param("keyId") int keyId);
+
+    @Query(value = """
+        SELECT DISTINCT api_key_id
+        FROM allowed_key_model_deployments
+        WHERE api_key_id IN (:keyIds) AND model_id = :modelId
+        """, nativeQuery = true)
+    List<Integer> findEffectiveKeyIdsForModel(@Param("keyIds") List<Integer> keyIds, @Param("modelId") int modelId);
+
     /**
      * Custom-permission keys that touch the model: a direct model grant, or a
      * provider grant on any of the model's hosting providers. Team-level

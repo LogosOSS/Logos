@@ -309,3 +309,11 @@ export interface MyTeam {
   member_count: number;
   owners: { id: number; prename: string; name: string }[];
 }
+
+export interface EffectiveModelDeployment {
+  model_id: number;
+  model_name: string;
+  provider_id: number;
+  provider_name: string;
+  provider_type: string;
+}

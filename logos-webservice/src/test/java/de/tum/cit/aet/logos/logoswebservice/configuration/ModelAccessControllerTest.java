@@ -71,6 +71,78 @@ class ModelAccessControllerTest {
     }
 
     @Test
+    void automaticOnlyAccessIsDisplayedOnTheExactDeploymentAndOnlyForDefaultKeys() throws Exception {
+        jdbc.update("UPDATE teams SET privacy_scope = 'EU' WHERE id = 2001");
+        jdbc.update("UPDATE providers SET cloud_provider_type = 'azure', privacy_level = 'CLOUD_IN_EU_BY_US_PROVIDER', eu_processing_verified = true WHERE id = 6001");
+        jdbc.update("""
+            UPDATE model_provider SET endpoint = 'azure-deployment', azure_synced_endpoint = 'azure-deployment',
+                azure_synced_provider_url = 'https://api.openai.com' WHERE id = 7001
+            """);
+        jdbc.update("""
+            INSERT INTO providers (id, name, provider_type, privacy_level, auth_name, auth_format)
+            VALUES (6002, 'local-host', 'logosnode', 'LOCAL', 'Authorization', 'Bearer {}')
+            """);
+        jdbc.update("INSERT INTO model_provider (provider_id, model_id) VALUES (6002, 5001)");
+        grantTeamProvider(2001, "[6001,6002]");
+        mvc.perform(put("/admin/teams/2001/azure-model-auto-access/6001").with(TestJwt.logosAdmin())
+                .contentType("application/json").content("{\"enabled\":true}"))
+            .andExpect(status().isNoContent());
+
+        String matrix = "/admin/models/5001/access";
+        String team = "$.teams[?(@.team_id==2001)]";
+        mvc.perform(get(matrix).with(TestJwt.logosAdmin()))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath(team + ".model_grant").value(false))
+            .andExpect(jsonPath(team + ".effective_access").value(true))
+            .andExpect(jsonPath(team + ".automatic_provider_ids[0]").value(6001));
+        mvc.perform(get("/admin/teams/2001/model-permissions").with(TestJwt.logosAdmin()))
+            .andExpect(status().isOk()).andExpect(jsonPath("$").isEmpty());
+
+        String key = "/admin/api-keys/3001/effective-model-deployments";
+        mvc.perform(get(key).with(TestJwt.adminUser()))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.length()").value(1))
+            .andExpect(jsonPath("$[0].model_id").value(5001))
+            .andExpect(jsonPath("$[0].provider_id").value(6001))
+            .andExpect(jsonPath("$[0].provider_type").value("cloud"))
+            .andExpect(jsonPath("$[0].base_url").doesNotExist())
+            .andExpect(jsonPath("$[0].api_key").doesNotExist());
+        mvc.perform(get(key).with(TestJwt.testUser())).andExpect(status().isForbidden());
+        mvc.perform(get("/admin/api-keys/3002/effective-model-deployments").with(TestJwt.adminUser()))
+            .andExpect(status().isForbidden());
+
+        // The manual grant is still editable and applies to both allowed hosts.
+        // With an explicit grant the matrix no longer needs an automatic-only badge.
+        grantTeamModel(2001, "[5001]");
+        mvc.perform(get(matrix).with(TestJwt.logosAdmin()))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath(team + ".model_grant").value(true))
+            .andExpect(jsonPath(team + ".automatic_provider_ids[0]").doesNotExist());
+        mvc.perform(get(key).with(TestJwt.adminUser()))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.length()").value(2));
+        grantTeamModel(2001, "[]");
+        mvc.perform(get(key).with(TestJwt.adminUser()))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.length()").value(1))
+            .andExpect(jsonPath("$[0].provider_id").value(6001));
+
+        jdbc.update("UPDATE api_keys SET use_custom_permissions = true WHERE id = 3001");
+        mvc.perform(get(key).with(TestJwt.adminUser()))
+            .andExpect(status().isOk()).andExpect(jsonPath("$").isEmpty());
+        jdbc.update("INSERT INTO api_key_model_permissions (api_key_id, model_id) VALUES (3001, 5001)");
+        jdbc.update("INSERT INTO api_key_provider_permissions (api_key_id, provider_id) VALUES (3001, 6002)");
+        mvc.perform(get(key).with(TestJwt.adminUser()))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.length()").value(1))
+            .andExpect(jsonPath("$[0].provider_id").value(6002));
+        jdbc.update("UPDATE api_keys SET is_active = false WHERE id = 3001");
+        mvc.perform(get(key).with(TestJwt.adminUser()))
+            .andExpect(status().isOk()).andExpect(jsonPath("$").isEmpty());
+
+        jdbc.update("UPDATE teams SET privacy_scope = 'LOCAL' WHERE id = 2001");
+        mvc.perform(get(matrix).with(TestJwt.logosAdmin()))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath(team + ".effective_access").value(false));
+    }
+
+    @Test
     void getModelAccess_unknownModelReturns404() throws Exception {
         mvc.perform(get("/admin/models/9999/access").with(TestJwt.logosAdmin()))
            .andExpect(status().isNotFound());

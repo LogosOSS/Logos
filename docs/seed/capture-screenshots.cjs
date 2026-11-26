@@ -61,6 +61,7 @@ function lookupIds() {
     team: sql("SELECT id FROM teams WHERE name = 'Logos'"),
     worker: sql("SELECT id FROM providers WHERE name = 'Docs Local Worker'"),
     model,
+    azureModel: sql("SELECT id FROM models WHERE name = 'docs-azure-model' AND description LIKE '%[docs-role-screenshots]'"),
     // Use an earlier variant to show its changed parameters.
     linkedBenchmark: sql(
       `SELECT id FROM model_provider_benchmarks WHERE model_provider_id = ${pair}
@@ -382,6 +383,15 @@ const SHOTS = [
     },
   },
   { file: "roles/logos-admin-models.png", user: ADMIN, full: true, go: (p) => p.goto(BASE + "/models") },
+  {
+    file: "roles/logos-admin-model-details-access.png",
+    user: ADMIN,
+    full: true,
+    go: async (p, ids) => {
+      await p.goto(`${BASE}/models/${ids.azureModel}/details?tab=access`);
+      await p.getByText("Azure auto", { exact: true }).waitFor();
+    },
+  },
   {
     file: "roles/model-requests.png",
     user: ADMIN,
@@ -909,7 +919,13 @@ const SHOTS = [
   {
     file: "roles/team-detail-application-keys.png",
     user: APP_ADMIN,
-    go: (p, ids) => teamTab(p, ids, "Application Keys"),
+    full: true,
+    go: async (p, ids) => {
+      await teamTab(p, ids, "Application Keys");
+      await p.locator(".table-row").filter({ hasText: "docs-role-logos-app-key" })
+        .getByRole("button", { name: "Show permissions" }).click();
+      await p.getByText("docs-azure-model", { exact: true }).waitFor();
+    },
   },
   { file: "roles/team-detail-models.png", user: APP_ADMIN, go: (p, ids) => teamTab(p, ids, "Models") },
   { file: "roles/team-detail-activity.png", user: APP_ADMIN, full: true, go: async (p, ids) => {

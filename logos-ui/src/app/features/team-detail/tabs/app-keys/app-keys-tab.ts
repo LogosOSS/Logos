@@ -346,7 +346,7 @@ export class AppKeysTabComponent {
   }
 
   // ── Expand state ──────────────────────────────────────────────────────────
-  readonly keyPermissions = new KeyPermissionExpansion(this.svc, () => this.teamId);
+  readonly keyPermissions = new KeyPermissionExpansion(this.svc);
 
   onRowClick(event: Event, key: TeamApiKey): void {
     if (isInteractiveClick(event)) return;

@@ -7,12 +7,9 @@ import java.util.List;
 /**
  * Read-only snapshot of who can actually reach a single model.
  *
- * <p>Grants are two independent dimensions (model, provider), so a grant
- * only means anything when both sides line up: {@code effectiveAccess} is
- * the model grant AND at least one grant on a hosting provider. Teams or
- * keys with a model grant but no grant for any hosting provider are
- * orphaned — the model can never route for them — and that is exactly the
- * state the per-team permission views cannot surface.
+ * <p>Manual model and provider grants are shown separately from the effective
+ * deployment pairs. A team can also reach Azure deployments automatically
+ * without a manual model grant.
  */
 public record ModelAccessResponseDTO(
         ModelDTO model,
@@ -44,6 +41,7 @@ public record ModelAccessResponseDTO(
             String teamName,
             boolean modelGrant,
             List<ProviderGrantDTO> providerGrants,
+            List<Integer> automaticProviderIds,
             boolean effectiveAccess) {}
 
     public record KeyAccessDTO(
