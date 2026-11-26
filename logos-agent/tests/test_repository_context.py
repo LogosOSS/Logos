@@ -59,7 +59,7 @@ async def test_check_followup_uses_repository_saved_on_session(monkeypatch):
     assert repository_context.current() is None
 
 
-async def test_linked_repository_never_dispatches_logos_deploy(monkeypatch):
+async def test_linked_repository_never_orders_a_logos_deployment(monkeypatch):
     manager = sessions.SessionManager()
     monkeypatch.setattr(
         sessions.db,
@@ -72,10 +72,10 @@ async def test_linked_repository_never_dispatches_logos_deploy(monkeypatch):
             }
         ),
     )
-    dispatch = AsyncMock()
-    monkeypatch.setattr(sessions.github, "dispatch_dev_deploy", dispatch)
-    assert await manager._maybe_deploy(7, {}) == (None, None)
-    dispatch.assert_not_called()
+    order = AsyncMock()
+    monkeypatch.setattr(sessions.dev_deployments, "start", order)
+    assert await manager._maybe_deploy(7, {}) is None
+    order.assert_not_called()
 
 
 def test_namespaced_reference_keeps_the_assigned_issue_number():

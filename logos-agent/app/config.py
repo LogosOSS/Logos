@@ -109,8 +109,7 @@ class Settings:
     dev_mode: bool = _bool("LOGOS_AGENT_DEV_MODE", False)
 
     # --- the platform this runner serves ---------------------------------
-    # This service (on the stack's internal network) reads capacity and
-    # dispatches deploys from here.
+    # This service (on the stack's internal network) reads capacity from here.
     orchestrator_url: str = os.getenv("LOGOS_ORCHESTRATOR_URL", "http://logos-orchestrator:8080")
     # Where a *session container* sends its model traffic. Sessions live on
     # the session network, which must not reach the orchestrator itself (that
@@ -257,30 +256,30 @@ class Settings:
     # pushes — a token belonging to a person would otherwise commit agent
     # work under that person's name.
     github_login: str = os.getenv("LOGOS_AGENT_GITHUB_LOGIN", "LogosOSSAgent")
-    # Held by this service only. Needs `workflow` scope to dispatch the dev
-    # deploy; it is never passed into a session container.
+    # This service's own token. A session container gets it only when no
+    # session token is configured.
     github_token: str = os.getenv("LOGOS_AGENT_GITHUB_TOKEN", "")
     # Handed to session containers. Best issued as a second token of the same
-    # account without `workflow` scope, so a session cannot dispatch a deploy
-    # or edit a workflow file even if it tries. Falling back to the runner's
-    # token keeps a one-token deployment working — the runner says so at
-    # startup, because that fallback gives up the scope boundary between the
-    # two phases.
+    # account without `workflow` scope, so a session cannot edit a workflow
+    # file even if it tries. Falling back to the runner's token keeps a
+    # one-token deployment working — the runner says so at startup, because
+    # that fallback gives up the scope boundary between the two phases.
     session_github_token: str = os.getenv("LOGOS_AGENT_SESSION_GITHUB_TOKEN", "") or os.getenv(
         "LOGOS_AGENT_GITHUB_TOKEN", ""
     )
-    # Deploys are triggered by this service, never from inside a session
-    # container: the container never holds a token that can reach production.
-    deploy_workflow: str = os.getenv("LOGOS_AGENT_DEPLOY_WORKFLOW", "logos_deploy-dev.yml")
     # Builds and publishes the service images. It runs on pull requests (and
     # main/release) but never on plain branch pushes, and PR builds publish
     # pr-<number> tags, never latest — so a deploy of a session branch must
     # wait for this workflow's run and use the PR tag it published.
     build_workflow: str = os.getenv("LOGOS_AGENT_BUILD_WORKFLOW", "logos_build-and-push-docker.yml")
+    # Deploys are ordered by this service, never from inside a session
+    # container: the container never holds a key or token that can deploy.
     deploy_enabled: bool = _bool("LOGOS_AGENT_DEPLOY_ENABLED", False)
-    # The only environment a session is ever allowed to affect.
-    allowed_environment: str = os.getenv("LOGOS_AGENT_ALLOWED_ENVIRONMENT", "logos-dev")
+    # The Logos that sessions deploy to and photograph.
     dev_base_url: str = os.getenv("LOGOS_AGENT_DEV_BASE_URL", "https://logos-dev.aet.cit.tum.de")
+    # The agent deployment key that the Logos on dev accepts (its
+    # LOGOS_DEPLOYMENTS_AGENT_KEY). Empty: nothing can be deployed.
+    dev_deployment_key: str = os.getenv("LOGOS_AGENT_DEV_DEPLOYMENT_KEY", "").strip()
 
     # The prefix of branches this runner *creates*. Everything in this
     # repository lives under `logos/`, and agent work is a subtree of that,
@@ -338,10 +337,10 @@ class Settings:
     def session_token_is_runner_token(self) -> bool:
         """Whether session containers hold the runner's own token.
 
-        True when no separate session token was configured. The token then
-        carries `workflow` scope, so the scope boundary between the agent
-        phase and the runner is gone and the finalizer enforces the part
-        that matters — CI files — by itself.
+        True when no separate session token was configured. The token may then
+        carry `workflow` scope, so GitHub does not hold a boundary between the
+        agent phase and the runner, and the finalizer enforces the part that
+        matters — CI files — by itself.
         """
         return bool(self.session_github_token) and self.session_github_token == self.github_token
 

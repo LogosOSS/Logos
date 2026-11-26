@@ -612,6 +612,43 @@ its real result later. The page then shows the real result.
 * If you remove a provider, Logos removes its worker from the page
   **Deployments**. The history of its deployments stays.
 
+### Let the Logos agent deploy to Dev
+
+A session of the Logos agent can deploy the build of its pull request to Dev. For
+this, a Logos admin selects **Deploy to the dev environment afterwards** at the
+start of the session. The agent authenticates with the agent deployment key, not
+with a login. The key lets the agent start the deployment of a pull request build
+(`pr-<number>`) and read it, and nothing else. A protected Logos refuses the key.
+
+Do these steps once:
+
+1. Make sure that both hosts run a version with this feature, with the compose
+   file of that version.
+2. Make a key, for example with `openssl rand -hex 32`.
+3. In the `.env` file of the core host of Dev, set `LOGOS_DEPLOYMENTS_AGENT_KEY`
+   to the key.
+4. In the `.env` file of the host of the agent, set
+   `LOGOS_AGENT_DEV_DEPLOYMENT_KEY` to the same key.
+5. In the same file, set `LOGOS_AGENT_DEPLOY_ENABLED=true`.
+6. Apply the new `.env` files (see
+   [Change the settings of a host](#change-the-settings-of-a-host)).
+
+| Variable | Where | Meaning |
+|---|---|---|
+| `LOGOS_DEPLOYMENTS_AGENT_KEY` | Core host of Dev | The agent deployment key that this Logos accepts. Empty (default): no agent can deploy. |
+| `LOGOS_AGENT_DEV_DEPLOYMENT_KEY` | Host of the agent | The same key. The agent sends it to Dev. |
+| `LOGOS_AGENT_DEPLOY_ENABLED` | Host of the agent | `true` lets a session deploy to Dev. Default: `false`. |
+| `LOGOS_AGENT_DEV_BASE_URL` | Host of the agent | The address of Dev. Default: `https://logos-dev.aet.cit.tum.de`. |
+
+The page **Deployments** of Dev shows such a deployment as started by **Logos
+agent**. If another deployment runs, the agent waits up to 40 minutes for it.
+Then the agent waits up to 20 minutes for the core step. If the core step
+succeeds, the agent takes the screenshots. The workers can still update at that
+time.
+
+The pull request build must also have this feature. If it does not, the agent
+cannot read the result, and it takes no screenshots.
+
 ## Nightly Benchmarks
 
 To retain a fixed Dev workload, leave `LOGOS_NIGHTLY_REQUEST_USERNAME` empty.

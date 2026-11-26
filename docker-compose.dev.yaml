@@ -326,6 +326,8 @@ services:
       # on Dev and Test. See docs/deployment.md#deployments-from-logos.
       LOGOS_DEPLOYMENTS_PROTECTED: "${LOGOS_DEPLOYMENTS_PROTECTED:-true}"
       LOGOS_DEPLOYMENTS_SILENCE_LIMIT: "${LOGOS_DEPLOYMENTS_SILENCE_LIMIT:-30m}"
+      # The key with which a Logos agent deploys pull request builds here. Empty: no agent can.
+      LOGOS_DEPLOYMENTS_AGENT_KEY: "${LOGOS_DEPLOYMENTS_AGENT_KEY:-}"
       # See prod docker-compose.yaml for why this must be set: browsers send an
       # Origin on POST/WebSocket even same-origin, so an empty allowlist makes the
       # CorsFilter reject every POST/WS. Default to the dev UI origin (Traefik UI

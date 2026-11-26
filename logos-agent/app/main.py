@@ -23,6 +23,7 @@ from . import (
     controls,
     conventions,
     db,
+    dev_deployments,
     docker_engine,
     github,
     memory_budget,
@@ -469,11 +470,8 @@ async def create_session(body: SessionCreate, principal: Principal = Depends(req
     workspace = await db.get_workspace(body.workspace_id)
     if workspace is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workspace not found")
-    if body.deploy_to_dev and not settings.deploy_enabled:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Deploys are disabled on this runner (LOGOS_AGENT_DEPLOY_ENABLED)",
-        )
+    if body.deploy_to_dev and (missing := dev_deployments.missing_setting()):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=missing)
     # Refuse a model that is not served locally at the point where a person
     # asks for it, rather than accepting the session and failing it later:
     # agent work must never bill a cloud provider, and the operator finds out

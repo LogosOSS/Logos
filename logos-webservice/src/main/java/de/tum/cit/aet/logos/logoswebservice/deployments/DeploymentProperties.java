@@ -17,6 +17,8 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  * @param silenceLimit         how long a started step may stay silent before Logos ends it as timed out
  * @param onlineAfter          a deployer counts as online if it was seen within this time
  * @param pollHoldMax          the longest time a request for orders waits for one to appear
+ * @param agentKey             the key with which a Logos agent orders a deployment of a pull request build. Default:
+ *                             none, so that no agent can order one. A protected Logos refuses the key.
  */
 @ConfigurationProperties(prefix = "logos.deployments")
 public record DeploymentProperties(
@@ -24,7 +26,8 @@ public record DeploymentProperties(
     String restrictedTagPattern,
     Duration silenceLimit,
     Duration onlineAfter,
-    Duration pollHoldMax
+    Duration pollHoldMax,
+    String agentKey
 ) {
 
     /**
@@ -39,5 +42,6 @@ public record DeploymentProperties(
         silenceLimit = silenceLimit == null ? Duration.ofMinutes(30) : silenceLimit;
         onlineAfter = onlineAfter == null ? Duration.ofSeconds(90) : onlineAfter;
         pollHoldMax = pollHoldMax == null ? Duration.ofSeconds(30) : pollHoldMax;
+        agentKey = agentKey == null || agentKey.isBlank() ? null : agentKey.strip();
     }
 }

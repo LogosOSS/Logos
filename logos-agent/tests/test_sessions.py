@@ -538,7 +538,7 @@ class TestLaunchAndSupervision:
         }
         order: list = []
         removed: list = []
-        dispatched: list = []
+        deployments: list = []
         events: list = []
         claimed: dict = {}
 
@@ -563,9 +563,9 @@ class TestLaunchAndSupervision:
         async def fake_remove(cid, **_kwargs):
             removed.append(cid)
 
-        async def fake_dispatch(**kwargs):
-            dispatched.append(kwargs)
-            return "https://github.com/LogosOSS/Logos/actions/runs/1"
+        async def fake_order(*args, **_kwargs):
+            deployments.append(args)
+            return {"id": "plan-1"}
 
         async def noop(*_args, **_kwargs):
             return None
@@ -576,7 +576,7 @@ class TestLaunchAndSupervision:
         monkeypatch.setattr(sessions.docker_engine, "unpause_container", noop)
         monkeypatch.setattr(sessions.docker_engine, "stop_container", fake_stop)
         monkeypatch.setattr(sessions.docker_engine, "remove_container", fake_remove)
-        monkeypatch.setattr(sessions.github, "dispatch_dev_deploy", fake_dispatch)
+        monkeypatch.setattr(sessions.dev_deployments, "start", fake_order)
         # The settled exit is a clean one, so settlement would run the
         # finalizer; this test is about the cancel race, not the helper.
         monkeypatch.setattr(sessions.SessionManager, "_finalize", self._async_value(True))
@@ -588,7 +588,7 @@ class TestLaunchAndSupervision:
         # settle's finalizing claim — the move that would have handed the
         # session to the finalizer — loses the race to it.
         assert order == [("transition", SessionStatus.CANCELLED), "stop", ("transition", SessionStatus.FINALIZING)]
-        assert dispatched == []
+        assert deployments == []
         assert events == [(EventKind.STATUS, {"status": "cancelled"})]
         assert removed.count("cid-7") >= 1
 
@@ -2839,11 +2839,14 @@ class TestScreenshotOrchestration:
     def _patch_base(self, monkeypatch, tmp_path, *, deploy_enabled=False):
         from app import sessions
 
-        monkeypatch.setattr(
-            sessions,
-            "settings",
-            replace(sessions.settings, artifact_root=str(tmp_path), deploy_enabled=deploy_enabled),
+        settings = replace(
+            sessions.settings,
+            artifact_root=str(tmp_path),
+            deploy_enabled=deploy_enabled,
+            dev_deployment_key="key-for-dev",
         )
+        monkeypatch.setattr(sessions, "settings", settings)
+        monkeypatch.setattr(sessions.dev_deployments, "settings", settings)
         monkeypatch.setattr(sessions.os, "chown", lambda *args, **kwargs: None)
         monkeypatch.setattr(sessions.docker_engine, "volume_mountpoint", self._async_value("/vol/data"))
         monkeypatch.setattr(sessions.db, "update_session", self._async_value(None))
@@ -2966,7 +2969,7 @@ class TestScreenshotOrchestration:
             await asyncio.gather(*sessions._release_tasks)
         assert await sessions.reserved_memory_mb() == 0
 
-    async def test_screenshots_wait_for_a_dispatched_deploy_to_finish(self, monkeypatch, tmp_path):
+    async def test_screenshots_wait_for_the_core_of_dev_to_run_the_build(self, monkeypatch, tmp_path):
         from app import sessions
 
         self._patch_base(monkeypatch, tmp_path, deploy_enabled=True)
@@ -2983,23 +2986,17 @@ class TestScreenshotOrchestration:
         )
         order: list = []
         created: list = []
-        wait_calls: list = []
 
         async def fake_build_wait(_branch, _sha, **_kwargs):
             return "success", "build ended: success"
 
-        async def fake_marker():
-            order.append("marker")
-            return 40
+        async def fake_order(_tag, **_kwargs):
+            order.append("order")
+            return {"id": "plan-1"}
 
-        async def fake_dispatch(**_kwargs):
-            order.append("dispatch")
-            return "https://github.com/LogosOSS/Logos/actions/runs/41"
-
-        async def fake_wait(**kwargs):
-            order.append("wait")
-            wait_calls.append(kwargs)
-            return "success", "run ended: success"
+        async def fake_core(plan_id, **_kwargs):
+            order.append(("core", plan_id))
+            return "success", "the core runs the new build"
 
         async def fake_ready(_self):
             order.append("ready")
@@ -3014,9 +3011,8 @@ class TestScreenshotOrchestration:
             return None
 
         monkeypatch.setattr(sessions.github, "wait_for_pr_builds", fake_build_wait)
-        monkeypatch.setattr(sessions.github, "latest_dev_deploy_run_id", fake_marker)
-        monkeypatch.setattr(sessions.github, "dispatch_dev_deploy", fake_dispatch)
-        monkeypatch.setattr(sessions.github, "wait_for_dev_deploy", fake_wait)
+        monkeypatch.setattr(sessions.dev_deployments, "start", fake_order)
+        monkeypatch.setattr(sessions.dev_deployments, "wait_for_core", fake_core)
         monkeypatch.setattr(sessions.SessionManager, "_wait_dev_ready", fake_ready)
         monkeypatch.setattr(sessions.docker_engine, "create_screenshot_container", fake_create)
         monkeypatch.setattr(sessions.docker_engine, "start_container", noop)
@@ -3028,15 +3024,10 @@ class TestScreenshotOrchestration:
 
         await sessions.manager._settle(7, exit_code=0, error=None)
 
-        # The strict point of this fix: the photo comes only after the deploy
-        # has been dispatched, waited out, and the environment serves again.
-        # The marker is recorded before the dispatch — the run the dispatch
-        # creates is the one that turns out newer than it.
-        assert order == ["marker", "dispatch", "wait", "ready", "screenshot"]
-        # The wait is handed the marker: it may settle only a run of the
-        # deploy workflow newer than what existed before the dispatch, never
-        # a deploy that predates it.
-        assert wait_calls == [{"after_run_id": 40}]
+        # The photo comes only after the deployment has been ordered, the core of
+        # dev runs it, and the environment serves again. The wait follows the
+        # deployment that this order started.
+        assert order == ["order", ("core", "plan-1"), "ready", "screenshot"]
         assert created[0]["url"].endswith("/dashboard")
 
     async def test_screenshots_are_skipped_when_the_deploy_does_not_succeed(self, monkeypatch, tmp_path):
@@ -3060,14 +3051,11 @@ class TestScreenshotOrchestration:
         async def fake_build_wait(_branch, _sha, **_kwargs):
             return "success", "build ended: success"
 
-        async def fake_marker():
-            return 40
+        async def fake_order(_tag, **_kwargs):
+            return {"id": "plan-1"}
 
-        async def fake_dispatch(**_kwargs):
-            return "https://github.com/LogosOSS/Logos/actions/runs/41"
-
-        async def fake_wait(**_kwargs):
-            return "timeout", "still running after 1200s"
+        async def fake_core(_plan_id, **_kwargs):
+            return "timeout", "not done after 20 min"
 
         async def fake_create(**kwargs):
             created.append(kwargs)
@@ -3080,9 +3068,8 @@ class TestScreenshotOrchestration:
             return None
 
         monkeypatch.setattr(sessions.github, "wait_for_pr_builds", fake_build_wait)
-        monkeypatch.setattr(sessions.github, "latest_dev_deploy_run_id", fake_marker)
-        monkeypatch.setattr(sessions.github, "dispatch_dev_deploy", fake_dispatch)
-        monkeypatch.setattr(sessions.github, "wait_for_dev_deploy", fake_wait)
+        monkeypatch.setattr(sessions.dev_deployments, "start", fake_order)
+        monkeypatch.setattr(sessions.dev_deployments, "wait_for_core", fake_core)
         monkeypatch.setattr(sessions.docker_engine, "create_screenshot_container", fake_create)
         monkeypatch.setattr(sessions.docker_engine, "remove_container", noop)
         monkeypatch.setattr(sessions.db, "get_session", self._async_value(row))
@@ -3094,17 +3081,19 @@ class TestScreenshotOrchestration:
         # A deploy that did not succeed means nothing was deployed; a photo
         # of the old revision would be worse than no photo.
         assert created == []
+        failed = [p for k, p in events if k == EventKind.DEPLOY and p.get("status") == "failed"]
+        assert len(failed) == 1
+        assert "did not succeed (timeout)" in failed[0]["reason"]
         skipped = [p for k, p in events if k == EventKind.SCREENSHOT and p.get("status") == "skipped"]
         assert len(skipped) == 1
-        assert "did not succeed" in skipped[0]["reason"]
+        assert "did not land" in skipped[0]["reason"]
 
     async def test_concurrent_deploys_do_not_interleave_the_environment_sequence(self, monkeypatch, tmp_path):
         # The dev environment is shared by every session on the runner, so
-        # the sequences that change it and then observe it — dispatch, wait
-        # for the run that dispatch created, wait for the environment to
-        # serve, take the photos — must not interleave across sessions: an
-        # interleaved pair would each settle against the other's run and
-        # photograph the other's revision.
+        # the sequences that change it and then observe it — order a
+        # deployment, wait for its core, wait for the environment to serve,
+        # take the photos — must not interleave across sessions: one session
+        # would photograph the revision of the other.
         from app import sessions
 
         self._patch_base(monkeypatch, tmp_path, deploy_enabled=True)
@@ -3133,20 +3122,17 @@ class TestScreenshotOrchestration:
         async def fake_build_wait(_branch, _sha, **_kwargs):
             return "success", "build ended: success"
 
-        async def fake_marker():
-            return 40
-
-        async def fake_dispatch(**_kwargs):
-            order.append("dispatch")
+        async def fake_order(_tag, **_kwargs):
+            order.append("order")
             # Yield so the other settling session can run while this one is
             # inside the environment sequence — only the lock keeps it out.
             await asyncio.sleep(0)
-            return "https://github.com/LogosOSS/Logos/actions/runs/41"
+            return {"id": "plan-1"}
 
-        async def fake_wait(**_kwargs):
-            order.append("wait")
+        async def fake_core(_plan_id, **_kwargs):
+            order.append("core")
             await asyncio.sleep(0)
-            return "success", "run ended: success"
+            return "success", "the core runs the new build"
 
         async def fake_ready(_self):
             order.append("ready")
@@ -3168,9 +3154,8 @@ class TestScreenshotOrchestration:
         monkeypatch.setattr(sessions.db, "transition_session", fake_transition)
         monkeypatch.setattr(sessions.db, "add_event", noop)
         monkeypatch.setattr(sessions.github, "wait_for_pr_builds", fake_build_wait)
-        monkeypatch.setattr(sessions.github, "latest_dev_deploy_run_id", fake_marker)
-        monkeypatch.setattr(sessions.github, "dispatch_dev_deploy", fake_dispatch)
-        monkeypatch.setattr(sessions.github, "wait_for_dev_deploy", fake_wait)
+        monkeypatch.setattr(sessions.dev_deployments, "start", fake_order)
+        monkeypatch.setattr(sessions.dev_deployments, "wait_for_core", fake_core)
         monkeypatch.setattr(sessions.SessionManager, "_wait_dev_ready", fake_ready)
         monkeypatch.setattr(sessions.docker_engine, "create_screenshot_container", fake_create)
         monkeypatch.setattr(sessions.docker_engine, "start_container", noop)
@@ -3182,9 +3167,9 @@ class TestScreenshotOrchestration:
             sessions.manager._settle(8, exit_code=0, error=None),
         )
 
-        # One dispatch-to-screenshot block per session, and the blocks do not
+        # One order-to-screenshot block per session, and the blocks do not
         # interleave: each sequence ran to completion before the next began.
-        assert order == ["dispatch", "wait", "ready", "screenshot"] * 2
+        assert order == ["order", "core", "ready", "screenshot"] * 2
 
     async def test_screenshots_are_skipped_when_the_requested_deploy_did_not_land(self, monkeypatch, tmp_path):
         # The session asked for a deploy and it did not land (here: refused,
@@ -3203,8 +3188,8 @@ class TestScreenshotOrchestration:
         async def fake_event(_sid, kind, payload):
             events.append((kind, payload))
 
-        async def fake_dispatch(**kwargs):
-            raise AssertionError("no image exists to dispatch a deploy of")
+        async def fake_order(*_args, **_kwargs):
+            raise AssertionError("no image exists to order a deployment of")
 
         async def fake_build_wait(_branch, _sha, **_kwargs):
             raise AssertionError("no image exists to wait for")
@@ -3217,7 +3202,7 @@ class TestScreenshotOrchestration:
         monkeypatch.setattr(sessions.db, "add_event", fake_event)
         monkeypatch.setattr(sessions.docker_engine, "create_screenshot_container", fake_create)
         monkeypatch.setattr(sessions.docker_engine, "remove_container", noop)
-        monkeypatch.setattr(sessions.github, "dispatch_dev_deploy", fake_dispatch)
+        monkeypatch.setattr(sessions.dev_deployments, "start", fake_order)
         monkeypatch.setattr(sessions.github, "wait_for_pr_builds", fake_build_wait)
 
         # No result file, hence no pull request: the deploy is refused and
@@ -3234,7 +3219,7 @@ class TestSettlementRaceAndDeployTag:
     """Settlement against a lost transition, and the tag a deploy pulls.
 
     Two races the state machine has to lose cleanly: a cancel that reaches
-    the terminal row before settlement does, and a dispatch that would pull
+    the terminal row before settlement does, and a deployment that would pull
     ``latest`` — which still points at main — instead of the pull request
     build that actually contains the session's code.
     """
@@ -3257,11 +3242,14 @@ class TestSettlementRaceAndDeployTag:
     def _patch_base(self, monkeypatch, tmp_path):
         from app import sessions
 
-        monkeypatch.setattr(
-            sessions,
-            "settings",
-            replace(sessions.settings, artifact_root=str(tmp_path), deploy_enabled=True),
+        settings = replace(
+            sessions.settings,
+            artifact_root=str(tmp_path),
+            deploy_enabled=True,
+            dev_deployment_key="key-for-dev",
         )
+        monkeypatch.setattr(sessions, "settings", settings)
+        monkeypatch.setattr(sessions.dev_deployments, "settings", settings)
         monkeypatch.setattr(sessions.os, "chown", lambda *args, **kwargs: None)
         monkeypatch.setattr(sessions.db, "update_session", self._async_value(None))
         # These tests settle sessions directly; the finalizer is the
@@ -3284,7 +3272,7 @@ class TestSettlementRaceAndDeployTag:
         self._write_result(tmp_path, pr_url="https://github.com/LogosOSS/Logos/pull/772")
         removed: list = []
         events: list = []
-        dispatched: list = []
+        deployments: list = []
         build_waits: list = []
 
         async def fake_transition(_sid, _target, **_fields):
@@ -3296,9 +3284,9 @@ class TestSettlementRaceAndDeployTag:
         async def fake_event(_sid, kind, payload):
             events.append((kind, payload))
 
-        async def fake_dispatch(**kwargs):
-            dispatched.append(kwargs)
-            return "https://github.com/LogosOSS/Logos/actions/runs/1"
+        async def fake_order(*args, **_kwargs):
+            deployments.append(args)
+            return {"id": "plan-1"}
 
         async def fake_build_wait(branch, sha, **_kwargs):
             build_waits.append((branch, sha))
@@ -3308,7 +3296,7 @@ class TestSettlementRaceAndDeployTag:
         monkeypatch.setattr(sessions.db, "transition_session", fake_transition)
         monkeypatch.setattr(sessions.db, "add_event", fake_event)
         monkeypatch.setattr(sessions.docker_engine, "remove_container", fake_remove)
-        monkeypatch.setattr(sessions.github, "dispatch_dev_deploy", fake_dispatch)
+        monkeypatch.setattr(sessions.dev_deployments, "start", fake_order)
         monkeypatch.setattr(sessions.github, "wait_for_pr_builds", fake_build_wait)
 
         await sessions.manager._settle(7, exit_code=0, error=None)
@@ -3318,13 +3306,13 @@ class TestSettlementRaceAndDeployTag:
         # the result file carries a pull request.
         assert removed == ["cid-7"]
         assert events == []
-        assert dispatched == []
+        assert deployments == []
         assert build_waits == []
 
     async def test_deploy_waits_for_the_pr_build_and_uses_its_tag(self, monkeypatch, tmp_path):
-        # The result carries the PR URL, so the deploy must wait for the
-        # pr-<n> build to succeed and dispatch with exactly that tag — never
-        # latest, which still points at main.
+        # The result carries the PR URL, so the deployment must wait for the
+        # pr-<n> build to succeed and order exactly that tag — never latest,
+        # which still points at main.
         sessions = self._patch_base(monkeypatch, tmp_path)
         self._write_result(
             tmp_path,
@@ -3332,23 +3320,19 @@ class TestSettlementRaceAndDeployTag:
             pushed_sha="f" * 40,
         )
         order: list = []
-        dispatched: list = []
-        marker_at: list = []
 
         async def fake_build_wait(branch, sha, **_kwargs):
             order.append(("build_wait", branch, sha))
             return "success", "build ended: success"
 
-        async def fake_marker():
-            # Position in `order` when the marker is recorded: after the
-            # build wait, before the dispatch entry exists.
-            marker_at.append(len(order))
-            return 40
+        async def fake_order(tag, *, on_wait):
+            order.append(("order", tag))
+            await on_wait("dev answered 409: A deployment is running.")
+            return {"id": "plan-1"}
 
-        async def fake_dispatch(**kwargs):
-            order.append(("dispatch", kwargs))
-            dispatched.append(kwargs)
-            return "https://github.com/LogosOSS/Logos/actions/runs/41"
+        async def fake_core(plan_id, **_kwargs):
+            order.append(("core", plan_id))
+            return "success", "the core runs the new build"
 
         async def fake_event(_sid, kind, payload):
             order.append((kind, payload))
@@ -3361,57 +3345,103 @@ class TestSettlementRaceAndDeployTag:
         monkeypatch.setattr(sessions.db, "add_event", fake_event)
         monkeypatch.setattr(sessions.docker_engine, "remove_container", noop)
         monkeypatch.setattr(sessions.github, "wait_for_pr_builds", fake_build_wait)
-        monkeypatch.setattr(sessions.github, "latest_dev_deploy_run_id", fake_marker)
-        monkeypatch.setattr(sessions.github, "dispatch_dev_deploy", fake_dispatch)
+        monkeypatch.setattr(sessions.dev_deployments, "start", fake_order)
+        monkeypatch.setattr(sessions.dev_deployments, "wait_for_core", fake_core)
 
         await sessions.manager._settle(7, exit_code=0, error=None)
 
-        # The dispatch receives the prebuilt image tag and nothing branch-derived:
-        # the workflow runs on a fixed trusted ref, so the session's agent-editable
-        # branch never reaches the dev host.
-        assert dispatched == [{"image_tag": "pr-772"}]
+        # The order carries the prebuilt image tag and nothing branch-derived,
+        # so the session's agent-editable branch never reaches the dev host.
         # The build wait is handed the pushed commit, not just the branch:
         # the branch is force-pushed across retries, and a completed run of
         # an earlier commit on it is a stale image, not this session's.
-        assert ("build_wait", "agent/feature-work/session-7", "f" * 40) in order
-        # The build wait happens first, then the pre-dispatch marker — the
-        # marker must see the runs as they stood before this dispatch's own
-        # run exists — and only then the dispatch; the dispatched event
-        # records the tag the environment now serves.
-        build_idx = order.index(("build_wait", "agent/feature-work/session-7", "f" * 40))
-        dispatch_idx = next(i for i, item in enumerate(order) if item[0] == "dispatch")
-        assert build_idx < marker_at[0] <= dispatch_idx
-        deploy_events = [
-            item[1] for item in order if item[0] == EventKind.DEPLOY and item[1].get("status") == "dispatched"
+        steps = [item for item in order if item[0] in ("build_wait", "order", "core")]
+        assert steps == [
+            ("build_wait", "agent/feature-work/session-7", "f" * 40),
+            ("order", "pr-772"),
+            ("core", "plan-1"),
         ]
+        deploy_events = [item[1] for item in order if item[0] == EventKind.DEPLOY]
+        event = {"url": f"{sessions.settings.dev_base_url.rstrip('/')}/deployments/plan-1", "image_tag": "pr-772"}
         assert deploy_events == [
-            {
-                "status": "dispatched",
-                "environment": "logos-dev",
-                "url": "https://github.com/LogosOSS/Logos/actions/runs/41",
-                "image_tag": "pr-772",
-            }
+            {"status": "waiting", "reason": "dev answered 409: A deployment is running."},
+            {"status": "dispatched", **event},
+            {"status": "succeeded", **event},
         ]
+
+    async def test_a_refused_order_fails_the_deploy_with_the_reason_of_dev(self, monkeypatch, tmp_path):
+        sessions = self._patch_base(monkeypatch, tmp_path)
+        self._write_result(tmp_path, pr_url="https://github.com/LogosOSS/Logos/pull/772", pushed_sha="f" * 40)
+        events: list = []
+
+        async def fake_order(_tag, **_kwargs):
+            raise sessions.dev_deployments.DevDeploymentError("dev answered 401: Unauthorized")
+
+        async def fake_core(*_args, **_kwargs):
+            raise AssertionError("no deployment exists to wait for")
+
+        async def fake_event(_sid, kind, payload):
+            events.append((kind, payload))
+
+        async def noop(*_args, **_kwargs):
+            return None
+
+        monkeypatch.setattr(sessions.db, "get_session", self._async_value(self.SESSION_ROW))
+        monkeypatch.setattr(sessions.db, "transition_session", self._async_value(True))
+        monkeypatch.setattr(sessions.db, "add_event", fake_event)
+        monkeypatch.setattr(sessions.docker_engine, "remove_container", noop)
+        monkeypatch.setattr(sessions.github, "wait_for_pr_builds", self._async_value(("success", "ok")))
+        monkeypatch.setattr(sessions.dev_deployments, "start", fake_order)
+        monkeypatch.setattr(sessions.dev_deployments, "wait_for_core", fake_core)
+
+        await sessions.manager._settle(7, exit_code=0, error=None)
+
+        assert [payload for kind, payload in events if kind == EventKind.DEPLOY] == [
+            {"status": "failed", "reason": "dev answered 401: Unauthorized"}
+        ]
+
+    async def test_deploy_is_skipped_without_the_key_for_dev(self, monkeypatch, tmp_path):
+        # A session queued while the key was set can settle after it is gone.
+        sessions = self._patch_base(monkeypatch, tmp_path)
+        monkeypatch.setattr(sessions.dev_deployments, "settings", replace(sessions.settings, dev_deployment_key=""))
+        events: list = []
+
+        async def fake_event(_sid, kind, payload):
+            events.append((kind, payload))
+
+        async def noop(*_args, **_kwargs):
+            return None
+
+        monkeypatch.setattr(sessions.db, "get_session", self._async_value(self.SESSION_ROW))
+        monkeypatch.setattr(sessions.db, "transition_session", self._async_value(True))
+        monkeypatch.setattr(sessions.db, "add_event", fake_event)
+        monkeypatch.setattr(sessions.docker_engine, "remove_container", noop)
+
+        await sessions.manager._settle(7, exit_code=0, error=None)
+
+        deploy_events = [payload for kind, payload in events if kind == EventKind.DEPLOY]
+        assert [payload["status"] for payload in deploy_events] == ["skipped"]
+        assert "LOGOS_AGENT_DEV_DEPLOYMENT_KEY" in deploy_events[0]["reason"]
 
     async def test_deploy_is_aborted_when_the_pr_build_fails(self, monkeypatch, tmp_path):
         # A build that failed (or never ran) means the session's code is not
-        # in any image; dispatching would deploy the old revision, so the
-        # deploy is recorded as failed and nothing is dispatched.
+        # in any image; ordering would deploy the old revision, so the deploy
+        # is recorded as failed and nothing is ordered.
         sessions = self._patch_base(monkeypatch, tmp_path)
         self._write_result(
             tmp_path,
             pr_url="https://github.com/LogosOSS/Logos/pull/772",
             pushed_sha="f" * 40,
         )
-        dispatched: list = []
+        deployments: list = []
         events: list = []
 
         async def fake_build_wait(_branch, _sha, **_kwargs):
             return "failed", "build ended: failure"
 
-        async def fake_dispatch(**kwargs):
-            dispatched.append(kwargs)
-            return "https://github.com/LogosOSS/Logos/actions/runs/1"
+        async def fake_order(*args, **_kwargs):
+            deployments.append(args)
+            return {"id": "plan-1"}
 
         async def fake_event(_sid, kind, payload):
             events.append((kind, payload))
@@ -3424,11 +3454,11 @@ class TestSettlementRaceAndDeployTag:
         monkeypatch.setattr(sessions.db, "add_event", fake_event)
         monkeypatch.setattr(sessions.docker_engine, "remove_container", noop)
         monkeypatch.setattr(sessions.github, "wait_for_pr_builds", fake_build_wait)
-        monkeypatch.setattr(sessions.github, "dispatch_dev_deploy", fake_dispatch)
+        monkeypatch.setattr(sessions.dev_deployments, "start", fake_order)
 
         await sessions.manager._settle(7, exit_code=0, error=None)
 
-        assert dispatched == []
+        assert deployments == []
         failed = [p for k, p in events if k == EventKind.DEPLOY and p.get("status") == "failed"]
         assert len(failed) == 1
         assert "image builds did not succeed" in failed[0]["error"]
@@ -3438,19 +3468,19 @@ class TestSettlementRaceAndDeployTag:
         # pull request no image of the branch exists — the build workflow
         # only runs for PRs — and the only tags the registry carries are
         # main's. The deploy must be refused with a visible reason, never
-        # silently dispatched against the stale latest images.
+        # silently ordered with the stale latest images.
         sessions = self._patch_base(monkeypatch, tmp_path)
         # No result file: the session opened no pull request.
         events: list = []
-        dispatched: list = []
+        deployments: list = []
         build_waits: list = []
 
         async def fake_event(_sid, kind, payload):
             events.append((kind, payload))
 
-        async def fake_dispatch(**kwargs):
-            dispatched.append(kwargs)
-            return "https://github.com/LogosOSS/Logos/actions/runs/1"
+        async def fake_order(*args, **_kwargs):
+            deployments.append(args)
+            return {"id": "plan-1"}
 
         async def fake_build_wait(branch, **_kwargs):
             build_waits.append(branch)
@@ -3463,12 +3493,12 @@ class TestSettlementRaceAndDeployTag:
         monkeypatch.setattr(sessions.db, "transition_session", self._async_value(True))
         monkeypatch.setattr(sessions.db, "add_event", fake_event)
         monkeypatch.setattr(sessions.docker_engine, "remove_container", noop)
-        monkeypatch.setattr(sessions.github, "dispatch_dev_deploy", fake_dispatch)
+        monkeypatch.setattr(sessions.dev_deployments, "start", fake_order)
         monkeypatch.setattr(sessions.github, "wait_for_pr_builds", fake_build_wait)
 
         await sessions.manager._settle(7, exit_code=0, error=None)
 
-        assert dispatched == []
+        assert deployments == []
         assert build_waits == []
         failed = [p for k, p in events if k == EventKind.DEPLOY and p.get("status") == "failed"]
         assert len(failed) == 1
@@ -3483,15 +3513,15 @@ class TestSettlementRaceAndDeployTag:
         sessions = self._patch_base(monkeypatch, tmp_path)
         self._write_result(tmp_path, pr_url="https://github.com/LogosOSS/Logos/pull/772")
         events: list = []
-        dispatched: list = []
+        deployments: list = []
         build_waits: list = []
 
         async def fake_event(_sid, kind, payload):
             events.append((kind, payload))
 
-        async def fake_dispatch(**kwargs):
-            dispatched.append(kwargs)
-            return "https://github.com/LogosOSS/Logos/actions/runs/1"
+        async def fake_order(*args, **_kwargs):
+            deployments.append(args)
+            return {"id": "plan-1"}
 
         async def fake_build_wait(branch, sha, **_kwargs):
             build_waits.append((branch, sha))
@@ -3504,12 +3534,12 @@ class TestSettlementRaceAndDeployTag:
         monkeypatch.setattr(sessions.db, "transition_session", self._async_value(True))
         monkeypatch.setattr(sessions.db, "add_event", fake_event)
         monkeypatch.setattr(sessions.docker_engine, "remove_container", noop)
-        monkeypatch.setattr(sessions.github, "dispatch_dev_deploy", fake_dispatch)
+        monkeypatch.setattr(sessions.dev_deployments, "start", fake_order)
         monkeypatch.setattr(sessions.github, "wait_for_pr_builds", fake_build_wait)
 
         await sessions.manager._settle(7, exit_code=0, error=None)
 
-        assert dispatched == []
+        assert deployments == []
         assert build_waits == []
         failed = [p for k, p in events if k == EventKind.DEPLOY and p.get("status") == "failed"]
         assert len(failed) == 1
