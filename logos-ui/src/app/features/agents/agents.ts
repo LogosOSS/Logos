@@ -143,6 +143,7 @@ export class Agents implements OnInit {
   /** Null works on the platform repository. */
   formRepositoryId = signal<number | null>(null);
   formTask = signal('');
+  readonly formRam = signal('');
   formModel = signal<string | null>(null);
   formOpenPr = signal(true);
   formDeploy = signal(false);
@@ -229,8 +230,25 @@ export class Agents implements OnInit {
     return 'Pick a model';
   });
 
+  readonly formRamMax = computed(() => {
+    const controls = this.controls();
+    if (controls?.memory_budget_mb == null) return null;
+    return Math.min(1_048_576, controls.memory_budget_mb, controls.host_memory_mb ?? Infinity);
+  });
+
+  readonly formRamError = computed(() => {
+    const text = this.formRam().trim();
+    if (!text) return null;
+    const max = this.formRamMax();
+    if (max === null || max < 512) return 'Custom limits are unavailable on this runner.';
+    if (!/^\d+$/.test(text) || Number(text) < 512 || Number(text) > max) {
+      return 'Enter a whole number between 512 and ' + max.toLocaleString('en-US') + ' MiB.';
+    }
+    return null;
+  });
+
   readonly canSubmit = computed(
-    () => this.formWorkspaceId() !== null && this.formTask().trim().length >= 8,
+    () => this.formWorkspaceId() !== null && this.formTask().trim().length >= 8 && !this.formRamError(),
   );
 
   // ── grouped view ─────────────────────────────────────────────────────────
@@ -865,6 +883,7 @@ export class Agents implements OnInit {
   closeForm(): void {
     this.showForm.set(false);
     this.formTask.set('');
+    this.formRam.set('');
     this.formScreenshots.set('');
     this.formError.set(null);
   }
@@ -921,6 +940,7 @@ export class Agents implements OnInit {
         deploy_to_dev: linked ? false : this.formDeploy(),
         screenshot_paths: paths,
         team_repository_id: repositoryId,
+        ...(this.formRam().trim() ? { memory_override_mb: Number(this.formRam()) } : {}),
       });
       this.sessions.update((list) => [session, ...list]);
       this.closeForm();
