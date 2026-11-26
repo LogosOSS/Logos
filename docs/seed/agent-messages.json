@@ -17,6 +17,12 @@
       "actor": "main",
       "text": "I replaced the fixed delay with a check for the heading the user sees.\n\n```ts\nawait expect(page.getByRole('heading', { name: 'My Workspace' })).toBeVisible();\n```\n\nThe repeated run is in progress.",
       "truncated": false
+    },
+    {
+      "id": "5a53bb572efb436a8a6ecf54c023a6ef",
+      "actor": "child-92b35e72",
+      "text": "The slow-runner comparison is complete.\n\nThe previous test sometimes looked for the workspace while the identity provider was still redirecting. That second page is a valid part of the sign-in flow. The revised test waits for the workspace heading and then checks the visible navigation.\n\nI tried three timing profiles: the normal redirect, a delay before navigation, and a delay after navigation. The same check works in all three cases. The fixture does not change the production authentication flow.",
+      "truncated": false
     }
   ],
   "omitted": 0
