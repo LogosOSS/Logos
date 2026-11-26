@@ -29,9 +29,8 @@ import de.tum.cit.aet.logos.logoswebservice.operations.service.BatchHistoricalCo
  * API, called as the key the user picked, so the permission, ownership and
  * budget rules are the ones that apply to every other batch.
  *
- * The page is an admin facility, so only app admins and logos admins may use
- * it; app developers keep the script path, which talks to the orchestrator's
- * Batch API directly and does not go through here.
+ * Only App Admins and Logos Admins may use the page. The orchestrator applies
+ * the same role rule to batch creation through the page or the direct API.
  */
 @RestController
 public class BatchController {

@@ -193,6 +193,10 @@ batch that a client submitted while the process was down.
 Permission to use a provider does not give permission for everything that the
 provider can do. Logos therefore does not pass requests through without checks:
 
+- **Submission role.** To create a batch, use your active developer key as an
+  App Admin or Logos Admin. Team application keys and service keys cannot
+  create batches. This rule also applies to the API mirrors. It does not
+  change the ownership checks for files or for existing batches.
 - **Model permissions per request line.** Each line of the input file names its
   own model. Before Logos accepts the file, it checks every line against the
   model permissions of the key on the target provider. If a line names a model

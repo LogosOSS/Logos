@@ -97,6 +97,10 @@ button.ghost {
   }
 }
 
+.table-scroll {
+  overflow-x: auto;
+}
+
 table {
   width: 100%;
   border-collapse: collapse;
@@ -111,6 +115,48 @@ table {
   th {
     font-weight: 500;
     opacity: 0.75;
+  }
+}
+
+@media (max-width: 640px) {
+  table,
+  tbody {
+    display: block;
+  }
+
+  thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+
+  tbody tr {
+    display: block;
+    padding: 8px 0;
+    border-bottom: 1px solid rgb(var(--color-outline-200) / var(--opacity-subtle));
+  }
+
+  td {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 8px;
+    padding: 4px 0;
+    border: 0;
+    overflow-wrap: anywhere;
+  }
+
+  td[data-label]::before {
+    content: attr(data-label);
+    font-family: var(--font-sans, sans-serif);
+    flex-shrink: 0;
+    opacity: 0.75;
+  }
+
+  td.actions:empty {
+    display: none;
   }
 }
 

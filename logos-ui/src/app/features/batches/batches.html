@@ -120,37 +120,39 @@
       } @else if (batches().length === 0) {
         <p class="empty">No batches yet.</p>
       } @else {
-        <table>
-          <thead>
-            <tr>
-              <th>Batch</th>
-              <th>Created</th>
-              <th>Status</th>
-              <th>Progress</th>
-              <th>Runs on</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            @for (batch of batches(); track batch.id) {
+        <div class="table-scroll" role="region" aria-label="Batch results" tabindex="0">
+          <table>
+            <thead>
               <tr>
-                <td class="mono">{{ batch.id }}</td>
-                <td>{{ createdAtOf(batch) }}</td>
-                <td><span class="status" [class]="'status-' + batch.status">{{ batch.status }}</span></td>
-                <td>{{ progressOf(batch) }}</td>
-                <td>{{ batch.logos_execution === 'logos' ? 'Logos' : 'Provider' }}</td>
-                <td class="actions">
-                  @if (batch.output_file_id) {
-                    <button class="ghost" (click)="download(batch)">Download results</button>
-                  }
-                  @if (!isTerminal(batch)) {
-                    <button class="ghost" (click)="cancel(batch)">Cancel</button>
-                  }
-                </td>
+                <th>Batch</th>
+                <th>Created</th>
+                <th>Status</th>
+                <th>Progress</th>
+                <th>Runs on</th>
+                <th></th>
               </tr>
-            }
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              @for (batch of batches(); track batch.id) {
+                <tr>
+                  <td class="mono" data-label="Batch">{{ batch.id }}</td>
+                  <td data-label="Created">{{ createdAtOf(batch) }}</td>
+                  <td data-label="Status"><span class="status" [class]="'status-' + batch.status">{{ batch.status }}</span></td>
+                  <td data-label="Progress">{{ progressOf(batch) }}</td>
+                  <td data-label="Runs on">{{ batch.logos_execution === 'logos' ? 'Logos' : 'Provider' }}</td>
+                  <td class="actions">
+                    @if (batch.output_file_id) {
+                      <button class="ghost" (click)="download(batch)">Download results</button>
+                    }
+                    @if (!isTerminal(batch)) {
+                      <button class="ghost" (click)="cancel(batch)">Cancel</button>
+                    }
+                  </td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        </div>
       }
     </section>
   }
