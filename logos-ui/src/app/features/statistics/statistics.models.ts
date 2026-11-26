@@ -342,6 +342,8 @@ export interface RequestItem {
    * developer keys (and application keys that never set one).
    */
   environment: string | null;
+  /** Set by the server for an authenticated internal benchmark request. */
+  benchmark?: boolean;
   prompt_tokens: number | null;
   completion_tokens: number | null;
   total_tokens: number | null;

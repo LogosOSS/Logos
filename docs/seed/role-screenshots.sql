@@ -540,6 +540,16 @@ JOIN models m ON m.name = 'gpt-4o-mini'
              AND m.description LIKE '%[docs-role-screenshots]'
 JOIN providers p ON p.name = 'Docs Local Worker';
 
+-- The newest queued sample shows the source badge next to its usual state.
+-- It has no user, team, or API key.
+INSERT INTO log_entry (
+    request_id, model_id, provider_id, timestamp_request, environment, benchmark_job_id
+)
+SELECT 'docs-role-zz-benchmark-request', m.id, p.id, now(), 'docs-role-screenshots', 1
+FROM models m
+JOIN providers p ON p.name = 'Docs Local Worker'
+WHERE m.name = 'llama-3.1-8b-instruct';
+
 -- Retire the demo model. The BEFORE DELETE trigger stamps the model name onto
 -- every usage row before the foreign key nulls the id, so the statistics
 -- page keeps showing the usage under the model's former name — flagged

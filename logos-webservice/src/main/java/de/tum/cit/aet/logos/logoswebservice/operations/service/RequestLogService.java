@@ -204,6 +204,7 @@ public class RequestLogService {
                 m.put("api_key_name", p.getApiKeyName());
                 m.put("api_key_type", p.getApiKeyType());
                 m.put("environment", p.getEnvironment());
+                m.put("benchmark", Boolean.TRUE.equals(p.getBenchmark()));
                 putTokenCounts(m, p.getPromptTokens(), p.getEstimatedPromptTokens(),
                     p.getCompletionTokens(), p.getTotalTokens());
                 m.put("cost_microcents", p.getCostMicroCents());

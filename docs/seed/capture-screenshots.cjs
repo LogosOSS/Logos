@@ -371,7 +371,15 @@ const SHOTS = [
     after: (p) => p.getByText("Mark all as read").first().evaluate((b) => b.click()),
   },
 
-  { file: "roles/logos-admin-statistics.png", user: ADMIN, full: true, go: (p) => p.goto(BASE + "/statistics?tab=requests") },
+  {
+    file: "roles/logos-admin-statistics.png",
+    user: ADMIN,
+    full: true,
+    go: async (p) => {
+      await p.goto(BASE + "/statistics?tab=requests");
+      await p.locator(".rr-badge--benchmark").waitFor();
+    },
+  },
   {
     file: "roles/logos-admin-statistics-requesters.png",
     user: ADMIN,

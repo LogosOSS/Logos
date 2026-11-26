@@ -106,4 +106,5 @@
     <include file="liquibase/changelog/099_requested_model_use_policy.xml"/>
     <include file="liquibase/changelog/100_nightly_rotation_window.xml"/>
     <include file="liquibase/changelog/101_nightly_window_revision.xml"/>
+    <include file="liquibase/changelog/102_log_entry_benchmark_source.xml"/>
 </databaseChangeLog>

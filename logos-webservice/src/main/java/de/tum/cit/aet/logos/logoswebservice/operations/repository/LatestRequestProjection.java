@@ -25,6 +25,7 @@ public interface LatestRequestProjection {
     String getApiKeyName();
     String getApiKeyType();
     String getEnvironment();
+    Boolean getBenchmark();
     Long getPromptTokens();
     /** Body-derived stand-in when the upstream never reported prompt_tokens. */
     Long getEstimatedPromptTokens();

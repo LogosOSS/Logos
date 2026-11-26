@@ -37,6 +37,11 @@ the charts and the recent requests always show the same requests. This is also
 true when you drag across the request volume chart to select a time range. Only
 the state filter applies to the recent requests alone.
 
+In **Recent requests**, the **Benchmark** badge identifies a request from an
+internal Logos benchmark. The badge does not change the state of the request.
+
+![The Statistics Requests tab with a queued request that has the Benchmark badge](/img/roles/logos-admin-statistics.png)
+
 On the **Local Providers** tab, each worker node has its own section. The
 section shows memory, lane health and GPU metrics. Next to the name of the
 worker, the page shows `version: <commit>` and an info icon. `<commit>` is the
@@ -149,8 +154,6 @@ A worker unloads a lane at once, also while it loads or wakes another lane. It
 loads two lanes at the same time only if they use different GPUs. If the only
 GPUs that fit are in use by a lane that loads, the second lane waits until the
 first lane has started.
-
-![Statistics page](/img/roles/logos-admin-statistics.png)
 
 ## Models
 

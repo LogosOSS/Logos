@@ -35,6 +35,18 @@ describe('recent request time progression', () => {
     fixture.detectChanges();
   }
 
+  it('shows a Benchmark badge only on requests the server marks as benchmarks', () => {
+    push(row({ benchmark: true, scheduled_ts: null }));
+    expect(fixture.nativeElement.querySelector('.rr-badge--benchmark')?.textContent).toBe('Benchmark');
+    expect(fixture.nativeElement.querySelector('.rr-badge--queued')?.textContent).toBe('Queued');
+
+    push(row({ benchmark: true, request_complete_ts: new Date(epoch).toISOString() }));
+    expect(fixture.nativeElement.querySelector('.rr-badge--benchmark')?.textContent).toBe('Benchmark');
+
+    push(row({ benchmark: false, environment: 'model-provider-benchmark' }));
+    expect(fixture.nativeElement.querySelector('.rr-badge--benchmark')).toBeNull();
+  });
+
   it('refreshes the clock before rendering a newly scheduled row between ticks', () => {
     push(row({ scheduled_ts: null }));
     vi.advanceTimersByTime(500);

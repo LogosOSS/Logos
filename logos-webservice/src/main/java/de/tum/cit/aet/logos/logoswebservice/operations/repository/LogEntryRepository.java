@@ -446,6 +446,7 @@ public interface LogEntryRepository extends JpaRepository<LogEntry, Integer> {
                     THEN COALESCE(NULLIF(k.environment, '-'), NULLIF(le.environment, '-'))
                     ELSE NULLIF(le.environment, '-')
                END AS environment,
+               (le.benchmark_job_id IS NOT NULL) AS benchmark,
                tk.prompt_tokens AS promptTokens,
                tk.estimated_prompt_tokens AS estimatedPromptTokens,
                tk.completion_tokens AS completionTokens,

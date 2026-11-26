@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+    xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+    <!-- Do not infer this value for historical rows from the API key's configurable
+         environment. Keep the marker even if the benchmark job is removed. -->
+    <changeSet id="102-log-entry-benchmark-source" author="logos">
+        <addColumn tableName="log_entry">
+            <column name="benchmark_job_id" type="INTEGER"/>
+        </addColumn>
+        <rollback>
+            <dropColumn tableName="log_entry" columnName="benchmark_job_id"/>
+        </rollback>
+    </changeSet>
+</databaseChangeLog>

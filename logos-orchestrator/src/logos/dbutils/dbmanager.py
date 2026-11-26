@@ -5016,19 +5016,25 @@ class DBManager:
         request_id: Optional[str] = None,
         timeout_s: Optional[float] = None,
         timestamp_request: Optional[datetime.datetime] = None,
+        *,
+        benchmark_job_id: Optional[int] = None,
     ) -> tuple[dict, int]:
         # Deferred inserts retain arrival time, before scheduling/provider events.
         timestamp = (timestamp_request or datetime.datetime.now(datetime.timezone.utc)).isoformat()
         payload_str = _json_for_jsonb(input_payload) if log_level == "FULL" and input_payload else None
         headers_str = _json_for_jsonb(dict(headers)) if log_level == "FULL" and headers else None
 
+        # Only the signed internal benchmark endpoint sets this marker. Keep
+        # ordinary inserts independent of the newly added benchmark column.
+        benchmark_column = ", benchmark_job_id" if benchmark_job_id is not None else ""
+        benchmark_value = ", :benchmark_job_id" if benchmark_job_id is not None else ""
         row = self.session.execute(
-            text("""
+            text(f"""
                  INSERT INTO log_entry (timestamp_request, api_key_id, team_id, user_id,
                                         environment, client_ip,
-                                        input_payload, headers, privacy_level, request_id, timeout_s)
+                                        input_payload, headers, privacy_level, request_id, timeout_s{benchmark_column})
                  VALUES (:ts, :aki, :tid, :uid, :env,
-                         :ip, :payload, :headers, CAST(:privacy AS logging_enum), :rid, :timeout_s)
+                         :ip, :payload, :headers, CAST(:privacy AS logging_enum), :rid, :timeout_s{benchmark_value})
                  RETURNING id
                  """),
             {
@@ -5043,6 +5049,7 @@ class DBManager:
                 "privacy": log_level,
                 "rid": request_id,
                 "timeout_s": timeout_s,
+                **({"benchmark_job_id": benchmark_job_id} if benchmark_job_id is not None else {}),
             },
         ).fetchone()
         self.session.commit()

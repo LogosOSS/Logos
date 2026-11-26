@@ -85,6 +85,9 @@
                 [class.rr-badge--cloud]="item.is_cloud"
                 [class.rr-badge--local]="!item.is_cloud"
               >{{ item.is_cloud ? 'Cloud' : 'Local' }}</span>
+              @if (item.benchmark) {
+                <span class="rr-badge rr-badge--benchmark" title="Internal benchmark request">Benchmark</span>
+              }
               @if (item.team_name) {
                 <span class="rr-card__team" title="Requesting team">
                   <i class="pi pi-users" aria-hidden="true"></i>{{ item.team_name }}

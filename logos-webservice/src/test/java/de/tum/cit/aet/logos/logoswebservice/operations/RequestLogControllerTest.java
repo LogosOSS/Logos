@@ -95,6 +95,26 @@ class RequestLogControllerTest {
     }
 
     @Test
+    void latestRequests_usesBenchmarkProvenanceNotTheEnvironmentName() throws Exception {
+        jdbc.update("""
+            UPDATE log_entry
+            SET benchmark_job_id = 42, api_key_id = NULL, team_id = NULL, user_id = NULL,
+                environment = 'model-provider-benchmark'
+            WHERE request_id = 'req-bbb-222'
+            """);
+        jdbc.update("UPDATE log_entry SET environment = 'model-provider-benchmark' WHERE request_id = 'req-aaa-111'");
+
+        mvc.perform(post("/logosdb/latest_requests").with(TestJwt.logosAdmin())
+                .contentType("application/json").content("{}"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.requests[0].request_id").value("req-bbb-222"))
+            .andExpect(jsonPath("$.requests[0].benchmark").value(true))
+            .andExpect(jsonPath("$.requests[0].benchmark_job_id").doesNotExist())
+            .andExpect(jsonPath("$.requests[1].request_id").value("req-aaa-111"))
+            .andExpect(jsonPath("$.requests[1].benchmark").value(false));
+    }
+
+    @Test
     void latestRequests_narrowsToOneApiKey() throws Exception {
         mvc.perform(post("/logosdb/latest_requests").with(TestJwt.logosAdmin())
                 .contentType("application/json").content("{\"api_key_id\":3001}"))
