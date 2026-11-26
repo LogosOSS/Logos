@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import os
+from collections.abc import Callable
 from contextlib import suppress
 
 from starlette.responses import StreamingResponse
@@ -106,8 +107,16 @@ class UsageDrainIterator:
 class UsageDrainResponse(StreamingResponse):
     """Close the client iterator even when ASGI send fails between reads."""
 
+    def __init__(self, *args, on_close: Callable[[], None] | None = None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._on_close = on_close
+
     async def __call__(self, scope, receive, send):
         try:
             await super().__call__(scope, receive, send)
         finally:
-            await self.body_iterator.aclose()
+            try:
+                await self.body_iterator.aclose()
+            finally:
+                if self._on_close is not None:
+                    self._on_close()

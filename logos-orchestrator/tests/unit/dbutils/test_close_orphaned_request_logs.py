@@ -83,3 +83,29 @@ def test_the_sweep_is_committed():
     db = _db(rowcount=1)
     db.close_orphaned_request_logs("restarted")
     db.session.commit.assert_called_once()
+
+
+def test_an_interrupted_request_closes_only_its_unforwarded_and_unsettled_row():
+    db = _db(rowcount=1)
+    assert db.close_unforwarded_request_log(34, "interrupted")
+    sql = _executed_sql(db)
+    assert "WHERE id = :log_id" in sql
+    for column in (
+        "result_status",
+        "timestamp_response",
+        "timestamp_forwarding",
+        "timestamp_provider_call",
+        "timestamp_provider_response",
+    ):
+        assert f"AND {column} IS NULL" in sql
+    assert "result_status = 'error'" in sql
+    assert "timestamp_response = NOW()" in sql
+    assert "COALESCE(error_message, :error_message)" in sql
+    assert "usage_tokens" not in sql
+    assert "response_payload" not in sql
+    assert db.session.execute.call_args[0][1] == {"log_id": 34, "error_message": "interrupted"}
+    db.session.commit.assert_called_once()
+
+
+def test_a_forwarded_or_settled_request_is_not_closed_again():
+    assert not _db(rowcount=0).close_unforwarded_request_log(34, "interrupted")
