@@ -31,7 +31,7 @@ class AzureTeamModelAvailabilityMigrationTest {
         try (var connection = DriverManager.getConnection(
                 postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
                 var resources = new ClassLoaderResourceAccessor();
-                var liquibase = new Liquibase("liquibase/changelog/104_azure_team_model_availability.xml",
+                var liquibase = new Liquibase("liquibase/changelog/107_azure_team_model_availability.xml",
                     resources, new JdbcConnection(connection))) {
             var jdbc = new JdbcTemplate(new SingleConnectionDataSource(connection, true));
             jdbc.execute("""

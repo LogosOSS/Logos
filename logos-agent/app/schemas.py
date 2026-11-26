@@ -139,6 +139,9 @@ class SessionCreate(BaseModel):
     # of the platform's own repository. Absent means the platform repository.
     team_repository_id: int | None = Field(default=None, ge=1)
 
+    # A manual session may request a limit in MiB without changing the runner default.
+    memory_override_mb: int | None = Field(default=None, strict=True, ge=512, le=1_048_576)
+
     @field_validator("screenshot_paths")
     @classmethod
     def _relative_paths(cls, v: list[str]) -> list[str]:
@@ -169,6 +172,7 @@ class SessionSummary(BaseModel):
     # Claude Code reports. Authoritative accounting stays in the request log.
     cost_usd: float
     memory_mb: int | None = None  # Per-container limit at admission, in MiB.
+    memory_override_mb: int | None = None
     memory_current_bytes: int | None = None
     memory_peak_bytes: int | None = None
     subagent_count: int | None = None

@@ -53,6 +53,7 @@ export interface AgentSession {
   /** What the agent reported spending, in US dollars. */
   cost_usd: number;
   memory_mb?: number | null;
+  memory_override_mb?: number | null;
   memory_current_bytes?: number | null;
   memory_peak_bytes?: number | null;
   subagent_count?: number | null;
@@ -176,6 +177,7 @@ export interface CreateSessionRequest {
   workspace_id: number;
   task: string;
   model?: string | null;
+  memory_override_mb?: number;
   open_pull_request: boolean;
   deploy_to_dev: boolean;
   screenshot_paths: string[];
