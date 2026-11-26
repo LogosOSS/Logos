@@ -773,6 +773,46 @@ describe('NodeModel', () => {
       expect(entries[0].capability.min_context_fraction).toBe(1);
     });
 
+    it('saves the Nightly switches separately from the serving settings', async () => {
+      const entry = {
+        ...config.entries[0],
+        capability: { ...config.entries[0].capability, nightly_prefix_caching: true },
+        overrides: { ...config.entries[0].overrides, enable_prefix_caching: true },
+      };
+      service['getNodeConfig'].mockResolvedValue({ ...config, entries: [entry] });
+      const root = await start();
+      const prefix = root.querySelector<HTMLButtonElement>('#adv-nightly_prefix_caching')!;
+      const ngram = root.querySelector<HTMLButtonElement>('#adv-nightly_ngram')!;
+      const save = root.querySelector<HTMLButtonElement>('.savebar .btn-primary')!;
+
+      expect(prefix.getAttribute('aria-checked')).toBe('true');
+      expect(ngram.getAttribute('aria-checked')).toBe('false');
+      expect(save.disabled).toBe(true);
+
+      ngram.click();
+      fixture.detectChanges();
+      ngram.click();
+      fixture.detectChanges();
+      expect(save.disabled).toBe(true);
+
+      prefix.click();
+      ngram.click();
+      fixture.detectChanges();
+      expect(prefix.getAttribute('aria-checked')).toBe('false');
+      expect(ngram.getAttribute('aria-checked')).toBe('true');
+      expect(root.querySelector('.savebar')?.textContent).toContain('Allow N-gram trials: Off → On');
+
+      save.click();
+      await settle();
+
+      expect(service['replaceNodeConfig']).toHaveBeenCalledWith(4, 3, [
+        {
+          ...entry,
+          capability: { ...config.entries[0].capability, nightly_ngram: true },
+        },
+      ]);
+    });
+
     it('adds and removes custom settings', async () => {
       await start();
 
@@ -1264,10 +1304,12 @@ describe('NodeModel', () => {
     };
     const page = (): NodeModel => fixture.componentInstance;
 
-    it('shows placement and engine at once and keeps the rest under All engine settings', async () => {
+    it('shows placement, engine and Nightly at once and keeps the other groups under All engine settings', async () => {
       const root = await open();
 
-      expect(Array.from(root.querySelectorAll('h3.group')).map((h) => h.textContent!.trim())).toEqual(['Placement', 'Engine']);
+      expect(Array.from(root.querySelectorAll('h3.group')).map((h) => h.textContent!.trim())).toEqual([
+        'Placement', 'Engine', 'Nightly benchmarks',
+      ]);
       expect(root.querySelector('#adv-dtype')).toBeNull();
 
       Array.from(root.querySelectorAll('button')).find((b) => b.textContent?.includes('All engine settings'))!.click();

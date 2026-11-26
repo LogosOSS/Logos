@@ -551,8 +551,9 @@ If a comparable benchmark found a better placement, then the purple banner
 **Recommended by benchmark** shows it. Select **Use recommendation** to set the size, the
 KV cache memory and the context length. You can change them afterwards.
 
-**Advanced settings** has groups: **Placement**, **Engine** and, under **All engine settings**,
-**Memory and precision**, **Performance and stability**, **Serving** and **Arguments**.
+**Advanced settings** shows **Placement**, **Engine** and **Nightly benchmarks**.
+Enable **Allow prefix caching trials** or **Allow N-gram trials** to let Nightly vary those settings for this deployment.
+**All engine settings** opens **Memory and precision**, **Performance and stability**, **Serving** and **Arguments**.
 In **Memory and precision**, the field **Base residency** replaces the memory that the calibration
 measured for the weights. Use it only if the calibration cannot measure the model.
 A new value marks the calibration as outdated.

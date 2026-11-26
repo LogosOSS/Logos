@@ -203,7 +203,7 @@ describe('the groups of the advanced settings', () => {
 
     expect(ADVANCED_FIELDS.every((f) => groups.has(f.group))).toBe(true);
     expect(new Set(ADVANCED_FIELDS.map((f) => f.key)).size).toBe(ADVANCED_FIELDS.length);
-    expect(FIELD_GROUPS.filter((g) => g.top).map((g) => g.id)).toEqual(['placement', 'engine']);
+    expect(FIELD_GROUPS.filter((g) => g.top).map((g) => g.id)).toEqual(['placement', 'engine', 'nightly']);
   });
 
   it('offers a choice for the fields that have a fixed list of values', async () => {

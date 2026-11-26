@@ -1,9 +1,9 @@
 import { NodeConfigEntry } from '../../../shared/models/node-config.model';
 import { entrySettings } from './node-model-format';
 
-export type FieldKind = 'text' | 'int' | 'num' | 'tri' | 'percent' | 'lines' | 'select' | 'gpus';
+export type FieldKind = 'text' | 'int' | 'num' | 'tri' | 'toggle' | 'percent' | 'lines' | 'select' | 'gpus';
 
-export type GroupId = 'placement' | 'engine' | 'memory' | 'performance' | 'serving' | 'arguments';
+export type GroupId = 'placement' | 'engine' | 'nightly' | 'memory' | 'performance' | 'serving' | 'arguments';
 
 export interface FieldGroup {
   id: GroupId;
@@ -15,6 +15,7 @@ export interface FieldGroup {
 export const FIELD_GROUPS: FieldGroup[] = [
   { id: 'placement', title: 'Placement', top: true },
   { id: 'engine', title: 'Engine', top: true },
+  { id: 'nightly', title: 'Nightly benchmarks', top: true },
   { id: 'memory', title: 'Memory and precision', top: false },
   { id: 'performance', title: 'Performance and stability', top: false },
   { id: 'serving', title: 'Serving', top: false },
@@ -96,6 +97,20 @@ export const ADVANCED_FIELDS: AdvancedField[] = [
       label: 'Prefix caching',
       kind: 'tri',
       help: 'Reuse the KV cache of shared prompt beginnings.',
+    },
+  ]),
+  ...fieldsOf('nightly', 'capability', [
+    {
+      key: 'nightly_prefix_caching',
+      label: 'Allow prefix caching trials',
+      kind: 'toggle',
+      help: 'Let Nightly test changes to prefix caching on this deployment.',
+    },
+    {
+      key: 'nightly_ngram',
+      label: 'Allow N-gram trials',
+      kind: 'toggle',
+      help: 'Let Nightly test N-gram speculative decoding on this deployment.',
     },
   ]),
   ...fieldsOf('memory', 'overrides', [
@@ -330,6 +345,7 @@ const parseField = (field: AdvancedField, text: string): unknown => {
     case 'percent':
       return Number(text) / 100;
     case 'tri':
+    case 'toggle':
       return text === 'true';
     case 'lines':
       return text.split('\n').map((l) => l.trim()).filter((l) => l !== '');
@@ -370,7 +386,11 @@ export function advancedChanges(start: AdvancedDraft, now: AdvancedDraft): strin
   for (const field of ADVANCED_FIELDS) {
     const a = (start.values[field.key] ?? '').trim();
     const b = (now.values[field.key] ?? '').trim();
-    if (a !== b) {
+    if (field.kind === 'toggle') {
+      if ((a === 'true') !== (b === 'true')) {
+        out.push(`${field.label}: ${a === 'true' ? 'On' : 'Off'} → ${b === 'true' ? 'On' : 'Off'}`);
+      }
+    } else if (a !== b) {
       out.push(`${field.label}: ${a === '' ? 'default' : a.replace(/\n/g, ' ')} → ${b === '' ? 'default' : b.replace(/\n/g, ' ')}`);
     }
   }

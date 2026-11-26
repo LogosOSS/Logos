@@ -303,7 +303,7 @@ export class NodeModel implements OnInit {
   readonly groups = FIELD_GROUPS;
   readonly filter = signal('');
   readonly allOpen = signal(false);
-  /** The engine settings below the first two groups show when asked for or when a filter is typed. */
+  /** The other engine settings show when asked for or when a filter is typed. */
   readonly showAll = computed(() => this.allOpen() || this.filter().trim() !== '');
   /** How many settings the draft sets: the fields with a value and the custom rows. */
   readonly setCount = computed(() => {
@@ -706,6 +706,11 @@ export class NodeModel implements OnInit {
   setAdv(key: string, value: string): void {
     const now = this.adv();
     if (now) this.adv.set({ ...now, values: { ...now.values, [key]: value } });
+  }
+
+  setNightlyOptIn(key: string, enabled: boolean): void {
+    const start = this.advStart()?.values[key];
+    this.setAdv(key, enabled ? 'true' : start === 'false' ? start : '');
   }
 
   addCustom(): void {

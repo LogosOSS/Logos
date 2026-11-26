@@ -123,9 +123,12 @@ The scheduler checks worker limits and excludes configurations it already tried.
 | `speculative_config` | Off or N-gram with up to 3 draft tokens on compatible CUDA deployments with `nightly_ngram: true`. Off or MTP with 3 draft tokens on supported Qwen3.8-27B deployments. |
 
 The N-gram preset looks for matching sequences of 2 to 5 tokens in the request and generated text.
-Set each opt-in in the model capability on its worker. Each opt-in permits Nightly to test the setting.
-For a new worker, use `logos.capabilities_models` in `config.yml`. For an existing worker, use its stored node configuration.
-The worker reports the opt-ins. Nightly checks the vLLM version, GPU and serving configuration before it tests a value.
+To allow trials, open **Providers**, expand the worker, and select the model.
+Open **Edit configuration** or **Edit settings**, then find **Nightly benchmarks** under **Advanced settings**.
+Turn on **Allow prefix caching trials**, **Allow N-gram trials**, or both, and select **Save**.
+These switches let Nightly try the settings while keeping the current serving configuration in place.
+Nightly checks the vLLM version, GPU and serving configuration before it tests a value.
+You can also set the initial opt-ins under `logos.capabilities_models` in a new worker's `config.yml`.
 
 The scheduler calculates numerical options around the best measured configuration.
 It tests in an untried direction or reduces the step within a measured interval.
