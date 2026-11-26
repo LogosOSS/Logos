@@ -58,9 +58,10 @@ class TagPolicyTest {
         assertThatThrownBy(() -> open.check("a".repeat(129))).isInstanceOf(IllegalArgumentException.class);
     }
 
-    @Test
-    void theReservedTagIsRefused() {
-        assertThatThrownBy(() -> open.check("previous"))
+    @ParameterizedTest
+    @ValueSource(strings = {"previous", "prefetched"})
+    void aReservedTagIsRefused(String tag) {
+        assertThatThrownBy(() -> open.check(tag))
             .isInstanceOf(IllegalArgumentException.class)
             .hasMessageContaining("reserved");
     }

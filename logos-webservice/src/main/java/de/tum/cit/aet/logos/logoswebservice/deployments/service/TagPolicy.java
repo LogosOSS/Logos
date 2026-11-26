@@ -1,5 +1,6 @@
 package de.tum.cit.aet.logos.logoswebservice.deployments.service;
 
+import java.util.Map;
 import java.util.regex.Pattern;
 
 import org.springframework.stereotype.Component;
@@ -16,7 +17,9 @@ public class TagPolicy {
 
     /** The grammar of a Docker tag, and the same limit the deployers check before they use a tag. */
     private static final Pattern DOCKER_TAG = Pattern.compile("[A-Za-z0-9_][A-Za-z0-9._-]{0,127}");
-    private static final String RESERVED = "previous";
+    /** The tags that the node managers keep for images of their own, with what each one is for. */
+    private static final Map<String, String> RESERVED =
+        Map.of("previous", "the previous version", "prefetched", "an image downloaded early");
 
     private final DeploymentProperties properties;
     private final Pattern restricted;
@@ -31,8 +34,9 @@ public class TagPolicy {
         if (tag == null || !DOCKER_TAG.matcher(tag).matches()) {
             throw new IllegalArgumentException("The tag is not a Docker image tag.");
         }
-        if (RESERVED.equals(tag)) {
-            throw new IllegalArgumentException("The tag 'previous' is reserved for the previous version on the hosts.");
+        if (RESERVED.containsKey(tag)) {
+            throw new IllegalArgumentException(
+                "The tag '" + tag + "' is reserved for " + RESERVED.get(tag) + " on the hosts.");
         }
         if (properties.protect() && !restricted.matcher(tag).matches()) {
             throw new IllegalArgumentException(

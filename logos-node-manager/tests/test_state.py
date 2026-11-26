@@ -68,6 +68,12 @@ def test_ordinary_ids_and_tags_are_accepted(value):
     assert validate_tag(value) == value
 
 
+def test_the_tag_prefetched_is_reserved_for_an_image_downloaded_early():
+    # A deployment takes the name away after its pull: for this tag, that would remove the requested release.
+    with pytest.raises(ValueError, match="reserved"):
+        validate_tag("prefetched")
+
+
 def test_the_tag_previous_is_reserved_for_the_rollback_image():
     with pytest.raises(ValueError, match="reserved"):
         validate_tag("previous")

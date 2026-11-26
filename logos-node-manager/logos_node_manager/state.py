@@ -37,6 +37,9 @@ KEEP_FINISHED = 30
 # The local name ``<image>:previous`` keeps the image of the version that ran before. A deployment cannot ask for this
 # tag: the manager moves the name to the running image before it swaps, so the requested release would be lost.
 PREVIOUS_TAG = "previous"
+# The local name ``<image>:prefetched`` keeps an image that was downloaded before its deployment was ordered. A
+# deployment cannot ask for this tag either: it takes the name away after its pull, and the requested release with it.
+PREFETCHED_TAG = "prefetched"
 
 
 class Phase(str, Enum):
@@ -89,6 +92,8 @@ def validate_tag(value: str) -> str:
         raise ValueError(f"invalid image tag {value!r}")
     if value == PREVIOUS_TAG:
         raise ValueError(f"the image tag {value!r} is reserved for the previous version")
+    if value == PREFETCHED_TAG:
+        raise ValueError(f"the image tag {value!r} is reserved for an image that was downloaded early")
     return value
 
 

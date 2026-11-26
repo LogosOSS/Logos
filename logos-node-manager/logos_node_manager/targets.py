@@ -49,6 +49,9 @@ class Target(Protocol):
     # Whether a failed swap or check can end with the previous version running again.
     can_roll_back: bool
 
+    def prefetch(self, tag: str) -> None:
+        """Download the images for the tag before its deployment is ordered. Nothing that runs changes."""
+
     def begin(self, deployment: "Deployment") -> None:
         """Note what runs now. Moves the record to the pull."""
 

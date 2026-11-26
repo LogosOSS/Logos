@@ -8,6 +8,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
@@ -106,6 +107,22 @@ public class DeploymentReportService {
                 new DeployerApi.Order(step.getId().toString(), plan.getTag(), plan.getInitiator(), step.getKind().name())));
         }
         return orders;
+    }
+
+    /**
+     * What the deployer can download early: the tag of the running plan, as long as the deployer still waits in it for
+     * the core. A plan that has been silent for longer than the limit announces nothing, in the same way as an order
+     * that has waited too long is not handed out.
+     */
+    @Transactional(readOnly = true)
+    public Optional<DeployerApi.Prefetch> prefetchFor(Deployer deployer) {
+        Instant cutoff = clock.instant().minus(properties.silenceLimit());
+        return plans.findFirstByStatus(PlanStatus.running)
+            .filter(plan -> !plan.getLastActivityAt().isBefore(cutoff))
+            .filter(plan -> steps.findByPlanIdOrderByPositionAscDeployerNameAsc(plan.getId()).stream()
+                .anyMatch(step -> step.getStatus() == StepStatus.waiting
+                    && deployer.getId().equals(step.getDeployerId())))
+            .map(plan -> new DeployerApi.Prefetch(plan.getId().toString(), plan.getTag()));
     }
 
     // ------------------------------------------------------------------ Reports

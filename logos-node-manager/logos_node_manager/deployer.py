@@ -121,6 +121,17 @@ class Deployer:
         target.clean_up(deployment)
         return deployment
 
+    def prefetch(self, tag: str) -> None:
+        """Download what a deployment of ``tag`` will need, before it is ordered. No record is made.
+
+        The images are the ones that the compose file names that ran last, or the compose file of the host. The file of
+        the tag is not taken out of its image for this. It names the same images, unless a release renames one, and then
+        the deployment downloads that one itself.
+        """
+        if self.compose is not None and self.docker is not None:
+            self.docker.use_compose(self.compose.current_path() if self.compose.enabled() else None)
+        self.target.prefetch(tag)
+
     def _prepare(self, deployment: Deployment) -> None:
         """Settle what the phases need: which compose file the deployment uses.
 

@@ -7,6 +7,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -482,6 +483,78 @@ class DeploymentFlowTest {
 
         rawStart("a b").andExpect(status().isBadRequest());
         rawStart("previous").andExpect(status().isBadRequest());
+    }
+
+    // ------------------------------------------------------------------ early download
+
+    /** A request for orders of a deployer that downloads early: it says which announcement it knows. */
+    private JsonNode pollKnowing(String key, String knownPrefetch, int waitSeconds) throws Exception {
+        return body(mvc.perform(post("/deployments/deployer/poll")
+                .header("Authorization", "Bearer " + key)
+                .contentType("application/json")
+                .content(json.writeValueAsString(Map.of("wait_s", waitSeconds, "known_prefetch", knownPrefetch))))
+            .andExpect(status().isOk()));
+    }
+
+    @Test
+    void aWaitingWorkerIsToldWhatItCanDownloadWhileTheCoreIsDeployed() throws Exception {
+        String[] keys = coreAndWorker();
+        assertThat(pollKnowing(keys[1], "", 0).hasNonNull("prefetch")).isFalse();
+        String planId = body(rawStart("pr-93").andExpect(status().isCreated())).get("id").asText();
+
+        JsonNode told = pollKnowing(keys[1], "", 0);
+
+        assertThat(told.get("prefetch").get("id").asText()).isEqualTo(planId);
+        assertThat(told.get("prefetch").get("tag").asText()).isEqualTo("pr-93");
+        // It is no order.
+        assertThat(told.get("orders")).isEmpty();
+        // The core does not wait for anything, and a deployer that does not say what it knows is not told.
+        assertThat(pollKnowing(keys[0], "", 0).hasNonNull("prefetch")).isFalse();
+        assertThat(poll(keys[1]).hasNonNull("prefetch")).isFalse();
+    }
+
+    @Test
+    void aNewAnnouncementIsAnsweredAtOnceAndAKnownOneIsHeld() throws Exception {
+        String[] keys = coreAndWorker();
+        String planId = body(rawStart("pr-93").andExpect(status().isCreated())).get("id").asText();
+
+        long asked = System.nanoTime();
+        pollKnowing(keys[1], "", 20);
+        assertThat(Duration.ofNanos(System.nanoTime() - asked)).isLessThan(Duration.ofSeconds(10));
+
+        asked = System.nanoTime();
+        JsonNode again = pollKnowing(keys[1], planId, 2);
+        assertThat(Duration.ofNanos(System.nanoTime() - asked)).isGreaterThanOrEqualTo(Duration.ofSeconds(2));
+        // The announcement still stands, so the answer still has it.
+        assertThat(again.get("prefetch").get("id").asText()).isEqualTo(planId);
+    }
+
+    @Test
+    void theAnnouncementEndsWhenTheWorkerGetsItsOrderOrNeverWill() throws Exception {
+        String[] keys = coreAndWorker();
+        JsonNode first = body(rawStart("pr-93").andExpect(status().isCreated()));
+        report(keys[0], snapshot(step(first, "dev-core").get("id").asText(), "done", "succeeded", "now running pr-93"));
+
+        JsonNode ordered = pollKnowing(keys[1], first.get("id").asText(), 0);
+
+        assertThat(ordered.get("orders")).hasSize(1);
+        assertThat(ordered.hasNonNull("prefetch")).isFalse();
+        String workerStep = step(first, "dev-worker").get("id").asText();
+        report(keys[1], snapshot(workerStep, "done", "succeeded", "now running pr-93"));
+
+        JsonNode second = body(rawStart("pr-94").andExpect(status().isCreated()));
+        report(keys[0], snapshot(step(second, "dev-core").get("id").asText(), "done", "failed", "port is taken"));
+
+        assertThat(pollKnowing(keys[1], "", 0).hasNonNull("prefetch")).isFalse();
+    }
+
+    @Test
+    void aPlanThatHasBeenSilentTooLongAnnouncesNothing() throws Exception {
+        String[] keys = coreAndWorker();
+        rawStart("pr-93").andExpect(status().isCreated());
+        jdbc.update("UPDATE deployment_plans SET last_activity_at = now() - interval '2 hours'");
+
+        assertThat(pollKnowing(keys[1], "", 0).hasNonNull("prefetch")).isFalse();
     }
 
     // ------------------------------------------------------------------ what a deployer may do

@@ -27,6 +27,9 @@ import de.tum.cit.aet.logos.logoswebservice.deployments.service.DeploymentReport
  * <p>A request for orders is held until an order appears or the wait is over (long polling). Each check re-reads the
  * database, because the order may have been made by another copy of the webservice. The request also shows that the
  * deployer is alive.
+ *
+ * <p>A worker waits for its order while the core is deployed. A deployer that says which announcement it knows is also
+ * told what it can download in the meantime, and is answered at once when that is news to it.
  */
 @RestController
 @RequestMapping("/deployments/deployer")
@@ -56,16 +59,19 @@ public class DeployerApiController {
         long holdMs = (long) (Math.max(0.0, wait) * 1000);
         long limitMs = Math.min(holdMs, properties.pollHoldMax().toMillis());
         long deadline = System.nanoTime() + Duration.ofMillis(limitMs).toNanos();
+        String known = body == null ? null : body.knownPrefetch();
         while (true) {
             List<DeployerApi.Order> orders = reports.openOrders(deployer);
-            if (!orders.isEmpty() || System.nanoTime() >= deadline) {
-                return new DeployerApi.PollResponse(orders);
+            DeployerApi.Prefetch prefetch = known == null ? null : reports.prefetchFor(deployer).orElse(null);
+            boolean news = prefetch != null && !prefetch.id().equals(known);
+            if (!orders.isEmpty() || news || System.nanoTime() >= deadline) {
+                return new DeployerApi.PollResponse(orders, prefetch);
             }
             try {
                 Thread.sleep(CHECK_EVERY_MS);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                return new DeployerApi.PollResponse(List.of());
+                return new DeployerApi.PollResponse(List.of(), null);
             }
         }
     }
