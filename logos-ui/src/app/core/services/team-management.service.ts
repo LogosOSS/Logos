@@ -236,6 +236,15 @@ export class TeamManagementService {
     return firstValueFrom(this.http.put<void>(`/api/admin/teams/${teamId}/provider-permissions`, { provider_ids: providerIds }));
   }
 
+  getTeamAzureAutoAccess(teamId: number): Promise<number[]> {
+    return firstValueFrom(this.http.get<number[]>(`/api/admin/teams/${teamId}/azure-model-auto-access`));
+  }
+
+  setTeamAzureAutoAccess(teamId: number, providerId: number, enabled: boolean): Promise<void> {
+    const path = `/api/admin/teams/${teamId}/azure-model-auto-access/${providerId}`;
+    return firstValueFrom(this.http.put<void>(path, { enabled }));
+  }
+
   /** Atomic single-grant add (model access page) — no full-set replacement. */
   addTeamProviderPermission(teamId: number, providerId: number): Promise<void> {
     return firstValueFrom(this.http.post<void>(`/api/admin/teams/${teamId}/provider-permissions/${providerId}`, {}));

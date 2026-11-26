@@ -29,4 +29,7 @@ def _executed_sql(call, monkeypatch):
 def test_query_grants_local_models_and_ignores_explicit_grants_for_agent(call, monkeypatch):
     sql = _executed_sql(call, monkeypatch)
     assert "ki.internal_service = 'agent' AND p.provider_type = 'logosnode'" in sql
-    assert sql.count("ki.custom = true AND ki.internal_service IS NULL") == 2
+    assert "WHERE ki.internal_service IS NULL" in sql.split("UNION ALL", maxsplit=1)[0]
+    assert "SELECT mp.model_id, mp.provider_id" in sql.split("UNION ALL", maxsplit=1)[1]
+    assert "FROM allowed_key_model_deployments d" in sql
+    assert "JOIN effective_models" not in sql

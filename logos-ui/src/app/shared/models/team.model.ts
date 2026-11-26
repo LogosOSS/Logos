@@ -127,6 +127,7 @@ export interface ProviderItem {
   name: string;
   base_url?: string;
   provider_type?: 'logosnode' | 'cloud';
+  cloud_provider_type?: string | null;
 }
 
 export interface ProviderModelItem {

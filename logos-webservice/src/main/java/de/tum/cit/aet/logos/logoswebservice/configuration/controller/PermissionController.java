@@ -137,6 +137,26 @@ public class PermissionController {
         return ResponseEntity.ok(Map.of("result", "Team provider permissions updated"));
     }
 
+    @GetMapping("/teams/{teamId}/azure-model-auto-access")
+    @PreAuthorize("hasAuthority('" + Role.Names.LOGOS_ADMIN + "')")
+    public ResponseEntity<?> getTeamAzureAutoAccess(@PathVariable Integer teamId) {
+        return ResponseEntity.ok(permissionService.getTeamAzureAutoAccess(teamId));
+    }
+
+    @PutMapping("/teams/{teamId}/azure-model-auto-access/{providerId}")
+    @PreAuthorize("hasAuthority('" + Role.Names.LOGOS_ADMIN + "')")
+    public ResponseEntity<?> setTeamAzureAutoAccess(
+            @PathVariable Integer teamId, @PathVariable Integer providerId,
+            @RequestBody AzureAutoAccessRequest body) {
+        if (body.enabled() == null) {
+            return ResponseEntity.badRequest().body(Map.of("error", "enabled is required"));
+        }
+        permissionService.setTeamAzureAutoAccess(teamId, providerId, body.enabled());
+        return ResponseEntity.noContent().build();
+    }
+
+    public record AzureAutoAccessRequest(Boolean enabled) {}
+
     /**
      * One-click repair from the model access page: atomically adds a single
      * team-provider grant without replacing the team's other grants.

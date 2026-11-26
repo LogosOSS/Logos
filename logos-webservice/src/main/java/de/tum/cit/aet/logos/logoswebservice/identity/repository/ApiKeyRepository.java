@@ -192,13 +192,10 @@ public interface ApiKeyRepository extends JpaRepository<ApiKey, Integer> {
     @Query(value = """
         SELECT m.id AS model_id, p.id AS provider_id,
                m.name AS model_name, p.name AS provider_name, p.provider_type::text AS provider_type
-        FROM team_model_permissions tmp
-        JOIN model_provider mp ON mp.model_id = tmp.model_id
-        JOIN models m ON m.id = mp.model_id
-        JOIN providers p ON p.id = mp.provider_id
-        JOIN allowed_team_provider_grants tpp
-          ON tpp.team_id = tmp.team_id AND tpp.provider_id = mp.provider_id
-        WHERE tmp.team_id = :teamId
+        FROM allowed_team_model_deployments d
+        JOIN models m ON m.id = d.model_id
+        JOIN providers p ON p.id = d.provider_id
+        WHERE d.team_id = :teamId
         ORDER BY m.name, p.name
         """, nativeQuery = true)
     List<ModelAccessProjection> findAccessibleModelsByTeam(@Param("teamId") int teamId);

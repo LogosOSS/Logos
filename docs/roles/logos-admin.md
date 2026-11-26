@@ -781,6 +781,11 @@ For the tabs Overview to Settings, see [App Admin → Teams](app-admin.md#teams)
 Logos Admins also get a **Providers** tab. This tab shows which cloud
 providers and worker providers the team can use.
 
+For an assigned Azure provider, select **Auto-allow synced Azure models** to give default team keys access to its synced deployments.
+The option is off by default. It applies only to this team and provider.
+The team privacy setting still applies. The option does not change custom key permissions.
+Clear the option to remove automatic access. Manually granted models keep their access.
+
 ![Team detail — Providers](/img/roles/team-detail-providers.png)
 
 ## Permission Audit

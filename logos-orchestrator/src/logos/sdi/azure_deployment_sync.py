@@ -352,7 +352,8 @@ class AzureDeploymentSyncService:
             logger.warning("Azure deployment sync: provider %s (%s) has no api_key; skipping", pid, name)
             return False, False
         try:
-            host = azure_host_from_base_url(provider.get("base_url", ""))
+            base_url = provider.get("base_url", "")
+            host = azure_host_from_base_url(base_url)
             raw = await fetch_azure_deployments(host, api_key, client)
         except Exception:  # noqa: BLE001
             logger.exception("Azure deployment sync: fetch failed for provider %s (%s)", pid, name)
@@ -362,7 +363,7 @@ class AzureDeploymentSyncService:
         planned = plan_sync(host, raw, known_batch)
         try:
             with DBManager() as db:
-                result = db.sync_azure_deployments(pid, planned)
+                result = db.sync_azure_deployments(pid, planned, provider_base_url=base_url)
                 try:
                     await deliver_discovery_notifications(db)
                 except Exception:  # noqa: BLE001
@@ -387,7 +388,7 @@ class AzureDeploymentSyncService:
             if replanned != planned:
                 try:
                     with DBManager() as db:
-                        second = db.sync_azure_deployments(pid, replanned)
+                        second = db.sync_azure_deployments(pid, replanned, provider_base_url=base_url)
                     planned = replanned
                     result = {**result, "changed": bool(result["changed"] or second["changed"])}
                 except Exception:  # noqa: BLE001
