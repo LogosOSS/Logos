@@ -2169,6 +2169,7 @@ class SessionManager:
     ) -> None:
         """Phase one: the helper that makes the working copy trustworthy."""
         pr_base = ""
+        publication = {}
         workspace_id = session.get("workspace_id")
         if workspace_id is not None:
             try:
@@ -2181,6 +2182,24 @@ class SessionManager:
                 # transient failure to update the workspace row after recording it.
                 await db.set_workspace_base_branch(int(workspace_id), branch)
                 workspace = {**workspace, "base_branch": branch}
+        base_branch = str(workspace["base_branch"])
+        is_analysis = str(session.get("trigger_kind") or "") == "analysis"
+        push_env = await self._push_environment(session)
+        checkout_fork = None
+        if (
+            session.get("no_push")
+            and not is_analysis
+            and workspace_id is not None
+            and _uses_repository_sandbox(session)
+        ):
+            # Private sessions can read a previously published branch without
+            # acquiring a push target or creating another fork.
+            checkout_fork = await db.published_checkout_fork(
+                int(workspace_id),
+                str(session["repo_slug"]),
+                base_branch,
+                has_publication_receipt=publication.get("branch") == base_branch,
+            )
         env = {
             "LOGOS_SESSION_PHASE": "prepare",
             # Carries the conversation across the home wipe, and nothing
@@ -2189,30 +2208,29 @@ class SessionManager:
             "LOGOS_SESSION_CONTINUE": "1" if continuing else "",
             "LOGOS_SESSION_ID": str(session["id"]),
             "LOGOS_SESSION_BRANCH": branch,
-            "LOGOS_SESSION_BASE_BRANCH": workspace["base_branch"],
+            "LOGOS_SESSION_BASE_BRANCH": base_branch,
             "LOGOS_SESSION_PR_BASE_BRANCH": pr_base,
             "LOGOS_SESSION_REPOSITORY_BRANCH": session.get("repo_base_branch") or "",
             "LOGOS_REPO_URL": session.get("repo_url") or settings.repo_url,
             "LOGOS_REPO_SLUG": session.get("repo_slug") or settings.repo_slug,
             "LOGOS_ARTIFACT_DIR": "/artifacts",
-            **(await self._push_environment(session)),
+            **push_env,
             # A workspace that continues published agent work starts from
             # that branch, which lives on the fork when the session uses one.
             "LOGOS_SESSION_BASE_ON_FORK": (
-                "1"
-                if session.get("push_repo_slug") and str(workspace["base_branch"]).startswith(settings.branch_prefix)
-                else ""
+                "1" if session.get("push_repo_slug") and base_branch.startswith(settings.branch_prefix) else ""
             ),
             # The account the session's commits belong to. The helper
             # configures git with it, and the finalizer refuses to push if
             # the token turns out to be somebody else's.
             "LOGOS_AGENT_GITHUB_LOGIN": settings.github_login,
         }
+        if checkout_fork:
+            env["LOGOS_CHECKOUT_FORK_URL"] = f"https://github.com/{checkout_fork}.git"
         # Application analysis must not inherit the shared bot token — even
         # after unlink nulls team_repository_id while repo_url/repo_slug remain.
         # Only an active per-link deploy key authenticates private checkout;
         # otherwise the helper uses anonymous HTTPS.
-        is_analysis = str(session.get("trigger_kind") or "") == "analysis"
         team_repo_id = session.get("team_repository_id")
         if settings.session_github_token and not is_analysis:
             env["GITHUB_TOKEN"] = settings.session_github_token

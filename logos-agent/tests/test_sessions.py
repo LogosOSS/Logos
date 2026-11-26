@@ -6638,6 +6638,53 @@ class TestAFailureThatSaysWhy:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("fork", ["agent-account/private", None])
+async def test_private_manual_checkout_only_reads_a_recorded_fork(monkeypatch, tmp_path, fork):
+    from unittest.mock import AsyncMock
+
+    from app import sessions
+
+    captured = {}
+
+    async def fake_run_helper(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    lookup = AsyncMock(return_value=fork)
+    push_target = AsyncMock(side_effect=AssertionError("private checkout cannot find or create a push target"))
+    monkeypatch.setattr(sessions.db, "published_checkout_fork", lookup)
+    monkeypatch.setattr(sessions.github, "push_target", push_target)
+    monkeypatch.setattr(sessions.manager, "_run_helper", fake_run_helper)
+    monkeypatch.setattr(sessions, "settings", replace(sessions.settings, session_github_token="ghp-test"))
+    first_branch = f"{sessions.settings.branch_prefix}ws/session-41"
+    session = {
+        "id": 42,
+        "workspace_id": 7,
+        "team_repository_id": 5,
+        "repo_slug": "example/private",
+        "no_push": True,
+    }
+    await sessions.manager._prepare_checkout(
+        session,
+        {"base_branch": first_branch, "volume_name": "vol"},
+        f"{sessions.settings.branch_prefix}ws/session-42",
+        str(tmp_path / "42"),
+    )
+
+    lookup.assert_awaited_once_with(7, "example/private", first_branch, has_publication_receipt=False)
+    push_target.assert_not_called()
+    env = captured["env"]
+    assert env["LOGOS_SESSION_BASE_BRANCH"] == first_branch
+    if fork:
+        assert env["LOGOS_CHECKOUT_FORK_URL"] == f"https://github.com/{fork}.git"
+    else:
+        assert "LOGOS_CHECKOUT_FORK_URL" not in env
+    assert "LOGOS_PUSH_REPO_URL" not in env
+    assert "LOGOS_PUSH_REPO_SLUG" not in env
+    assert "push_repo_slug" not in session
+
+
+@pytest.mark.asyncio
 async def test_orphaned_analysis_prepare_omits_shared_github_token(monkeypatch, tmp_path):
     """Unlinked analysis sessions must not fall back to the bot token."""
     from dataclasses import replace

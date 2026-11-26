@@ -110,6 +110,26 @@ async def test_the_fork_recorded_at_preparation_reaches_finalization(database):
     assert reloaded["push_repo_slug"] == "LogosOSSAgent/a"
 
 
+async def test_the_published_base_fork_is_recovered_across_private_sessions(database):
+    base = "logos/agent/ws/session-1"
+    publisher = await db.create_session(**_session(branch=base))
+    await db.update_session(publisher, status="succeeded", push_repo_slug="agent/a")
+    private = await db.create_session(
+        **_session(branch="logos/agent/ws/session-2", no_push=True, open_pull_request=False)
+    )
+    await db.update_session(private, status="succeeded")
+    other_branch = await db.create_session(**_session(branch="logos/agent/ws/session-3"))
+    await db.update_session(other_branch, status="succeeded", push_repo_slug="agent/latest")
+    failed = await db.create_session(**_session(branch=base))
+    await db.update_session(failed, status="failed", push_repo_slug="agent/failed")
+
+    assert await db.published_checkout_fork(1, "O/A", base) == "agent/a"
+    assert await db.published_checkout_fork(1, "o/a", base, has_publication_receipt=True) == "agent/failed"
+    assert await db.published_checkout_fork(1, "o/b", base) is None
+    assert await db.published_checkout_fork(2, "o/a", base) is None
+    assert await db.published_checkout_fork(1, "o/a", "logos/agent/ws/session-2") is None
+
+
 async def test_grants_follow_the_link_only_while_it_names_the_sessions_repository(database):
     session_id = await db.create_session(**_session())
     await db.update_session(session_id, status="running", egress_token_hash="h")
