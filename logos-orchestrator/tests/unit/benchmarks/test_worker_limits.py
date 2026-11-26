@@ -50,9 +50,11 @@ def test_limits_respect_worker_and_lane_gpu_assignments():
     assert worker_limits(status, "m")["gpu_count"] == 1
 
 
-def nightly_snapshot(model=QWEN_MTP_MODEL, *, version="0.34.0", capability="12.0", blocked=(), config=None):
+def nightly_snapshot(model=QWEN_MTP_MODEL, *, version="0.34.0", capability="12.0", blocked=(), config=None, opt_ins=()):
     status = snapshot()
     status["runtime"]["devices"]["devices"][0]["extra"] = {"index": 0, "compute_capability": capability}
+    if opt_ins:
+        status["runtime"]["nightly_benchmark_opt_ins"] = {model: list(opt_ins)}
     status["runtime"]["lanes"][0].update(
         model=model,
         nightly_vllm_version=version,
@@ -80,7 +82,7 @@ def test_nightly_values_use_the_lane_gpus_and_resolve_tuning_defaults():
 @pytest.mark.parametrize("size", [7, 14])
 def test_smaller_qwen_variants_offer_cache_precision_and_ngram_without_mtp(size):
     model = f"Qwen/Qwen2.5-Coder-{size}B-Instruct-AWQ"
-    limits = worker_limits(nightly_snapshot(model), model)
+    limits = worker_limits(nightly_snapshot(model, opt_ins=("nightly_ngram",)), model)
     assert nightly_variation_values(limits) == {
         "kv_cache_dtype": ("auto", "fp8"),
         "speculative_config": ("", NGRAM_CONFIG),
@@ -89,11 +91,12 @@ def test_smaller_qwen_variants_offer_cache_precision_and_ngram_without_mtp(size)
         validate_worker_overrides(ServingOverrides(speculative_config=QWEN_MTP_CONFIG), limits)
 
 
-@pytest.mark.parametrize("size", [7, 14])
-def test_turing_qwen_offers_prefix_caching_and_ngram(size):
-    model = f"Qwen/Qwen2.5-Coder-{size}B-Instruct-AWQ"
+def test_opted_in_turing_deployment_offers_prefix_caching_and_ngram():
+    model = "org/another-model"
     config = {"attention_backend": "TRITON_ATTN", "enable_prefix_caching": True, "speculative_config": ""}
-    status = nightly_snapshot(model, capability="7.5", config=config)
+    status = nightly_snapshot(
+        model, capability="7.5", config=config, opt_ins=("nightly_prefix_caching", "nightly_ngram")
+    )
     limits = worker_limits(status, model)
     assert nightly_variation_values(limits) == {
         "enable_prefix_caching": (False, True),
@@ -118,7 +121,13 @@ def test_turing_qwen_offers_prefix_caching_and_ngram(size):
 @pytest.mark.parametrize("checked,blocked", [(False, ()), (True, ("enable_prefix_caching",))])
 def test_nightly_prefix_override_requires_unambiguous_worker_telemetry(checked, blocked):
     model = "Qwen/Qwen2.5-Coder-14B-Instruct-AWQ"
-    status = nightly_snapshot(model, capability="7.5", blocked=blocked, config={"enable_prefix_caching": True})
+    status = nightly_snapshot(
+        model,
+        capability="7.5",
+        blocked=blocked,
+        config={"enable_prefix_caching": True},
+        opt_ins=("nightly_prefix_caching", "nightly_ngram"),
+    )
     status["runtime"]["lanes"][0]["nightly_prefix_caching_checked"] = checked
     limits = worker_limits(status, model)
     assert nightly_variation_values(limits) == {"speculative_config": ("", NGRAM_CONFIG)}
@@ -142,6 +151,29 @@ def test_nightly_prefix_override_requires_unambiguous_worker_telemetry(checked, 
 def test_nightly_extra_values_require_reported_compatibility(settings):
     limits = worker_limits(nightly_snapshot(**settings), QWEN_MTP_MODEL)
     assert nightly_variation_values(limits) == {}
+
+
+@pytest.mark.parametrize(
+    "opt_ins,pp,expected",
+    [
+        ((), 1, {}),
+        (("nightly_prefix_caching",), 1, {"enable_prefix_caching": (False, True)}),
+        (("nightly_ngram",), 1, {"speculative_config": ("", NGRAM_CONFIG)}),
+        (("nightly_prefix_caching", "nightly_ngram"), 2, {"enable_prefix_caching": (False, True)}),
+    ],
+)
+def test_turing_deployment_opts_in_to_each_knob_independently(opt_ins, pp, expected):
+    model = "Qwen/Qwen2.5-Coder-14B-Instruct-AWQ"
+    config = {"enable_prefix_caching": True, "pipeline_parallel_size": pp}
+    status = nightly_snapshot(model, capability="7.5", config=config, opt_ins=opt_ins)
+    assert nightly_variation_values(worker_limits(status, model)) == expected
+
+
+def test_another_models_opt_in_does_not_enable_tuning_on_this_deployment():
+    model = "org/model"
+    status = nightly_snapshot(model, capability="7.5", config={"enable_prefix_caching": True})
+    status["runtime"]["nightly_benchmark_opt_ins"] = {"org/other": ["nightly_prefix_caching", "nightly_ngram"]}
+    assert nightly_variation_values(worker_limits(status, model)) == {}
 
 
 def test_nightly_limits_with_explicit_baseline_do_not_inherit_last_candidate():
