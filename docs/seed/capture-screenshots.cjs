@@ -632,6 +632,7 @@ const SHOTS = [
       const session = p.locator("li.session").filter({ hasText: "Fix the flaky login spec" });
       await session.locator(".session__head").click();
       await session.locator(".agent-message code").waitFor();
+      await session.locator(".agent-message summary").waitFor();
     },
   },
   {
@@ -646,8 +647,12 @@ const SHOTS = [
       await p.getByRole("combobox", { name: "Repository", exact: true }).selectOption({ label: "docs-example/sample-app (develop)" });
       await p.getByRole("combobox", { name: "Workspace", exact: true }).selectOption({ label: "sample-app" });
       await p.locator(".form-card textarea").first().fill("Fix the date format in the export of the order list");
-      await p.locator(".form-card textarea").first().blur();
+      await p.getByRole("textbox", { name: /RAM limit/ }).fill("4096");
+      await p.getByRole("textbox", { name: /RAM limit/ }).blur();
       await p.getByText("Deploy to dev and screenshots are available only for the platform repository.").waitFor();
+      await p.getByRole("checkbox", { name: "Private session: no GitHub writes or deployment" }).check();
+      await p.getByRole("checkbox", { name: "Open a pull request when finished" }).and(p.locator(":disabled")).waitFor();
+      await p.getByRole("checkbox", { name: "Deploy to the dev environment afterwards" }).and(p.locator(":disabled")).waitFor();
     },
   },
   { file: "roles/logos-admin-my-workspace.png", user: ADMIN, go: (p) => p.goto(BASE + "/my-workspace") },

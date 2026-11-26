@@ -691,6 +691,7 @@ async def create_session(
     open_pull_request: bool,
     deploy_to_dev: bool,
     screenshot_paths: Sequence[str],
+    memory_override_mb: int | None = None,
     no_push: bool = False,
     trigger_kind: str | None = None,
     trigger_ref: str | None = None,
@@ -811,7 +812,8 @@ async def create_session(
                          open_pull_request, deploy_to_dev, screenshot_paths,
                          no_push, trigger_kind, trigger_ref, branch_name,
                          reply_target, reaction_target, priority, priority_reason,
-                         repo_url, repo_slug, team_repository_id, verification_command, repo_base_branch)
+                         repo_url, repo_slug, team_repository_id, verification_command,
+                         repo_base_branch, memory_override_mb)
                     VALUES
                         (:workspace_id, :task, :model, 'queued', :created_by,
                          :open_pr, :deploy, CAST(:paths AS jsonb),
@@ -819,7 +821,8 @@ async def create_session(
                          :reply_target,
                          :reaction_target,
                          :priority, :priority_reason,
-                         :repo_url, :repo_slug, :team_repository_id, :verification_command, :repo_base_branch)
+                         :repo_url, :repo_slug, :team_repository_id, :verification_command,
+                         :repo_base_branch, :memory_override_mb)
                     RETURNING id
                     """),
                 {
@@ -852,6 +855,7 @@ async def create_session(
                     "team_repository_id": team_repository_id,
                     "verification_command": verification_command,
                     "repo_base_branch": repo_base_branch,
+                    "memory_override_mb": memory_override_mb,
                 },
             )
         ).scalar_one()
@@ -1103,7 +1107,8 @@ _SESSION_SELECT = """
            s.reply_target, s.reaction_target,
            s.priority, s.priority_reason, s.environment_notes,
            s.repo_url, s.repo_slug, s.team_repository_id, s.verification_command, s.repo_base_branch,
-           s.push_repo_slug, s.memory_mb, s.memory_peak_bytes, s.subagent_count, s.progress_percent,
+           s.push_repo_slug, s.memory_mb, s.memory_override_mb, s.memory_peak_bytes,
+           s.subagent_count, s.progress_percent,
            s.progress_active_s, s.progress_reported_at, s.active_seconds, s.active_since,
            t.name AS team_name,
            COALESCE(s.tokens_in, 0) AS tokens_in,
@@ -1272,7 +1277,7 @@ async def next_queued_session(*, include_triggered: bool = True) -> dict[str, An
             (
                 await db.execute(
                     text("""
-                    SELECT s.id, s.model, s.workspace_id
+                    SELECT s.id, s.model, s.workspace_id, s.memory_override_mb
                       FROM agent_sessions s
                      WHERE s.status = 'queued'
                        AND (:include_triggered OR s.trigger_ref IS NULL)
@@ -1316,7 +1321,12 @@ async def next_queued_session(*, include_triggered: bool = True) -> dict[str, An
 
 
 async def claim_session(
-    session_id: int, *, max_active: int | None = None, memory_mb: int | None = None
+    session_id: int,
+    *,
+    max_active: int | None = None,
+    memory_mb: int | None = None,
+    memory_budget_mb: int | None = None,
+    legacy_default_mb: int | None = None,
 ) -> dict[str, Any] | None:
     """Take this exact queued session, or nothing.
 
@@ -1339,10 +1349,13 @@ async def claim_session(
 
     ``memory_mb`` is written in the same transaction: from the moment the
     row is ``starting`` the memory budget counts what the session's
-    containers will actually get.
+    containers will actually get. If a budget is known, lock admission and
+    compare against all occupying rows, with a fallback for older sessions.
     """
+    if memory_budget_mb is not None and not (memory_mb and legacy_default_mb):
+        raise ValueError("a memory budget requires a session limit and a legacy fallback")
     async with sessionmaker()() as db:
-        if max_active is not None:
+        if max_active is not None or memory_budget_mb is not None:
             # Serialize claims across replicas so two schedulers cannot
             # both count the same last free slot. Held through the claim.
             await db.execute(text("SELECT pg_advisory_xact_lock(hashtext('logos-agent-admission'))"))
@@ -1388,6 +1401,14 @@ async def claim_session(
                                   WHERE active.status = ANY(:occupying)) < CAST(:max_active AS INTEGER)
                            )
                        AND (
+                             CAST(:memory_budget_mb AS BIGINT) IS NULL
+                             OR COALESCE((
+                                 SELECT SUM(COALESCE(active.memory_mb, CAST(:legacy_default_mb AS INTEGER)))
+                                   FROM agent_sessions active
+                                  WHERE active.status = ANY(:occupying)
+                             ), 0) + CAST(:memory_mb AS INTEGER) <= CAST(:memory_budget_mb AS BIGINT)
+                           )
+                       AND (
                              s.trigger_ref IS NULL
                              OR NOT EXISTS (
                                  SELECT 1 FROM agent_sessions manual
@@ -1406,6 +1427,9 @@ async def claim_session(
                 {
                     "session_id": session_id,
                     "max_active": max_active,
+                    "memory_mb": memory_mb,
+                    "memory_budget_mb": memory_budget_mb,
+                    "legacy_default_mb": legacy_default_mb,
                     "occupying": [
                         SessionStatus.STARTING.value,
                         SessionStatus.RUNNING.value,

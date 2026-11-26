@@ -80,19 +80,31 @@ class Controls:
         available = self.max_parallel_available
         return available if self.max_parallel_override is None else min(self.max_parallel_override, available)
 
+    def parallel_for(self, memory_override_mb: int | None) -> int:
+        """Use actual reserved memory to admit a heterogeneous manual session."""
+        if memory_override_mb is None:
+            return self.max_parallel
+        configured = settings.max_parallel_sessions
+        return configured if self.max_parallel_override is None else min(configured, self.max_parallel_override)
+
     @property
     def _reason_suffix(self) -> str:
         return f" ({self.mode_reason})" if self.mode_reason else ""
 
-    def admission_block(self) -> str:
+    def admission_block(self, memory_override_mb: int | None = None) -> str:
         """Why nothing new may start right now, or an empty string."""
         if self.mode == PAUSED:
             return f"the runner is paused{self._reason_suffix}"
         if self.mode == DRAINING:
             return f"the runner is draining: no new sessions{self._reason_suffix}"
-        if self.max_parallel <= 0:
+        if self.parallel_for(memory_override_mb) <= 0:
             budget = memory_budget.current()
-            if budget is not None and budget.ceiling(self.session_memory_mb) <= 0:
+            if (
+                memory_override_mb is None
+                and self.max_parallel_override != 0
+                and budget is not None
+                and budget.ceiling(self.session_memory_mb) <= 0
+            ):
                 return f"the memory budget holds no session: {budget.describe(self.session_memory_mb)}"
             return "the parallel ceiling is set to zero"
         return ""

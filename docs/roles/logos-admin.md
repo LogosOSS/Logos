@@ -853,8 +853,9 @@ The page has these parts, from top to bottom:
 
 Select a session to read **Agent messages** as the agent works. **Agent** identifies
 the parent. **Subagent** and a short identifier distinguish child messages.
-Each message keeps its paragraphs, lists and code. Open **Diagnostic log** to
-see tool activity and runner output, including the logs of older sessions.
+Short messages are visible inline. Select a long message preview to expand
+its paragraphs, lists and code. Open **Diagnostic log** to see tool activity
+and runner output, including the logs of older sessions.
 The message view keeps up to 64 recent messages and marks shortened text.
 
 ![Expanded agent session with parent and child messages and a code sample](/img/roles/logos-admin-agents-messages.png)
@@ -879,8 +880,11 @@ To queue a manual session, do these steps:
      `owner/name (branch)`.
 3. In **Workspace**, select a workspace. One workspace runs one session at a time.
 4. In **Task**, write the change that you want.
-5. To keep the result in Logos, select **Private session: no GitHub writes or deployment**.
-6. Select **Queue session**.
+5. Optionally set **RAM limit (MiB)** for this session. Leave it blank to use
+   the runner default. A custom request waits for enough memory to be free;
+   it does not change the default for other sessions.
+6. To keep the result in Logos, select **Private session: no GitHub writes or deployment**.
+7. Select **Queue session**.
 
 ![Start a session form with the linked repository docs-example/sample-app selected](/img/roles/logos-admin-agents-new-session.png)
 
