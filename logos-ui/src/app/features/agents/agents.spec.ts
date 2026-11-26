@@ -573,12 +573,14 @@ describe('Agents', () => {
       component.formDeploy.set(true);
       component.formScreenshots.set('/dashboard');
       await component.submit();
-      expect(agentService.createBodies[0]).toEqual(expect.objectContaining({
-        no_push: true,
-        open_pull_request: false,
-        deploy_to_dev: false,
-        screenshot_paths: [],
-      }));
+      expect(agentService.createBodies[0]).toEqual(
+        expect.objectContaining({
+          no_push: true,
+          open_pull_request: false,
+          deploy_to_dev: false,
+          screenshot_paths: [],
+        }),
+      );
     });
 
     it('sends no linked repository for the platform repository', async () => {

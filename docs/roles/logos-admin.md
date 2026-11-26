@@ -879,7 +879,8 @@ To queue a manual session, do these steps:
      `owner/name (branch)`.
 3. In **Workspace**, select a workspace. One workspace runs one session at a time.
 4. In **Task**, write the change that you want.
-5. Select **Queue session**.
+5. To keep the result in Logos, select **Private session: no GitHub writes or deployment**.
+6. Select **Queue session**.
 
 ![Start a session form with the linked repository docs-example/sample-app selected](/img/roles/logos-admin-agents-new-session.png)
 
@@ -889,6 +890,12 @@ repository and its branch. The form disables **Deploy to the dev environment
 afterwards** and **Screenshot paths**, because these options are available
 only for the platform repository. A note below the check boxes gives this
 reason.
+
+In a private session, the agent can read issues from the linked repository.
+It cannot create a fork, push a branch, post a comment, or open a pull request.
+It cannot deploy or take screenshots of a deployment.
+In **Task**, ask for the issue link, the proposed change, and the checks in the final response.
+Expand the session and open **Agent messages** to review the result.
 
 The session list and the session details show the repository of a session on
 a linked repository. In the session list, the repository shows below the task,

@@ -785,6 +785,12 @@ an agent steered by text it read cannot turn it against anybody.
 | **Fork** | Automatic when the agent account cannot push | The account's own fork, created on first use; a same-named repository that is not a fork of the target is refused. Leases, workflow refusal and token identity checks are unchanged. |
 | **Closing references** from `closes.txt` | Every linked-repository session | Only open issues assigned to the agent account, i.e. given to it or claimed through the repository's process. |
 
+For a manual private session, set `no_push` to `true` and `open_pull_request` to `false`
+in `POST /sessions`. Leave `deploy_to_dev` false and `screenshot_paths` empty.
+The session keeps linked repository issue reads but cannot post comments, create a fork,
+push a branch, or open a pull request. The caller can review the result in **Agent messages**.
+This option does not change repository-triggered sessions.
+
 The request files are the whole protocol of `logos-github`: the agent writes
 JSON into `/artifacts/github-requests/`, the runner answers into the session's
 read-only state directory within seconds (`app/github_broker.py`). A planted

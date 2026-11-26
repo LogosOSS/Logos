@@ -607,7 +607,9 @@ class TestTheSchedulerPassAnEndpointStarts:
         await self.assert_one_held_pass(passes, release)
 
 
-@pytest.mark.parametrize("option,value", [("open_pull_request", True), ("deploy_to_dev", True), ("screenshot_paths", ["/models"])])
+@pytest.mark.parametrize(
+    "option,value", [("open_pull_request", True), ("deploy_to_dev", True), ("screenshot_paths", ["/models"])]
+)
 async def test_manual_private_session_rejects_publication_options(monkeypatch, option, value):
     from unittest.mock import AsyncMock
 
