@@ -1,12 +1,5 @@
 <div class="batches">
   <h1 class="page-title">Batches</h1>
-  <p class="page-subtitle">
-    Run many requests at once without waiting for them. Where a provider offers a batch endpoint
-    Logos hands the job over and you pay its batch rate; everything else — models served here, and
-    cloud models their provider does not offer for batch — Logos runs itself as low-priority
-    requests that fill whatever capacity interactive traffic leaves.
-  </p>
-
   @if (keys().length === 0) {
     <p class="empty">You need an active API key to run a batch.</p>
   } @else {
@@ -23,14 +16,23 @@
         <small>The batch runs as this key: its model permissions and its team's budget apply.</small>
       </label>
 
-      <label class="field">
-        <span>Input file (.jsonl)</span>
-        <input type="file" accept=".jsonl,application/jsonl,text/plain" (change)="onFileSelected($event)" />
-        <small>
-          One request per line:
-          <code>{{ '{' }}"custom_id": "q-1", "method": "POST", "url": "/v1/chat/completions", "body": {{ '{' }}"model": "…", "messages": […]{{ '}' }}{{ '}' }}</code>
-        </small>
-      </label>
+      <div class="field">
+        <div class="input-heading">
+          <label for="batch-input-file">Input file (.jsonl)</label>
+          <button class="ghost" type="button" (click)="copyPreparationPrompt()">Copy prompt for an agent</button>
+        </div>
+        <input id="batch-input-file" type="file" accept=".jsonl,application/jsonl,text/plain" (change)="onFileSelected($event)" />
+        <div role="status">
+          @if (copyPromptStatus() === 'copied') {
+            <small>Prompt copied.</small>
+          } @else if (copyPromptStatus() === 'manual') {
+            <small>Clipboard unavailable. Copy the prompt below.</small>
+          }
+        </div>
+        @if (copyPromptStatus() === 'manual') {
+          <textarea class="manual-prompt" aria-label="Prompt for a batch preparation agent" readonly rows="6" [value]="preparationPrompt"></textarea>
+        }
+      </div>
 
       @if (readingFile()) {
         <p class="notice" role="status">Reading input file for the cost estimate…</p>
@@ -42,12 +44,12 @@
         <div class="estimate">
           <h3>Estimated cost</h3>
           <p class="estimate-models">
-            Models from input file:
+            Models:
             @for (model of summary.models; track model.name; let last = $last) {
               <strong>{{ model.name }}</strong>{{ last ? '' : ', ' }}
             }
           </p>
-          <p>{{ summary.requestCount | number }} submitted requests</p>
+          <p>{{ summary.requestCount | number }} requests</p>
           <div role="status" aria-live="polite">
             @if (loadingHistory()) {
               <p>Loading historical costs…</p>
@@ -59,25 +61,16 @@
                   @if (estimate.usd !== null) {
                     {{ estimate.usd | currency:'USD':'symbol':'1.2-6' }}
                   } @else {
-                    Estimate unavailable (not enough history for every model)
+                    Not enough history
                   }
                 </strong></p>
               }
             }
           </div>
-          <small>
-            Counts requests per model and multiplies by the average finalized cost of comparable successful requests
-            on this API key in the last 30 days (up to 20,000 recent requests, at least 3 per model).
-            Provider batches use historical native batch costs; Logos replay uses ordinary request costs.
-            Automatic mode shows both scenarios because the actual route is chosen on submission.
-          </small>
-          <p><strong>Estimate only. Actual cost can be higher. This does not set a spending cap or reserve budget.</strong></p>
+          <small>Based on recent requests for this key.</small>
         </div>
       }
-      <p class="notice">
-        No budget is reserved for provider batches. The creation check uses already settled costs.
-        Running provider batches count only after they finish, so batches can exceed the key or team budget.
-      </p>
+      <p class="notice"><strong>Actual costs can be higher. The estimate is not a spending cap; provider batches do not reserve budget.</strong></p>
 
       <label class="field">
         <span>Endpoint</span>
@@ -91,9 +84,9 @@
       <label class="field">
         <span>Where it runs</span>
         <select (change)="execution.set($any($event.target).value)">
-          <option value="auto">Automatic — use the provider's batch endpoint when it can</option>
-          <option value="logos">Run in Logos (low priority)</option>
-          <option value="provider">Provider only (fail if unavailable)</option>
+          <option value="auto">Automatic (provider preferred)</option>
+          <option value="logos">Logos replay (low priority)</option>
+          <option value="provider">Provider only</option>
         </select>
       </label>
 

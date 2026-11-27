@@ -6,9 +6,8 @@
   box-sizing: border-box;
 }
 
-.batches .page-subtitle {
-  margin-bottom: 24px;
-  max-width: 68ch;
+.batches .page-title {
+  margin-bottom: 16px;
 }
 
 .card {
@@ -45,7 +44,7 @@
 
   select,
   input[type='file'],
-  input[type='number'] {
+  textarea {
     box-sizing: border-box;
     width: 100%;
     max-width: 520px;
@@ -60,13 +59,22 @@
     display: block;
     margin-top: 6px;
     opacity: 0.75;
-
-    code {
-      // The example line is long on purpose; let it wrap rather than pushing
-      // the panel wider than the viewport.
-      overflow-wrap: anywhere;
-    }
   }
+}
+
+.input-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin-bottom: 6px;
+  font-weight: 500;
+}
+
+.manual-prompt {
+  display: block;
+  margin-top: 6px;
+  resize: vertical;
 }
 
 button.primary {
@@ -196,6 +204,7 @@ table {
 }
 
 .notice {
+  margin: 0 0 16px;
   opacity: 0.85;
 }
 

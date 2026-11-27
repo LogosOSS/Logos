@@ -3,6 +3,7 @@ import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 
 import { Batches } from './batches';
+import { BATCH_PREPARATION_PROMPT } from './batch-preparation-prompt';
 import { BatchObject } from '../../core/services/batch.service';
 import { summarizeBatchInput } from './batch-estimate';
 
@@ -141,4 +142,63 @@ describe('Batches', () => {
     expect(page.estimateError()).toContain('line 1');
   });
 
+  describe('the preparation prompt button', () => {
+    let originalClipboard: PropertyDescriptor | undefined;
+
+    beforeEach(() => {
+      originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    });
+
+    afterEach(() => {
+      if (originalClipboard) {
+        Object.defineProperty(navigator, 'clipboard', originalClipboard);
+      } else {
+        Reflect.deleteProperty(navigator, 'clipboard');
+      }
+    });
+
+    async function renderWithClipboard(writeText: (value: string) => Promise<void>) {
+      Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+      const fixture = TestBed.createComponent(Batches);
+      const http = TestBed.inject(HttpTestingController);
+      fixture.detectChanges();
+      http.expectOne('/api/logosdb/batches/keys').flush([
+        { id: 1, name: 'Synthetic key name', team_id: null, environment: null },
+      ]);
+      await Promise.resolve();
+      http.expectOne('/api/logosdb/batches?apiKeyId=1').flush({ data: [] });
+      await fixture.whenStable();
+      fixture.detectChanges();
+      const host: HTMLElement = fixture.nativeElement;
+      const button = [...host.querySelectorAll('button')]
+        .find(candidate => candidate.textContent?.trim() === 'Copy prompt for an agent');
+      expect(button).toBeDefined();
+      button!.click();
+      await fixture.whenStable();
+      fixture.detectChanges();
+      http.verify(); // Copying must not make network requests, including uploads or submission.
+      return { fixture, host };
+    }
+
+    it('copies only the static preparation prompt and announces success', async () => {
+      const writeText = vi.fn().mockResolvedValue(undefined);
+      const { fixture, host } = await renderWithClipboard(writeText);
+      expect(writeText).toHaveBeenCalledExactlyOnceWith(BATCH_PREPARATION_PROMPT);
+      expect(writeText.mock.calls[0][0]).not.toContain('Synthetic key name');
+      expect(host.querySelector('[role="status"]')?.textContent).toContain('Prompt copied.');
+      expect(host.querySelector('textarea')).toBeNull();
+      fixture.destroy();
+    });
+
+    it('makes the same prompt selectable when the clipboard is unavailable', async () => {
+      const { fixture, host } = await renderWithClipboard(
+        vi.fn().mockRejectedValue(new Error('clipboard denied')),
+      );
+      const textarea = host.querySelector('textarea');
+      expect(host.querySelector('[role="status"]')?.textContent).toContain('Clipboard unavailable.');
+      expect(textarea?.readOnly).toBe(true);
+      expect(textarea?.value).toBe(BATCH_PREPARATION_PROMPT);
+      fixture.destroy();
+    });
+  });
 });

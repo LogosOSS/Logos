@@ -11,6 +11,7 @@ import { CommonModule } from '@angular/common';
 import { BatchKey, BatchHistoricalModelCost, BatchObject, BatchService } from '../../core/services/batch.service';
 
 import { BatchInputSummary, estimateHistoricalBatchCost, summarizeBatchInput } from './batch-estimate';
+import { BATCH_PREPARATION_PROMPT } from './batch-preparation-prompt';
 
 /** Batch states the provider (or Logos) will not move away from on its own. */
 const TERMINAL = new Set(['completed', 'failed', 'expired', 'cancelled']);
@@ -34,6 +35,9 @@ const TERMINAL = new Set(['completed', 'failed', 'expired', 'cancelled']);
 })
 export class Batches implements OnInit, OnDestroy {
   private batchService = inject(BatchService);
+
+  readonly preparationPrompt = BATCH_PREPARATION_PROMPT;
+  readonly copyPromptStatus = signal<'idle' | 'copied' | 'manual'>('idle');
 
   keys = signal<BatchKey[]>([]);
   selectedKeyId = signal<number | null>(null);
@@ -95,6 +99,15 @@ export class Batches implements OnInit, OnDestroy {
   ngOnDestroy(): void {
     if (this.pollHandle) {
       clearInterval(this.pollHandle);
+    }
+  }
+
+  async copyPreparationPrompt(): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(this.preparationPrompt);
+      this.copyPromptStatus.set('copied');
+    } catch {
+      this.copyPromptStatus.set('manual');
     }
   }
 

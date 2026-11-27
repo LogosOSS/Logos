@@ -301,7 +301,10 @@ at the progress of the job and download the result file. For the server-side
 process, see [batch processing](../batch-processing.md). The page is the same
 for every role that can open it (App Admin and Logos Admin).
 
-In **New batch**, select your developer key and an input file.
+In **New batch**, select your developer key and an input file. If you need
+help creating the file, select **Copy prompt for an agent**. The prompt prepares
+the agent to help with the file and cost estimate, without submitting a batch.
+
 The form counts requests per model and estimates the cost from recent
 successful requests on the selected key. Automatic mode shows separate
 estimates for provider batch and Logos replay. If any model lacks enough

@@ -311,6 +311,13 @@ batch shows its progress. A finished batch offers its results as a download. You
 can cancel a batch that is not finished. The page refreshes every 30 seconds
 while a batch is in progress.
 
+If you do not have a file yet, select **Copy prompt for an agent** beside
+**Input file (.jsonl)**. Paste the prompt into your agent with your task and
+non-secret inputs. It asks the agent to prepare and validate the file locally,
+explain the cost assumptions, and leave uploading and starting the batch to
+you. Do not paste API keys or other credentials. Verify the file and choose
+the matching **Endpoint** before starting.
+
 The **New batch** form reads model names and counts request lines in the input file.
 For each model it multiplies that count by the average finalized cost of comparable
 successful requests on the selected key, then adds the estimates. The sample covers
