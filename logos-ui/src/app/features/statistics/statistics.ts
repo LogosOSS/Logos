@@ -854,13 +854,23 @@ export class Statistics implements OnInit, OnDestroy {
 
   // ── Distribution pie data ─────────────────────────────────────────────────────
 
+  private readonly providerVolumeCounts = computed(() => ({
+    cloud: this.cloudLineData().reduce((acc, p) => acc + (p.value || 0), 0),
+    local: this.localLineData().reduce((acc, p) => acc + (p.value || 0), 0),
+  }));
+
   readonly providerPieData = computed(() => {
-    const cloudSum = this.cloudLineData().reduce((acc, p) => acc + (p.value || 0), 0);
-    const localSum = this.localLineData().reduce((acc, p) => acc + (p.value || 0), 0);
+    const { cloud, local } = this.providerVolumeCounts();
     return [
-      { value: cloudSum, color: CHART_ROLE.cloud, text: 'Cloud' },
-      { value: localSum, color: CHART_ROLE.local, text: 'Local' },
+      { value: cloud, color: CHART_ROLE.cloud, text: 'Cloud' },
+      { value: local, color: CHART_ROLE.local, text: 'Local' },
     ].filter((d) => d.value > 0);
+  });
+
+  // Use the same benchmark-free counts as the slices, not the all-traffic KPI.
+  readonly cloudVolumePct = computed(() => {
+    const { cloud, local } = this.providerVolumeCounts();
+    return cloud + local > 0 ? Math.round((cloud / (cloud + local)) * 100) : 0;
   });
 
   readonly modelPieData = computed(() => {

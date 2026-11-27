@@ -643,8 +643,41 @@ describe('local providers: failed GPUs and offline workers', () => {
   });
 });
 
-
 describe('Statistics benchmark-free volume distributions', () => {
+  it('uses the filtered provider slices for the donut percentage and keeps the all-traffic headline', async () => {
+    const page = await pageAt();
+    try {
+      page.component.activeTab.set('requests');
+      page.component.stats.set({
+        totals: {
+          requests: 25, cloudRequests: 6, localRequests: 19, coldStarts: 0, warmStarts: 19,
+          avgQueueSeconds: null, avgRunSeconds: null, totalTokens: null, cloudCostMicroCents: null,
+        },
+        statusCounts: { success: 24, pending: 1 },
+        modelBreakdown: [],
+        timeSeries: [
+          { timestamp: 1, label: '', total: 6, cloud: 6, local: 0, avgRunSeconds: null },
+          { timestamp: 2, label: '', total: 18, cloud: 0, local: 18, avgRunSeconds: null },
+        ],
+        modelTimeSeries: [],
+      });
+      page.component.statsPending.set(false);
+      page.fx.detectChanges();
+
+      expect(page.component.providerPieData().map(({ text, value }) => [text, value]))
+        .toEqual([['Cloud', 6], ['Local', 18]]);
+      const content: HTMLElement = page.fx.nativeElement;
+      const panel = [...content.querySelectorAll('app-stats-chart-panel')]
+        .find((element) => element.textContent.includes('Request type'));
+      expect(panel?.querySelector('.vram-donut__center-middle')?.textContent?.trim()).toBe('25%');
+      const headline = [...content.querySelectorAll('app-stats-kpi-card')]
+        .find((element) => element.querySelector('.kpi-label')?.textContent?.trim() === 'CLOUD SHARE');
+      expect(headline?.querySelector('.kpi-value')?.textContent?.trim()).toBe('24%');
+    } finally {
+      page.fx.destroy();
+    }
+  });
+
   it('does not restore benchmark-only models from the headline breakdown', async () => {
     const page = await pageAt();
     try {
