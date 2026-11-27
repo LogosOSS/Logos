@@ -22,12 +22,14 @@ def remote_settings(monkeypatch):
 
 async def test_remote_catalog_filters_origins_and_does_not_expose_endpoints(monkeypatch, remote_settings):
     rows = [
-        {**PIN, "provider_id": 2, "provider_name": "Example", "model_id": 8, "endpoint": "https://approved.example/v1"},
-        {**PIN, "provider_id": 3, "endpoint": "https://approved.example.evil/v1"},
-        {**PIN, "provider_id": 4, "endpoint": "https://approved.example:444/v1"},
-        {**PIN, "provider_id": 5, "endpoint": "http://approved.example/v1"},
-        {**PIN, "provider_id": 6, "endpoint": "https://user@approved.example/v1"},
-        {**PIN, "provider_id": 7, "endpoint": "https://approved.example:0/v1"},
+        {**PIN, "provider_id": 2, "provider_name": "Example", "model_id": 8, "base_url": "https://approved.example/"},
+        {**PIN, "provider_id": 3, "base_url": "https://approved.example.evil/"},
+        {**PIN, "provider_id": 4, "base_url": "https://approved.example:444/"},
+        {**PIN, "provider_id": 5, "base_url": "http://approved.example/"},
+        {**PIN, "provider_id": 6, "base_url": "https://user@approved.example/"},
+        {**PIN, "provider_id": 7, "base_url": "https://approved.example:0/"},
+        {**PIN, "provider_id": 8, "base_url": "https://approved.example/v1"},
+        {**PIN, "provider_id": 9, "base_url": "https://approved.example:65536/"},
     ]
     monkeypatch.setattr(db, "agent_cloud_deployments", AsyncMock(return_value=rows))
     assert await inference_settings.cloud_options() == [

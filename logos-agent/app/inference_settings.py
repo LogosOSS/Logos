@@ -13,7 +13,7 @@ from .config import settings
 REMOTE_GATEWAY = "http://logos-agent-remote-gateway"
 
 
-def _https_origin(value: str, *, allow_path: bool = True) -> tuple[str, int] | None:
+def _https_origin(value: str) -> tuple[str, int] | None:
     # Reject malformed network coordinates rather than interpreting them as a
     # different origin to the one the provider's relay will dial.
     if not value or value != value.strip() or any(ord(ch) < 33 or ch == "\\" for ch in value):
@@ -29,7 +29,7 @@ def _https_origin(value: str, *, allow_path: bool = True) -> tuple[str, int] | N
             or url.netloc.endswith(":")
             or url.query
             or url.fragment
-            or (not allow_path and url.path not in ("", "/"))
+            or url.path not in ("", "/")
         ):
             return None
         return url.hostname, url.port or 443
@@ -55,7 +55,7 @@ def session_network(session: dict[str, Any]) -> str:
 
 
 async def cloud_options() -> list[dict[str, Any]]:
-    allowed = {_https_origin(value, allow_path=False) for value in settings.remote_allowed_origins} - {None}
+    allowed = {_https_origin(value) for value in settings.remote_allowed_origins} - {None}
     if not allowed:
         return []
     try:
@@ -66,7 +66,7 @@ async def cloud_options() -> list[dict[str, Any]]:
     return [
         {key: row[key] for key in ("provider_id", "provider_name", "model_id", "model")}
         for row in rows
-        if _https_origin(row["endpoint"]) in allowed
+        if _https_origin(row["base_url"]) in allowed
     ]
 
 

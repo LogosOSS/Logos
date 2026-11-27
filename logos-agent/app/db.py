@@ -135,14 +135,19 @@ async def agent_cloud_deployments() -> list[dict[str, Any]]:
     async with sessionmaker()() as db:
         rows = (await db.execute(text("""
                 SELECT p.id AS provider_id, p.name AS provider_name, m.id AS model_id, m.name AS model,
-                       COALESCE(NULLIF(btrim(mp.endpoint), ''), p.base_url) AS endpoint
+                       p.base_url
                 FROM model_provider mp
                 JOIN models m ON m.id = mp.model_id
                 JOIN providers p ON p.id = mp.provider_id
                 WHERE p.provider_type = 'cloud' AND p.cloud_provider_type = 'logos'
                   AND COALESCE(NULLIF(btrim(mp.api_key), ''), NULLIF(btrim(p.api_key), '')) IS NOT NULL
-                  AND lower(COALESCE(NULLIF(btrim(p.auth_name), ''), 'authorization')) = 'authorization'
-                  AND lower(COALESCE(NULLIF(btrim(p.auth_format), ''), 'bearer {}')) = 'bearer {}'
+                  AND (
+                      (COALESCE(btrim(p.auth_name), '') = '' AND COALESCE(p.auth_format, '') = '')
+                      OR (
+                          lower(COALESCE(btrim(p.auth_name), '')) IN ('', 'authorization')
+                          AND p.auth_format = 'Bearer {}'
+                      )
+                  )
                 ORDER BY p.name, m.name, p.id, m.id
                 """))).mappings().all()
     return [dict(row) for row in rows]
