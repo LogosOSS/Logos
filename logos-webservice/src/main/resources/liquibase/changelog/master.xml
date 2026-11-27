@@ -107,4 +107,5 @@
     <include file="liquibase/changelog/100_nightly_rotation_window.xml"/>
     <include file="liquibase/changelog/101_nightly_window_revision.xml"/>
     <include file="liquibase/changelog/106_manual_agent_session_memory.xml"/>
+    <include file="liquibase/changelog/107_azure_team_model_availability.xml"/>
 </databaseChangeLog>

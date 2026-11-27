@@ -192,6 +192,16 @@ Select it to open **Gated model**. Select **Go to Hugging Face** to request acce
 
 ### Model details
 
+#### Access
+
+Open **Model Details → Access** to see which teams and custom keys can use the model.
+The **Model** column shows manual grants. **Azure auto** marks the hosting provider that makes the model available even without a manual grant.
+Use a provider checkbox to grant or revoke access to that provider for the team.
+
+![Model Details Access tab with separate automatic Azure and manual model grants](/img/roles/logos-admin-model-details-access.png)
+
+#### Performance
+
 Open **Model Details → Performance → Request measurements** to inspect request times.
 This view uses timing metadata. It does not use prompt or response content.
 The view shows local and cloud providers. It has one row for each
@@ -781,6 +791,11 @@ For the tabs Overview to Settings, see [App Admin → Teams](app-admin.md#teams)
 Logos Admins also get a **Providers** tab. This tab shows which cloud
 providers and worker providers the team can use.
 
+For an assigned Azure provider, select **Auto-allow synced Azure models** to give default team keys access to its synced deployments.
+The option is off by default. It applies only to this team and provider.
+The team privacy setting still applies. The option does not change custom key permissions.
+Clear the option to remove automatic access. Manually granted models keep their access.
+
 ![Team detail — Providers](/img/roles/team-detail-providers.png)
 
 ## Permission Audit
@@ -849,7 +864,9 @@ The page has these parts, from top to bottom:
   Pausing freezes the countdown. An elapsed forecast or 20 active minutes without a new report displays
   **Awaiting updated estimate**. Session status records the actual outcome.
 - **Automatic work**, **Workspaces** and **What every session is told** are
-  at the bottom of the page.
+  at the bottom of the page. **Workspaces** shows the disk use of each checkout and its cache.
+  **Runner artifact disk** shows the capacity and free space of the filesystem that stores agent artifacts.
+  Docker volumes can use a different filesystem. This view does not set disk limits.
 
 Select a session to read **Agent messages** as the agent works. **Agent** identifies
 the parent. **Subagent** and a short identifier distinguish child messages.

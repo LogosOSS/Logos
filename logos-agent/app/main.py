@@ -34,6 +34,7 @@ from . import (
     security_scans,
     security_store,
     triggers,
+    workspace_storage,
 )
 from .artifacts import read_artifact
 from .auth import Principal, require_agent_operator
@@ -55,6 +56,7 @@ from .schemas import (
     SessionSummary,
     Workspace,
     WorkspaceCreate,
+    WorkspaceStorage,
 )
 from .security_models import AssessmentAction, IncidentInput, RepositoryInput
 from .sessions import artifact_dir, cache_volume_for, manager, memory_admission_block
@@ -407,6 +409,11 @@ def _coding_repository_fields(row: dict) -> dict:
 @app.get("/workspaces", response_model=list[Workspace], tags=["workspaces"])
 async def list_workspaces(_: Principal = Depends(require_agent_operator)) -> list[Workspace]:
     return [Workspace(**row) for row in await db.list_workspaces()]
+
+
+@app.get("/workspace-storage", response_model=WorkspaceStorage, tags=["workspaces"])
+async def get_workspace_storage(_: Principal = Depends(require_agent_operator)) -> WorkspaceStorage:
+    return await workspace_storage.read(await db.list_workspaces())
 
 
 @app.post(

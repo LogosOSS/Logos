@@ -3,7 +3,6 @@ import {
   Input,
   OnInit,
   signal,
-  computed,
   inject,
   ChangeDetectionStrategy,
 } from '@angular/core';
@@ -39,6 +38,9 @@ export class ProvidersTabComponent implements OnInit {
 
   allProviders = signal<ProviderItem[]>([]);
   assignedIds = signal<Set<number>>(new Set());
+  azureAutoAccessIds = signal<Set<number>>(new Set());
+  updatingAutoAccess = signal<Set<number>>(new Set());
+  autoAccessError = signal('');
   loading = signal(true);
   error = signal(false);
 
@@ -50,6 +52,34 @@ export class ProvidersTabComponent implements OnInit {
   get available(): ProviderItem[] {
     const ids = this.assignedIds();
     return this.allProviders().filter((p) => !ids.has(p.id));
+  }
+
+  isAzure(provider: ProviderItem): boolean {
+    return provider.provider_type === 'cloud' && provider.cloud_provider_type === 'azure';
+  }
+
+  async toggleAzureAutoAccess(provider: ProviderItem, event: Event): Promise<void> {
+    const input = event.target as HTMLInputElement;
+    const id = provider.id;
+    const enabled = input.checked;
+    // Keep the control aligned with confirmed data, also when a save fails.
+    input.checked = this.azureAutoAccessIds().has(id);
+    if (!this.canEdit || !this.isAzure(provider) || this.updatingAutoAccess().has(id)) return;
+    this.updatingAutoAccess.update((ids) => new Set([...ids, id]));
+    this.autoAccessError.set('');
+    try {
+      await this.teamService.setTeamAzureAutoAccess(this.teamId, id, enabled);
+      this.azureAutoAccessIds.update((ids) => {
+        const next = new Set(ids);
+        if (enabled) next.add(id);
+        else next.delete(id);
+        return next;
+      });
+    } catch {
+      this.autoAccessError.set(`Could not update automatic model access for ${provider.name}.`);
+    } finally {
+      this.updatingAutoAccess.update((ids) => new Set([...ids].filter((value) => value !== id)));
+    }
   }
 
   // ── Add dialog ─────────────────────────────────────────────────────────────
@@ -118,13 +148,14 @@ export class ProvidersTabComponent implements OnInit {
 
   async executeRemove(): Promise<void> {
     const target = this.pendingRemove();
-    if (!target || this.removing()) return;
+    if (!target || this.removing() || this.updatingAutoAccess().has(target.id)) return;
     const newIds = [...this.assignedIds()].filter((id) => id !== target.id);
     this.removing.set(true);
     this.removeError.set('');
     try {
       await this.teamService.setTeamProviderPermissions(this.teamId, newIds);
       this.assignedIds.set(new Set(newIds));
+      this.azureAutoAccessIds.update((ids) => new Set([...ids].filter((id) => id !== target.id)));
       this.confirmOpen.set(false);
       this.pendingRemove.set(null);
     } catch {
@@ -136,14 +167,16 @@ export class ProvidersTabComponent implements OnInit {
 
   async ngOnInit(): Promise<void> {
     try {
-      const [catalog, all, enabled] = await Promise.all([
+      const [catalog, all, enabled, azureAutoAccess] = await Promise.all([
         this.teamService.getTeamPermissionCatalog(this.teamId),
         this.teamService.getAllProviders(),
         this.teamService.getTeamProviderPermissions(this.teamId),
+        this.teamService.getTeamAzureAutoAccess(this.teamId),
       ]);
       const eligible = new Set(catalog.map((p) => p.id));
       this.allProviders.set(all.filter((p) => eligible.has(p.id)));
       this.assignedIds.set(new Set(enabled));
+      this.azureAutoAccessIds.set(new Set(azureAutoAccess));
     } catch {
       this.error.set(true);
     } finally {

@@ -156,7 +156,7 @@ export class MembersTabComponent {
   }
 
   // ── Expand state ──────────────────────────────────────────────────────────
-  readonly keyPermissions = new KeyPermissionExpansion(this.teamService, () => this.teamId);
+  readonly keyPermissions = new KeyPermissionExpansion(this.teamService);
 
   onRowClick(event: Event, userId: number): void {
     if (isInteractiveClick(event)) return;
