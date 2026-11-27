@@ -104,12 +104,7 @@
               }
             </div>
           </div>
-          <app-public-stats-trend
-            [points]="trend()"
-            [markerKey]="agentLaunchMonth()"
-            markerLabel="Logos Agent"
-            [label]="trendLabel()"
-          />
+          <app-public-stats-trend [points]="trend()" [label]="trendLabel()" />
         </section>
       </div>
 

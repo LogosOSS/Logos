@@ -89,8 +89,6 @@ export class PublicStats implements OnInit {
   trendLabel = computed(
     () => `${TREND_METRICS.find((m) => m.value === this.trendMetric())?.label ?? ''} per month`
   );
-  /** The month of the first Logos Agent session, where the growth chart puts its marker. */
-  agentLaunchMonth = computed(() => this.stats()?.agent.first_session_day?.slice(0, 7) ?? null);
   modelSlices = computed(() => {
     const models = this.stats()?.models;
     return models ? buildModelSlices(models[this.modelLane()]) : [];
