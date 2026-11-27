@@ -181,7 +181,7 @@ class GatewayCloudBillingEndToEndTest {
         var allowed = mvc.perform(get("/internal/provider-spend/status").header("Authorization", "Bearer local-spend-test-secret"))
             .andExpect(MockMvcResultMatchers.status().isOk()).andReturn();
         var initial = MAPPER.readTree(allowed.getResponse().getContentAsString());
-        assertThat(initial.path("blocked_provider_ids").size()).isZero();
+        assertThat(initial.path("blocked_provider_ids")).noneMatch(id -> id.asInt() == f.providerId());
         assertThat(initial.path("valid_for_ms").asLong()).isBetween(1L, 5000L);
 
         responseBody = "{";
@@ -212,8 +212,48 @@ class GatewayCloudBillingEndToEndTest {
         assertThat(seenRequestBody.get()).isNull();
         var blocked = mvc.perform(get("/internal/provider-spend/status").header("Authorization", "Bearer local-spend-test-secret"))
             .andExpect(MockMvcResultMatchers.status().isOk()).andReturn();
-        assertThat(MAPPER.readTree(blocked.getResponse().getContentAsString()).path("blocked_provider_ids").get(0).asInt())
-            .isEqualTo(f.providerId());
+        var blockedIds = MAPPER.readTree(blocked.getResponse().getContentAsString()).path("blocked_provider_ids");
+        assertThat(blockedIds).anyMatch(id -> id.asInt() == f.providerId());
+    }
+
+    @Test
+    void enablingAgainReadsPreviouslyFinalizedCostsInTheUtcMonthExactlyOnce() {
+        Fixture f = seedPricedDeployment();
+        var now = jdbc.queryForObject("SELECT statement_timestamp()", java.time.OffsetDateTime.class)
+            .withOffsetSameInstant(java.time.ZoneOffset.UTC);
+        var month = now.toLocalDate().withDayOfMonth(1);
+        var start = month.atStartOfDay().atOffset(java.time.ZoneOffset.UTC);
+        var end = month.plusMonths(1).atStartOfDay().atOffset(java.time.ZoneOffset.UTC);
+        jdbc.update("""
+            INSERT INTO log_entry (provider_id, timestamp_request, result_status, cost_finalized, settled_cost_micro_cents)
+            VALUES (?, ?, 'success', true, 100),
+                   (?, ?, 'timeout', true, 50),
+                   (?, ?, 'error', true, 999),
+                   (?, ?, 'success', true, 999),
+                   (?, ?, 'success', false, 999),
+                   (?, ?, NULL, true, 999),
+                   (?, ?, 'success', true, NULL)
+            """, f.providerId(), start, f.providerId(), start, f.providerId(), start.minusNanos(1000),
+            f.providerId(), end, f.providerId(), start, f.providerId(), start, f.providerId(), start);
+        assertThat(providerSpend.recordedCosts(f.providerId(), month)).isEqualByComparingTo("150");
+
+        providerSpend.refresh();
+        providerSpend.check(f.providerId());
+        jdbc.update("INSERT INTO provider_spend_policies VALUES (?, ?, 150)", f.providerId(), month);
+        providerSpend.refresh();
+        assertThatThrownBy(() -> providerSpend.check(f.providerId())).hasMessageContaining("402");
+
+        jdbc.update("UPDATE provider_spend_policies SET limit_micro_cents = NULL WHERE provider_id = ?", f.providerId());
+        providerSpend.refresh();
+        providerSpend.check(f.providerId());
+        jdbc.update("""
+            INSERT INTO log_entry (provider_id, timestamp_request, result_status, cost_finalized, settled_cost_micro_cents)
+            VALUES (?, ?, 'success', true, 100)
+            """, f.providerId(), start);
+        jdbc.update("UPDATE provider_spend_policies SET limit_micro_cents = 250 WHERE provider_id = ?", f.providerId());
+        providerSpend.refresh();
+        assertThat(providerSpend.recordedCosts(f.providerId(), month)).isEqualByComparingTo("250");
+        assertThatThrownBy(() -> providerSpend.check(f.providerId())).hasMessageContaining("402");
     }
 
     @ParameterizedTest

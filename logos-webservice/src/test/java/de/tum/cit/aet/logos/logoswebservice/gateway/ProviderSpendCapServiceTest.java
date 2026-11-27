@@ -85,10 +85,12 @@ class ProviderSpendCapServiceTest {
         assertRejected(1, 402);
 
         configureClock("2026-12-01T14:00:00+14:00");
-        configureLimits(Map.of());
+        configureLimits(Map.of(3, 0L));
         service.refresh();
         service.check(1);
-        assertThat(service.status().blockedProviderIds()).isEmpty();
+        service.check(2);
+        assertRejected(3, 402);
+        assertThat(service.status().blockedProviderIds()).containsExactly(3);
     }
 
     private void configureClock(String instant) {
