@@ -48,7 +48,9 @@ def test_sync_azure_deployments_reports_ids_for_newly_inserted_models():
     ]
     db, session = _db_with_execute_side_effects(side_effects)
 
-    result = db.sync_azure_deployments(provider_id=1, deployments=[{"model_name": "m1", "endpoint": "https://e/m1"}])
+    result = db.sync_azure_deployments(
+        1, [{"model_name": "m1", "endpoint": "https://e/m1"}], provider_base_url="https://e"
+    )
 
     assert result == {
         "new_models": ["m1"],
@@ -72,7 +74,9 @@ def test_sync_azure_deployments_reports_ids_for_existing_model_new_link():
     ]
     db, _ = _db_with_execute_side_effects(side_effects)
 
-    result = db.sync_azure_deployments(provider_id=1, deployments=[{"model_name": "m2", "endpoint": "https://e/m2"}])
+    result = db.sync_azure_deployments(
+        1, [{"model_name": "m2", "endpoint": "https://e/m2"}], provider_base_url="https://e"
+    )
 
     assert result == {
         "new_models": [],
@@ -112,7 +116,8 @@ def test_all_catalogue_writers_skip_control_characters(caplog):
             if method == "sync_azure_deployments"
             else bad_names
         )
-        getattr(db, method)(1, values)
+        kwargs = {"provider_base_url": "https://example.test"} if method == "sync_azure_deployments" else {}
+        getattr(db, method)(1, values, **kwargs)
         # No invalid name reaches a query, insert or link operation.
         for call in db.session.execute.call_args_list:
             assert all(value not in bad_names for value in call.args[1].values())

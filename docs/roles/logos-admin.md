@@ -192,6 +192,16 @@ Select it to open **Gated model**. Select **Go to Hugging Face** to request acce
 
 ### Model details
 
+#### Access
+
+Open **Model Details → Access** to see which teams and custom keys can use the model.
+The **Model** column shows manual grants. **Azure auto** marks the hosting provider that makes the model available even without a manual grant.
+Use a provider checkbox to grant or revoke access to that provider for the team.
+
+![Model Details Access tab with separate automatic Azure and manual model grants](/img/roles/logos-admin-model-details-access.png)
+
+#### Performance
+
 Open **Model Details → Performance → Request measurements** to inspect request times.
 This view uses timing metadata. It does not use prompt or response content.
 The view shows local and cloud providers. It has one row for each
@@ -780,6 +790,11 @@ When you open a team, you see the same detail tabs as an owning App Admin sees.
 For the tabs Overview to Settings, see [App Admin → Teams](app-admin.md#teams).
 Logos Admins also get a **Providers** tab. This tab shows which cloud
 providers and worker providers the team can use.
+
+For an assigned Azure provider, select **Auto-allow synced Azure models** to give default team keys access to its synced deployments.
+The option is off by default. It applies only to this team and provider.
+The team privacy setting still applies. The option does not change custom key permissions.
+Clear the option to remove automatic access. Manually granted models keep their access.
 
 ![Team detail — Providers](/img/roles/team-detail-providers.png)
 

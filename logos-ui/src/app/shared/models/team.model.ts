@@ -127,6 +127,7 @@ export interface ProviderItem {
   name: string;
   base_url?: string;
   provider_type?: 'logosnode' | 'cloud';
+  cloud_provider_type?: string | null;
 }
 
 export interface ProviderModelItem {
@@ -307,4 +308,12 @@ export interface MyTeam {
   budget_used_micro_cents: number;
   member_count: number;
   owners: { id: number; prename: string; name: string }[];
+}
+
+export interface EffectiveModelDeployment {
+  model_id: number;
+  model_name: string;
+  provider_id: number;
+  provider_name: string;
+  provider_type: string;
 }

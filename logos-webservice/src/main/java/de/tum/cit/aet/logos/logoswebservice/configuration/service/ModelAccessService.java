@@ -3,6 +3,7 @@ package de.tum.cit.aet.logos.logoswebservice.configuration.service;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -33,9 +34,8 @@ import de.tum.cit.aet.logos.logoswebservice.identity.repository.KeyProviderGrant
 /**
  * Builds the read-only access matrix for a single model: its hosting
  * providers, the team-level model/provider grants, and the custom-permission
- * API keys with grants touching the model. Effective access is the model
- * grant AND at least one grant on a hosting provider — the cross-check that
- * the per-team permission endpoints cannot express.
+ * API keys with grants touching the model. Effective access comes from the
+ * same deployment pairs as inference, including automatic Azure grants.
  */
 @Service
 public class ModelAccessService {
@@ -97,11 +97,15 @@ public class ModelAccessService {
     private List<TeamAccessDTO> buildTeamAccess(int modelId, List<HostingProviderDTO> providers) {
         Map<Integer, ModelAccessMatrixProjection> teamRows = new LinkedHashMap<>();
         Map<Integer, Map<Integer, Boolean>> providerGrants = new HashMap<>();
+        Map<Integer, Set<Integer>> deploymentAccess = new HashMap<>();
         for (ModelAccessMatrixProjection row : teamModelPermissionRepository.findModelAccessMatrix(modelId)) {
             teamRows.putIfAbsent(row.getTeamId(), row);
             if (row.getProviderId() != null) {
                 providerGrants.computeIfAbsent(row.getTeamId(), k -> new HashMap<>())
                     .put(row.getProviderId(), Boolean.TRUE.equals(row.getProviderGrant()));
+                if (Boolean.TRUE.equals(row.getDeploymentAccess())) {
+                    deploymentAccess.computeIfAbsent(row.getTeamId(), k -> new HashSet<>()).add(row.getProviderId());
+                }
             }
         }
 
@@ -111,12 +115,16 @@ public class ModelAccessService {
             boolean modelGrant = Boolean.TRUE.equals(entry.getValue().getModelGrant());
             Map<Integer, Boolean> grants = providerGrants.getOrDefault(teamId, Map.of());
             List<ProviderGrantDTO> grantsDTO = providerGrantsFor(providers, pid -> grants.getOrDefault(pid, false));
+            Set<Integer> reachable = deploymentAccess.getOrDefault(teamId, Set.of());
+            List<Integer> automaticProviderIds = modelGrant ? List.of()
+                : providers.stream().map(HostingProviderDTO::providerId).filter(reachable::contains).toList();
             teams.add(new TeamAccessDTO(
                 teamId,
                 entry.getValue().getTeamName(),
                 modelGrant,
                 grantsDTO,
-                effective(modelGrant, grantsDTO)));
+                automaticProviderIds,
+                !reachable.isEmpty()));
         }
         return teams;
     }
@@ -135,14 +143,11 @@ public class ModelAccessService {
                 KeyProviderGrantProjection::getApiKeyId,
                 Collectors.mapping(KeyProviderGrantProjection::getProviderId, Collectors.toSet())));
 
+        Set<Integer> effectiveKeyIds = Set.copyOf(apiKeyRepository.findEffectiveKeyIdsForModel(keyIds, modelId));
         return keys.stream().map(key -> {
             Set<Integer> granted = grantedProviderIds.getOrDefault(key.getKeyId(), Set.of());
             List<ProviderGrantDTO> grantsDTO = providerGrantsFor(providers, granted::contains);
             boolean modelGrant = Boolean.TRUE.equals(key.getModelGrant());
-            boolean isActive = Boolean.TRUE.equals(key.getIsActive());
-            // An inactive key can never authenticate (request auth looks keys up
-            // with is_active = true), so it never has effective access — even
-            // with the model grant and a host-provider grant.
             return new KeyAccessDTO(
                 key.getKeyId(),
                 key.getKeyName(),
@@ -151,7 +156,7 @@ public class ModelAccessService {
                 key.getTeamName(),
                 modelGrant,
                 grantsDTO,
-                isActive && effective(modelGrant, grantsDTO));
+                effectiveKeyIds.contains(key.getKeyId()));
         }).toList();
     }
 
@@ -161,10 +166,6 @@ public class ModelAccessService {
         return providers.stream()
             .map(p -> new ProviderGrantDTO(p.providerId(), grantLookup.apply(p.providerId())))
             .toList();
-    }
-
-    private static boolean effective(boolean modelGrant, List<ProviderGrantDTO> providerGrants) {
-        return modelGrant && providerGrants.stream().anyMatch(ProviderGrantDTO::granted);
     }
 
     /** get_models joins aliases with ", "; aliases may not contain commas. */

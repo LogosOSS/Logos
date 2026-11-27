@@ -45,23 +45,9 @@ public class GatewayDeploymentRepository {
             WHERE ak.key_value = :key_value
               AND ak.is_active = true AND ak.internal_service IS NULL
         ),
-        effective_providers AS (
-            SELECT akpp.provider_id
-            FROM allowed_key_provider_grants akpp, key_info ki
-            WHERE akpp.api_key_id = ki.aki AND ki.custom = true
-            UNION
-            SELECT tpp.provider_id
-            FROM allowed_team_provider_grants tpp, key_info ki
-            WHERE tpp.team_id = ki.tid AND ki.custom = false
-        ),
-        effective_models AS (
-            SELECT akmp.model_id
-            FROM api_key_model_permissions akmp, key_info ki
-            WHERE akmp.api_key_id = ki.aki AND ki.custom = true
-            UNION
-            SELECT tmp.model_id
-            FROM team_model_permissions tmp, key_info ki
-            WHERE tmp.team_id = ki.tid AND ki.custom = false
+        effective_deployments AS (
+            SELECT d.model_id, d.provider_id
+            FROM allowed_key_model_deployments d JOIN key_info ki ON ki.aki = d.api_key_id
         ),
         permitted AS (
             SELECT m.id AS model_id,
@@ -78,12 +64,11 @@ public class GatewayDeploymentRepository {
                    p.auth_format AS auth_format,
                    region.privacy_level AS privacy_level,
                    COALESCE(NULLIF(mp.api_key, ''), p.api_key, '') AS provider_api_key
-            FROM effective_models em
-                 JOIN models m ON m.id = em.model_id
-                 JOIN model_provider mp ON m.id = mp.model_id
+            FROM effective_deployments ed
+                 JOIN models m ON m.id = ed.model_id
+                 JOIN model_provider mp ON mp.model_id = ed.model_id AND mp.provider_id = ed.provider_id
                  JOIN providers p ON mp.provider_id = p.id
                  JOIN provider_processing_privacy region ON region.provider_id = p.id
-                 JOIN effective_providers ep ON p.id = ep.provider_id
         )
         SELECT ki.aki AS api_key_id,
                ki.key_value,
@@ -185,32 +170,6 @@ public class GatewayDeploymentRepository {
     public List<GatewayDeployment> findPermittedDeploymentsForModel(int apiKeyId, String modelName) {
         MapSqlParameterSource params = new MapSqlParameterSource("api_key_id", apiKeyId);
         List<GatewayDeployment> all = jdbc.query("""
-            WITH key_info AS (
-                SELECT ak.id AS aki,
-                       ak.team_id AS tid,
-                       ak.use_custom_permissions AS custom
-                FROM api_keys ak
-                WHERE ak.id = :api_key_id
-                  AND ak.is_active = true AND ak.internal_service IS NULL
-            ),
-            effective_providers AS (
-                SELECT akpp.provider_id
-                FROM allowed_key_provider_grants akpp, key_info ki
-                WHERE akpp.api_key_id = ki.aki AND ki.custom = true
-                UNION
-                SELECT tpp.provider_id
-                FROM allowed_team_provider_grants tpp, key_info ki
-                WHERE tpp.team_id = ki.tid AND ki.custom = false
-            ),
-            effective_models AS (
-                SELECT akmp.model_id
-                FROM api_key_model_permissions akmp, key_info ki
-                WHERE akmp.api_key_id = ki.aki AND ki.custom = true
-                UNION
-                SELECT tmp.model_id
-                FROM team_model_permissions tmp, key_info ki
-                WHERE tmp.team_id = ki.tid AND ki.custom = false
-            )
             SELECT m.id AS model_id,
                    m.name AS model_name,
                    (SELECT string_agg(a.alias, ',' ORDER BY a.alias)
@@ -225,12 +184,12 @@ public class GatewayDeploymentRepository {
                    p.auth_format AS auth_format,
                    region.privacy_level AS privacy_level,
                    COALESCE(NULLIF(mp.api_key, ''), p.api_key, '') AS provider_api_key
-            FROM models m
-                 JOIN effective_models em ON m.id = em.model_id
-                 JOIN model_provider mp ON m.id = mp.model_id
+            FROM allowed_key_model_deployments ed
+                 JOIN models m ON m.id = ed.model_id
+                 JOIN model_provider mp ON mp.model_id = ed.model_id AND mp.provider_id = ed.provider_id
                  JOIN providers p ON mp.provider_id = p.id
                  JOIN provider_processing_privacy region ON region.provider_id = p.id
-                 JOIN effective_providers ep ON p.id = ep.provider_id
+            WHERE ed.api_key_id = :api_key_id
             ORDER BY p.id
             """, params, (rs, rowNum) -> mapDeployment(
                 rs, rs.getInt("model_id"), rs.getInt("provider_id")));

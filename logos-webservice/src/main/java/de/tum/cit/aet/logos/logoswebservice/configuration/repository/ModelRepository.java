@@ -139,12 +139,9 @@ public interface ModelRepository extends JpaRepository<Model, Integer> {
 
     String EFFECTIVE_MODELS_FOR_USER = """
         WITH effective_model_ids AS (
-            SELECT DISTINCT m.id
-            FROM models m
-            JOIN team_model_permissions tmp ON m.id = tmp.model_id
-            JOIN team_members tm ON tmp.team_id = tm.team_id
-            JOIN model_provider mp ON m.id = mp.model_id
-            JOIN allowed_team_provider_grants tpp ON mp.provider_id = tpp.provider_id AND tpp.team_id = tm.team_id
+            SELECT DISTINCT d.model_id AS id
+            FROM allowed_team_model_deployments d
+            JOIN team_members tm ON d.team_id = tm.team_id
             WHERE tm.user_id = :userId
             UNION
             SELECT DISTINCT akmp.model_id
