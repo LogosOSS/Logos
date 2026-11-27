@@ -667,7 +667,10 @@ const SHOTS = [
       await p.locator(".form-card textarea").first().fill("Fix the date format in the export of the order list");
       await p.getByRole("textbox", { name: /RAM limit/ }).fill("4096");
       await p.getByRole("textbox", { name: /RAM limit/ }).blur();
-      await p.getByText("Deploy to dev and screenshots are available only for the platform repository.").waitFor();
+      await p.getByText("Dev screenshots are available only for the platform repository.").waitFor();
+      await p.getByRole("checkbox", { name: "Private session: no GitHub writes" }).check();
+      await p.getByRole("checkbox", { name: "Open a pull request when finished" }).and(p.locator(":disabled")).waitFor();
+      await p.getByRole("checkbox", { name: "Deploy to the dev environment afterwards" }).waitFor({ state: "detached" });
     },
   },
   { file: "roles/logos-admin-my-workspace.png", user: ADMIN, go: (p) => p.goto(BASE + "/my-workspace") },

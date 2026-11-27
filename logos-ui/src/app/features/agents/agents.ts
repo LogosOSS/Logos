@@ -156,7 +156,7 @@ export class Agents implements OnInit {
   readonly formRam = signal('');
   formModel = signal<string | null>(null);
   formOpenPr = signal(true);
-  formDeploy = signal(false);
+  formNoPush = signal(false);
   formScreenshots = signal('');
   submitting = signal(false);
   formError = signal<string | null>(null);
@@ -946,7 +946,8 @@ export class Agents implements OnInit {
     try {
       const repositoryId = this.formRepositoryId();
       const linked = repositoryId !== null;
-      const paths = linked
+      const privateSession = this.formNoPush();
+      const paths = linked || privateSession
         ? []
         : this.formScreenshots()
             .split(/[\s,]+/)
@@ -959,8 +960,8 @@ export class Agents implements OnInit {
         // Left null when nothing was picked: the runner then uses its own
         // default, which is the single local model where there is only one.
         model: this.formModel(),
-        open_pull_request: this.formOpenPr(),
-        deploy_to_dev: linked ? false : this.formDeploy(),
+        open_pull_request: !privateSession && this.formOpenPr(),
+        no_push: privateSession,
         screenshot_paths: paths,
         team_repository_id: repositoryId,
         ...(this.formRam().trim() ? { memory_override_mb: Number(this.formRam()) } : {}),
@@ -992,7 +993,6 @@ export class Agents implements OnInit {
     const repositoryId = id ? Number(id) : null;
     this.formRepositoryId.set(repositoryId);
     if (repositoryId !== null) {
-      this.formDeploy.set(false);
       this.formScreenshots.set('');
     }
   }

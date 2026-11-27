@@ -6,7 +6,7 @@ Python 3.13 / FastAPI service that runs coding agents in isolated containers on 
 
 - **Isolation boundary**: the runner holds the Docker socket; session containers get no socket, no root, no capabilities, a read-only root filesystem, and memory/CPU/PID ceilings. That asymmetry is set in exactly one place: `app/docker_engine.py:create_session_container` — keep it that way.
 - **Session network** is an *internal* bridge with no route off the host; the runner verifies this and refuses to start on a plain bridge. Session containers may only reach the model gateway.
-- A session's model traffic goes through `logos-orchestrator`; sessions can be told to deploy their result to the dev environment and screenshot the pages they changed.
+- A session's model traffic goes through `logos-orchestrator`; platform sessions can capture the already-running Dev instance. Sessions do not deploy changes.
 
 ## Commands
 
@@ -32,7 +32,7 @@ build code in preparation, snapshot, or finalization helpers: they hold push
 credentials. The runner stores the original checkout/branch SHAs outside the
 workspace and binds the verification outcome to the exact Git tree. Missing
 baseline proof stops publication. Failed verification publishes only a draft
-with diagnostics and fails the session, preventing deployment.
+with diagnostics and fails the session.
 Verification exports that Git tree through a separate index; ignored files in
 the working directory cannot disable or change the build.
 Service selection covers the complete PR diff, including prior attempts, so a

@@ -366,3 +366,20 @@ def test_failed_pr_creation_preserves_publication_proof_and_original_target(
     assert retry.data["committed"] is False
     assert len(creates) == 2
     assert _git("--git-dir", str(origin), "rev-parse", BRANCH, cwd=workspace).stdout.strip() == published
+
+
+def test_snapshot_records_the_comparison_tree_only_for_an_empty_diff(tmp_path, monkeypatch):
+    workspace, _, checkout_sha = _prepare(tmp_path, monkeypatch)
+    checkout = workspace / "repo"
+    clean = run_session.Result()
+    run_session.run_snapshot(clean)
+    assert clean.data["candidate_paths"] == []
+    expected_tree = _git("rev-parse", f"{checkout_sha}^{{tree}}", cwd=checkout).stdout.strip()
+    assert clean.data["candidate_tree"] == clean.data["comparison_tree"] == expected_tree
+
+    (checkout / "contribution.txt").write_text("new contribution\n")
+    changed = run_session.Result()
+    run_session.run_snapshot(changed)
+    assert changed.data["candidate_paths"] == ["contribution.txt"]
+    assert changed.data["candidate_tree"] != expected_tree
+    assert "comparison_tree" not in changed.data
