@@ -442,12 +442,14 @@ To remove the cap, clear **Enable cap** and select **Save changes**.
 Changes apply immediately and continue each UTC calendar month unless a scheduled change replaces them.
 A limit of $0 blocks new billable requests through Logos.
 
-The section shows the current limit, the next scheduled change, and settled charges for the current month.
-First activation includes finalized costs that Logos has recorded for the provider in the current UTC month.
-Logos adds those costs only once. Changing or removing the cap does not reset the tracked charges.
-The cap does not include unpriced or in-flight work at first activation, or spend during later gaps when the cap is disabled.
-These values are not the vendor invoice.
-If an upstream charge exceeds its reservation, Logos stops new billable requests to that provider for that month.
+The section shows the current limit, the next scheduled change, and recorded charges for this month.
+Logos adds positive, finalized costs from the provider's request logs in the current UTC billing month.
+This total includes recorded costs from periods without a cap when you enable or re-enable it.
+Logos does not count unpriced requests or spend outside Logos. This total is not the vendor invoice.
+
+When recorded charges reach the limit, Logos blocks new requests.
+The spend total that the check uses can be up to 15 s old.
+Requests already in progress can finish. The final total can exceed the limit.
 
 ![Monthly spend cap editor for a cloud provider](/img/roles/logos-admin-provider-spend-cap.png)
 
@@ -457,37 +459,6 @@ To set the current limit, send `{"enabled": true, "limit_usd": "400"}`.
 To remove the current limit, send `{"enabled": false}`.
 To schedule a separate change for the next UTC month, send the same payload to
 `PUT /logosdb/providers/{providerId}/monthly-spend-cap/scheduled`.
-
-Logos reserves the maximum charge before each upstream attempt. Reported
-complete usage replaces the reservation. If Logos cannot tell whether an
-attempt billed, it keeps the reservation in the original month. When the
-remaining allowance cannot cover a reservation, the request gets HTTP 402
-without reaching the provider.
-
-An active cap permits only plain-text requests to deployments with a verified cost bound.
-Each request needs an explicit output token limit. If there is no verified bound, Logos rejects the request with HTTP 422. The editor reports when no deployment has a verified bound; setting a monetary limit does not create one.
-This rule also applies to new provider-native batches, file uploads and cloud benchmark jobs. The Logos-managed batch uses the same inference cap.
-Previously admitted provider-native work, requests sent outside Logos and
-vendor invoice adjustments are not included.
-
-#### Verify a deployment's cost bound
-
-Before enabling a positive cap, an administrator reviews the provider's documentation for the
-exact version of each deployment that should remain available. Logos supports plain-text OpenAI
-Chat Completions and Responses on `api.openai.com`, and Anthropic Messages on
-`api.anthropic.com`. A model alias, a proxy, a beta header, and a discovered model-wide context
-size are not evidence of a bound. Use the immutable dated model ID that the deployment actually
-sends to that provider. Document the provider-enforced maximum input tokens (an enforced context
-ceiling is conservative), maximum output tokens, and the output-limit field this exact endpoint
-and model honor. Do not enter average tokens or a locally chosen token limit.
-
-The Logos Admin API records this review at
-`PUT /logosdb/providers/{providerId}/monthly-spend-cap/reviewed-deployments/{modelId}`.
-Supply `upstream_url`, `revision`, `output_limit_field`, `max_input_tokens`, `max_output_tokens`, and
-`evidence_url`. The evidence URL must point to the vendor's official developer documentation.
-The deployment, official URL, and pinned model must match the provider configuration. Review
-changes are audited. Remove a review using DELETE on the same path with the `upstream_url`
-query parameter. Missing or out-of-date reviews do not authorize requests under an active cap.
 
 ### Add a Provider
 

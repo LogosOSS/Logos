@@ -22,7 +22,7 @@
         </dd>
       </div>
       <div>
-        <dt>Charged this month</dt>
+        <dt>Recorded charges this month</dt>
         <dd>{{ usdLabel(details.charged_usd) }}</dd>
       </div>
     </dl>
@@ -36,14 +36,7 @@
         }
       </p>
     }
-    @if (details.bound_violation && details.current?.enabled) {
-      <p class="warning" role="alert">Upstream usage or charges exceeded the verified bound. This provider cannot accept new billable requests through Logos this month.</p>
-    }
-    @if (details.bounded_deployments === 0) {
-      <p class="warning">No deployments have a verified cost bound. An active cap blocks billable requests until a bound is verified.</p>
-    } @else if (details.bounded_deployments != null) {
-      <p class="hint">Verified cost bounds: {{ details.bounded_deployments }} {{ details.bounded_deployments === 1 ? 'deployment' : 'deployments' }}. While a cap is active, Logos blocks requests it cannot bound.</p>
-    }
+    <p class="hint">When recorded charges reach the limit, Logos blocks new requests. In-flight requests can still finish.</p>
 
     @if (editing()) {
       <form class="editor" (submit)="$event.preventDefault(); save()">

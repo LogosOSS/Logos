@@ -9,9 +9,6 @@ const status: ProviderSpendStatus = {
   current: { enabled: true, effective_month: '2026-11-01', limit_usd: '400.00' },
   scheduled: { enabled: true, effective_month: '2026-12-01', limit_usd: '500.00' },
   charged_usd: '87.25',
-  reserved_usd: '10.5',
-  bound_violation: false,
-  bounded_deployments: 0,
 };
 
 describe('ProviderSpendCap', () => {
@@ -51,14 +48,13 @@ describe('ProviderSpendCap', () => {
     fixture.detectChanges();
   }
 
-  it('shows the current limit, settled charges and upcoming change without exposing reservations', async () => {
+  it('shows the current limit, recorded charges, upcoming change and soft-cap behavior', async () => {
     expect(host.textContent).toContain('Loading spend cap');
     await load();
-    for (const text of ['$400.00', '$87.25', 'December 1, 2026 (UTC)', '$500.00 limit', 'No deployments have a verified cost bound']) {
+    for (const text of ['$400.00', '$87.25', 'December 1, 2026 (UTC)', '$500.00 limit', 'Recorded charges this month']) {
       expect(host.textContent).toContain(text);
     }
-    expect(host.textContent).not.toContain('Reserved this month');
-    expect(host.textContent).not.toContain('$10.50');
+    expect(host.textContent).toContain('When recorded charges reach the limit, Logos blocks new requests. In-flight requests can still finish.');
   });
 
   it('keeps loading errors distinct from an uncapped response and allows retry', async () => {
@@ -93,8 +89,7 @@ describe('ProviderSpendCap', () => {
   });
 
   it('keeps the editor after a failed write and removes the current limit without changing a scheduled override', async () => {
-    await load({ ...status, bound_violation: true });
-    expect(host.querySelector('[role="alert"]')?.textContent).toContain('exceeded the verified bound');
+    await load();
     button('Edit spend cap').click();
     fixture.detectChanges();
     host.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click();
@@ -124,8 +119,7 @@ describe('ProviderSpendCap', () => {
     expect(page.usdLabel('999999.10101000')).toBe('$999,999.10101');
     expect(page.usdLabel(1234567.25)).toBe('$1,234,567.25');
     await page.load(); // A pending load does not start a second request.
-    await load({ ...status, current: { ...status.current!, limit_usd: 1234567.25 }, scheduled: null, bounded_deployments: 1 });
-    expect(host.textContent).toContain('Verified cost bounds: 1 deployment.');
+    await load({ ...status, current: { ...status.current!, limit_usd: 1234567.25 }, scheduled: null });
     button('Edit spend cap').click();
     fixture.detectChanges();
     expect(host.querySelector<HTMLInputElement>('[inputmode="decimal"]')?.value).toBe('1234567.25');
@@ -138,7 +132,7 @@ describe('ProviderSpendCap', () => {
   });
 
   it('keeps a pending write protected from cancel or duplicate submits', async () => {
-    await load({ ...status, current: null, scheduled: null, bounded_deployments: 2 });
+    await load({ ...status, current: null, scheduled: null });
     button('Edit spend cap').click();
     fixture.detectChanges();
     expect(host.querySelector<HTMLInputElement>('input[type="checkbox"]')?.checked).toBe(true);
