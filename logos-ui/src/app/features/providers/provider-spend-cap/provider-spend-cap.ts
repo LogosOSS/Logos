@@ -55,7 +55,7 @@ export class ProviderSpendCap implements OnInit {
   edit(): void {
     const status = this.status();
     if (!status) return;
-    const policy = status.scheduled ?? status.current;
+    const policy = status.current;
     this.enabled.set(policy?.enabled ?? true);
     this.limit.set(policy?.limit_usd == null ? '' : this.usdDecimal(policy.limit_usd));
     this.saved.set(false);
@@ -99,7 +99,7 @@ export class ProviderSpendCap implements OnInit {
     this.saveFailed.set(false);
     this.saving.set(true);
     try {
-      this.status.set(await this.providers.scheduleMonthlySpendCap(this.providerId(), change));
+      this.status.set(await this.providers.updateMonthlySpendCap(this.providerId(), change));
       this.editing.set(false);
       this.saved.set(true);
     } catch {

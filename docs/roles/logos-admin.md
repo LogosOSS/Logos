@@ -429,27 +429,32 @@ Expand a provider for its connected models, or for the worker control actions
 
 ![Providers page](/img/roles/logos-admin-providers.png)
 
-### Schedule a monthly cloud spend cap
+### Set a monthly cloud spend cap {#schedule-a-monthly-cloud-spend-cap}
 
 1. Expand a cloud provider in **Providers**.
 2. In **Monthly spend cap**, select **Edit spend cap**.
-3. Select **Enable cap next month** and enter the **Monthly maximum (USD)**.
-4. Select **Schedule change**.
+3. Select **Enable cap** and enter the **Monthly maximum (USD)**.
+4. Select **Save changes**.
 
-To remove the cap, clear **Enable cap next month** before you schedule the change.
-All changes take effect at the start of the next UTC calendar month.
+To remove the cap, clear **Enable cap** and select **Save changes**.
+Changes apply immediately and continue each UTC calendar month unless a scheduled change replaces them.
 A limit of $0 blocks new billable requests through Logos.
 
 The section shows the current limit, the next scheduled change, and settled charges for the current month.
-The cap applies only to spend that Logos tracks for the provider during a capped month.
+First activation includes finalized costs that Logos has recorded for the provider in the current UTC month.
+Logos adds those costs only once. Changing or removing the cap does not reset the tracked charges.
+The cap does not include unpriced or in-flight work at first activation, or spend during later gaps when the cap is disabled.
+These values are not the vendor invoice.
 If an upstream charge exceeds its reservation, Logos stops new billable requests to that provider for that month.
 
 ![Monthly spend cap editor for a cloud provider](/img/roles/logos-admin-provider-spend-cap.png)
 
 The administrator API also accepts GET and PUT at `/logosdb/providers/{providerId}/monthly-spend-cap`.
 Use the provider record ID, not the vendor account ID.
-To schedule a limit, send `{"enabled": true, "limit_usd": "400"}`.
-To schedule removal, send `{"enabled": false}`.
+To set the current limit, send `{"enabled": true, "limit_usd": "400"}`.
+To remove the current limit, send `{"enabled": false}`.
+To schedule a separate change for the next UTC month, send the same payload to
+`PUT /logosdb/providers/{providerId}/monthly-spend-cap/scheduled`.
 
 Logos reserves the maximum charge before each upstream attempt. Reported
 complete usage replaces the reservation. If Logos cannot tell whether an
@@ -458,7 +463,7 @@ remaining allowance cannot cover a reservation, the request gets HTTP 402
 without reaching the provider.
 
 An active cap permits only plain-text requests to deployments with a verified cost bound.
-Each request needs an explicit output token limit. If there is no verified bound, Logos rejects the request with HTTP 422. The editor reports when no deployment has a verified bound; scheduling a monetary limit does not create one.
+Each request needs an explicit output token limit. If there is no verified bound, Logos rejects the request with HTTP 422. The editor reports when no deployment has a verified bound; setting a monetary limit does not create one.
 This rule also applies to new provider-native batches, file uploads and cloud benchmark jobs. The Logos-managed batch uses the same inference cap.
 Previously admitted provider-native work, requests sent outside Logos and
 vendor invoice adjustments are not included.

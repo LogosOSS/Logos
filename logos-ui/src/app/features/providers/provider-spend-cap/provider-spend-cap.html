@@ -48,10 +48,10 @@
     @if (editing()) {
       <form class="editor" (submit)="$event.preventDefault(); save()">
         <fieldset [disabled]="saving()">
-          <legend>Schedule a change</legend>
+          <legend>Edit current limit</legend>
           <label class="option">
             <input type="checkbox" [checked]="enabled()" (change)="enabled.set($any($event.target).checked)" />
-            Enable cap next month
+            Enable cap
           </label>
           @if (enabled()) {
             <label class="amount">
@@ -62,25 +62,22 @@
             @if (limit().trim() && !limitValid()) {
               <p class="warning">Enter a nonnegative USD amount with up to 8 decimals.</p>
             }
-            <p class="hint">A $0 limit blocks new billable requests through Logos.</p>
-          } @else {
-            <p class="hint">Logos removes the cap at the start of next month.</p>
           }
-          <p class="hint">Changes take effect at the start of the next UTC calendar month.</p>
+          <p class="hint">Changes apply now and continue each month unless a scheduled change replaces them.</p>
           <div class="actions">
             <button type="submit" class="btn-primary" [disabled]="enabled() && !limitValid()">
-              {{ saving() ? 'Scheduling…' : 'Schedule change' }}
+              {{ saving() ? 'Saving…' : 'Save changes' }}
             </button>
             <button type="button" class="btn-secondary" (click)="cancel()">Cancel</button>
           </div>
         </fieldset>
         @if (saveFailed()) {
-          <p role="alert">Could not schedule the change. Try again.</p>
+          <p role="alert">Could not save the spend cap. Try again.</p>
         }
       </form>
     }
     @if (saved()) {
-      <p role="status">Spend cap change scheduled.</p>
+      <p role="status">Spend cap updated.</p>
     }
   }
 </section>

@@ -32,7 +32,7 @@ export class ProviderManagementService {
     ));
   }
 
-  scheduleMonthlySpendCap(id: number, change: ProviderSpendChange): Promise<ProviderSpendStatus> {
+  updateMonthlySpendCap(id: number, change: ProviderSpendChange): Promise<ProviderSpendStatus> {
     return firstValueFrom(this.http.put<ProviderSpendStatus>(
       `/api/logosdb/providers/${id}/monthly-spend-cap`, change,
     ));

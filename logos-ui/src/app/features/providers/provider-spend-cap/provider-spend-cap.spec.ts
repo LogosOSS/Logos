@@ -71,26 +71,28 @@ describe('ProviderSpendCap', () => {
     expect(host.textContent).toContain('No cap');
   });
 
-  it('edits the scheduled value, rejects excess precision and sends an exact decimal string', async () => {
+  it('edits the current value, rejects excess precision and sends an exact decimal string', async () => {
     await load();
     button('Edit spend cap').click();
     fixture.detectChanges();
-    expect(host.querySelector<HTMLInputElement>('[inputmode="decimal"]')?.value).toBe('500');
+    expect(host.querySelector<HTMLInputElement>('[inputmode="decimal"]')?.value).toBe('400');
     for (const invalid of ['-1', '1.000000001', '9e9', '92233720368.54775808']) {
       typeLimit(invalid);
-      expect(button('Schedule change').disabled).toBe(true);
+      expect(button('Save changes').disabled).toBe(true);
     }
     typeLimit('92233720368.54775807');
-    button('Schedule change').click();
+    button('Save changes').click();
     const req = http.expectOne({ method: 'PUT', url });
     expect(req.request.body).toEqual({ enabled: true, limit_usd: '92233720368.54775807' });
-    req.flush({ ...status, scheduled: { ...status.scheduled!, limit_usd: '92233720368.54775807' } });
+    req.flush({ ...status, current: { ...status.current!, limit_usd: '92233720368.54775807' } });
     await detect();
     expect(host.textContent).toContain('$92,233,720,368.54775807');
-    expect(host.querySelector('[role="status"]')?.textContent).toContain('scheduled');
+    expect(host.textContent).toContain('$500.00 limit');
+    expect(host.textContent).toContain('$87.25');
+    expect(host.querySelector('[role="status"]')?.textContent).toContain('Spend cap updated');
   });
 
-  it('keeps the editor after a failed write and schedules removal without a limit', async () => {
+  it('keeps the editor after a failed write and removes the current limit without changing a scheduled override', async () => {
     await load({ ...status, bound_violation: true });
     expect(host.querySelector('[role="alert"]')?.textContent).toContain('exceeded the verified bound');
     button('Edit spend cap').click();
@@ -98,16 +100,20 @@ describe('ProviderSpendCap', () => {
     host.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click();
     fixture.detectChanges();
     expect(host.querySelector('[inputmode="decimal"]')).toBeNull();
-    button('Schedule change').click();
+    button('Save changes').click();
     const req = http.expectOne({ method: 'PUT', url });
     expect(req.request.body).toEqual({ enabled: false });
     req.flush(null, { status: 409, statusText: 'Conflict' });
     await detect();
-    expect(host.textContent).toContain('Could not schedule');
-    button('Schedule change').click();
-    http.expectOne({ method: 'PUT', url }).flush({ ...status, scheduled: { ...status.scheduled!, enabled: false, limit_usd: null } });
+    expect(host.textContent).toContain('Could not save');
+    button('Save changes').click();
+    http.expectOne({ method: 'PUT', url }).flush({ ...status, current: { ...status.current!, enabled: false, limit_usd: null } });
     await detect();
-    expect(host.textContent).toContain('Remove cap');
+    expect(host.textContent).toContain('No cap');
+    expect(host.textContent).toContain('$500.00 limit');
+    button('Edit spend cap').click();
+    fixture.detectChanges();
+    expect(host.querySelector<HTMLInputElement>('input[type="checkbox"]')?.checked).toBe(false);
   });
 
   it('formats numeric and exact string amounts without changing a cancelled policy', async () => {
@@ -135,18 +141,19 @@ describe('ProviderSpendCap', () => {
     await load({ ...status, current: null, scheduled: null, bounded_deployments: 2 });
     button('Edit spend cap').click();
     fixture.detectChanges();
+    expect(host.querySelector<HTMLInputElement>('input[type="checkbox"]')?.checked).toBe(true);
     expect(host.querySelector<HTMLInputElement>('[inputmode="decimal"]')?.value).toBe('');
     await fixture.componentInstance.save();
     typeLimit('0');
-    button('Schedule change').click();
+    button('Save changes').click();
     const req = http.expectOne({ method: 'PUT', url });
     expect(req.request.body).toEqual({ enabled: true, limit_usd: '0' });
     fixture.componentInstance.cancel();
     await fixture.componentInstance.save();
     expect(fixture.componentInstance.editing()).toBe(true);
-    req.flush({ ...status, scheduled: { ...status.scheduled!, limit_usd: '0' } });
+    req.flush({ ...status, current: { ...status.current!, limit_usd: '0' }, scheduled: null });
     await detect();
-    expect(host.textContent).toContain('$0.00 limit');
+    expect(host.textContent).toContain('$0.00');
   });
 
 });
