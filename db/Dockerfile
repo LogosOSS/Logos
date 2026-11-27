@@ -1,4 +1,4 @@
-FROM postgres:17.11-trixie
+FROM postgres:18.6-trixie
 # Keep pg_cron compatible with the server in this image. The next PGDG rebuild
 # requires a PostgreSQL minor release that is not yet present in its index.
 RUN apt-get -o Acquire::Retries=3 -o Acquire::http::No-Cache=true -o APT::Update::Error-Mode=any update \
