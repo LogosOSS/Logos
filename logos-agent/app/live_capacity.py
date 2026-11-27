@@ -116,7 +116,8 @@ def prepare(payload: dict, lane, *, max_age_s: float, now: datetime | None = Non
             continue
         running = sum(_count(item["requests_running"]) for item in usable)
         waiting = sum(_count(item["queue_waiting"]) for item in usable)
-        clear = any(_count(item["queue_waiting"]) == 0 for item in usable)
+        reserved = model.get("benchmark_reserved") is True
+        clear = not reserved and any(_count(item["queue_waiting"]) == 0 for item in usable)
         admission = model.get("admission") or {}
         available = 0
         if clear and isinstance(admission, dict) and admission.get("can_admit") is True:
@@ -140,6 +141,21 @@ def prepare(payload: dict, lane, *, max_age_s: float, now: datetime | None = Non
         normalized["lane_parallel"] = max(running, accepted) + available if usable else 0
         normalized["max_capacity"] = normalized["lane_parallel"]
         signals["requests_running_current"] = running
+        # The engine exposes anonymous gauges. On a fenced deployment,
+        # discount only the benchmark waiters that cannot fit in the running
+        # count, and only when the observation reconciles with the ledger.
+        # Retain unknown or unproven waiters as possible user traffic.
+        benchmark_active = _count(model.get("benchmark_active"))
+        ledger_active = _count(model.get("active"))
+        if (
+            reserved
+            and usable
+            and len(usable) == len(ready)
+            and ledger_active == running + waiting
+            and benchmark_active is not None
+            and benchmark_active <= ledger_active
+        ):
+            waiting -= max(0, benchmark_active - running)
         signals["queue_waiting_current"] = waiting
         normalized["scheduler_signals"] = signals
 
