@@ -116,6 +116,7 @@ table {
   th,
   td {
     text-align: left;
+    overflow-wrap: anywhere;
     padding: 8px 10px;
     border-bottom: 1px solid rgb(var(--color-outline-200) / var(--opacity-subtle));
   }
