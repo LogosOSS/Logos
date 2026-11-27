@@ -158,11 +158,16 @@ async def agent_cloud_deployments() -> list[dict[str, Any]]:
 
 
 async def agent_cloud_allowed_for_repository(
-    provider_id: int, team_repository_id: int | None, repo_slug: str | None
+    provider_id: int,
+    team_repository_id: int | None,
+    repo_slug: str | None,
+    *,
+    workflow_analysis: bool = False,
+    session_id: int | None = None,
 ) -> bool:
-    """Apply current team privacy; a removed or moved link is not a platform session."""
+    """Apply live repository permissions for the session's actual purpose and team privacy."""
     if team_repository_id is None:
-        return repo_slug is None
+        return repo_slug is None and not workflow_analysis
     if not repo_slug:
         return False
 
@@ -175,11 +180,26 @@ async def agent_cloud_allowed_for_repository(
                     SELECT 1 FROM team_repositories tr
                     JOIN team_privacy_providers allowed
                       ON allowed.team_id = tr.team_id AND allowed.provider_id = :provider
-                    WHERE tr.id = :repo_id AND tr.agent_enabled
-                      AND lower(tr.repo_slug) = lower(:slug)
+                    WHERE tr.id = :repo_id AND lower(tr.repo_slug) = lower(:slug)
+                      AND CASE WHEN :analysis THEN EXISTS (
+                            SELECT 1 FROM agent_sessions s
+                            JOIN ai_workflow_analyses a ON a.agent_session_id = s.id
+                            WHERE s.id = :session_id AND s.trigger_kind = 'analysis' AND s.no_push
+                              AND s.team_repository_id = tr.id AND lower(s.repo_slug) = lower(tr.repo_slug)
+                              AND a.team_repository_id = tr.id AND a.team_id = tr.team_id
+                              AND (tr.automatic_workflow_analysis OR NOT (
+                                  a.automatically_queued OR COALESCE(s.created_by = 'logos-agent (analysis)', FALSE)
+                              ))
+                          ) ELSE tr.agent_enabled END
                 )
                 """),
-                    {"provider": provider_id, "repo_id": team_repository_id, "slug": repo_slug},
+                    {
+                        "provider": provider_id,
+                        "repo_id": team_repository_id,
+                        "slug": repo_slug,
+                        "analysis": workflow_analysis,
+                        "session_id": session_id,
+                    },
                 )
             ).scalar_one()
         )

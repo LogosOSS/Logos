@@ -62,7 +62,7 @@ from .schemas import (
     WorkspaceStorage,
 )
 from .security_models import AssessmentAction, IncidentInput, RepositoryInput
-from .sessions import artifact_dir, cache_volume_for, manager, memory_admission_block
+from .sessions import artifact_dir, cache_volume_for, manager, memory_admission_block, remote_admission_block
 from .sessions import reserved_memory_mb as sessions_reserved_memory_mb
 from .sessions import resumption_base
 
@@ -255,7 +255,13 @@ async def get_capacity(_: Principal = Depends(require_agent_operator)) -> Capaci
     running = counts.get(SessionStatus.RUNNING.value, 0)
     paused = counts.get(SessionStatus.PAUSED.value, 0)
     control = await controls.current()
-    next_session = await db.next_queued_session() if counts.get(SessionStatus.QUEUED.value, 0) else None
+    queued = counts.get(SessionStatus.QUEUED.value, 0)
+    if queued and settings.remote_allowed_origins:
+        next_session = await db.next_queued_session(remote=False)
+        next_remote = await db.next_queued_session(remote=True)
+    else:
+        next_session = await db.next_queued_session() if queued else None
+        next_remote = None
     memory_override = (next_session or {}).get("memory_override_mb")
     max_parallel = control.parallel_for(memory_override)
     may_start, reason = capacity.start_decision(reading, running=running, paused=paused, max_parallel=max_parallel)
@@ -266,6 +272,11 @@ async def get_capacity(_: Principal = Depends(require_agent_operator)) -> Capaci
         memory_block = await memory_admission_block(control, override_mb=memory_override)
         if memory_block:
             may_start, reason = False, memory_block
+    remote_block = await remote_admission_block(
+        control,
+        active=running + paused + counts.get(SessionStatus.STARTING.value, 0),
+        override_mb=(next_remote or {}).get("memory_override_mb"),
+    )
     # The local-only model policy gates admission as hard as load does, so
     # the page that explains why nothing starts has to show it too — an
     # operator staring at an idle platform should not have to read the logs
@@ -286,11 +297,13 @@ async def get_capacity(_: Principal = Depends(require_agent_operator)) -> Capaci
         own_slots=own_slots,
         other_slots=other_slots,
         sessions_running=running,
-        sessions_queued=counts.get(SessionStatus.QUEUED.value, 0),
+        sessions_queued=queued,
         sessions_paused=paused,
         max_parallel=max_parallel,
         may_start=may_start,
         reason=reason,
+        remote_may_start=not remote_block,
+        remote_reason=remote_block or "Runner has room for remote sessions",
     )
 
 

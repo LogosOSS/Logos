@@ -61,6 +61,9 @@
 # bind-mounted: a deployment copies only the compose file to its VM.
 !agent-gateway/nginx.conf
 !agent-gateway/internal-secret.envsh
+!agent-gateway/remote-model-gateway.conf.template
+!agent-gateway/remote-model-proxy.conf.template
+!agent-gateway/select-model-gateway.sh
 # The per-IP rate-limit gateway's nginx configuration and entrypoint, same
 # reasoning as the agent gateway above.
 !rate-limit-gateway/nginx.conf

@@ -62,13 +62,24 @@ def session_network(session: dict[str, Any]) -> str:
     return remote_network() if is_remote(session) else settings.session_network
 
 
-async def cloud_options() -> list[dict[str, Any]]:
-    allowed = {_https_origin(value) for value in settings.remote_allowed_origins}
-    if not allowed or None in allowed:
-        return []
+def _approved_origins() -> set[tuple[str, int]]:
+    origins = [_https_origin(value) for value in settings.remote_allowed_origins]
+    if not origins or None in origins:
+        return set()
     try:
         remote_network()
     except ValueError:
+        return set()
+    return {origin for origin in origins if origin is not None}
+
+
+def remote_transport_configured() -> bool:
+    return bool(_approved_origins())
+
+
+async def cloud_options() -> list[dict[str, Any]]:
+    allowed = _approved_origins()
+    if not allowed:
         return []
     rows = await db.agent_cloud_deployments()
     return [
@@ -85,7 +96,11 @@ async def permits_pin(session: dict[str, Any]) -> bool:
     if provider_id is None or model_id is None:
         return False
     if not await db.agent_cloud_allowed_for_repository(
-        provider_id, session.get("team_repository_id"), session.get("repo_slug")
+        provider_id,
+        session.get("team_repository_id"),
+        session.get("repo_slug"),
+        workflow_analysis=session.get("trigger_kind") == "analysis",
+        session_id=session.get("id"),
     ):
         return False
     return any(

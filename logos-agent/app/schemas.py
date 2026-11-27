@@ -356,6 +356,8 @@ class CapacityState(BaseModel):
     max_parallel: int
     may_start: bool
     reason: str
+    remote_may_start: bool
+    remote_reason: str
     # Whether every model the runner's key can reach is served locally. False
     # stops admission outright: agent work is paid for in idle GPU time, never
     # in cloud tokens.

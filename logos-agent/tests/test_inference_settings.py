@@ -52,6 +52,9 @@ async def test_pinned_remote_uses_the_live_repository_privacy_policy_before_disc
     assert await inference_settings.permits_pin(linked)
     assert not await inference_settings.permits_pin(linked)  # policy was withdrawn between two checks
     assert [call.args for call in current_policy.await_args_list] == [(2, 12, "o/repo")] * 2
+    assert [call.kwargs for call in current_policy.await_args_list] == [
+        {"workflow_analysis": False, "session_id": None}
+    ] * 2
     deployments.assert_awaited_once()
 
 
@@ -78,7 +81,7 @@ async def test_manual_request_is_refused_before_queuing_under_disallowed_team_pr
         main.app.dependency_overrides.pop(main.require_agent_operator)
     assert response.status_code == 409
     assert "not eligible for this repository" in response.json()["detail"]
-    denied.assert_awaited_once_with(2, 12, "o/repo")
+    denied.assert_awaited_once_with(2, 12, "o/repo", workflow_analysis=False, session_id=None)
     create.assert_not_awaited()
 
 
@@ -236,3 +239,60 @@ async def test_remote_resume_clears_the_binding_before_thawing(monkeypatch, remo
         ("state", 10, SessionStatus.RUNNING),
         ("thaw", "remote-container"),
     ]
+
+
+@pytest.mark.parametrize("blocked_by", [None, "paused", "parallel", "memory", "unconfigured"])
+async def test_capacity_endpoint_reports_remote_admission_independently_of_local_gpus(
+    monkeypatch, remote_settings, blocked_by
+):
+    config = inference_settings.settings
+    if blocked_by == "unconfigured":
+        config = replace(config, remote_allowed_origins=())
+    monkeypatch.setattr(inference_settings, "settings", config)
+    monkeypatch.setattr(main, "settings", config)
+    monkeypatch.setattr(db, "agent_key_id", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        db, "count_sessions_by_status", AsyncMock(return_value={"queued": 1, "starting": int(blocked_by == "parallel")})
+    )
+    next_queued = AsyncMock(
+        side_effect=lambda **options: {"memory_override_mb": 1024} if options.get("remote") else None
+    )
+    monkeypatch.setattr(db, "next_queued_session", next_queued)
+    monkeypatch.setattr(main.capacity, "read_load", AsyncMock(return_value=main.capacity.Reading(0, 0, 0, 0, True)))
+    monkeypatch.setattr(main.capacity, "start_decision", lambda *_, **__: (False, "No local lane"))
+    monkeypatch.setattr(
+        main.model_policy,
+        "refresh",
+        AsyncMock(return_value=main.model_policy.ModelPolicy(ok=False, detail="No local model")),
+    )
+    control = controls.Controls(
+        mode=controls.PAUSED if blocked_by == "paused" else controls.RUNNING, max_parallel_override=1
+    )
+    monkeypatch.setattr(controls, "current", AsyncMock(return_value=control))
+    memory = AsyncMock(return_value="Host memory exhausted" if blocked_by == "memory" else "")
+    monkeypatch.setattr(sessions, "memory_admission_block", memory)
+    main.app.dependency_overrides[main.require_agent_operator] = lambda: Principal(
+        "actor", "operator", frozenset({"logos_admin"})
+    )
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url="http://test") as client:
+            response = await client.get("/capacity")
+    finally:
+        main.app.dependency_overrides.pop(main.require_agent_operator)
+    assert response.status_code == 200
+    result = response.json()
+    assert not result["may_start"]
+    assert result["reason"] == "No local model"
+    assert result["remote_may_start"] == (blocked_by is None)
+    expected = {
+        None: "room for remote",
+        "paused": "paused",
+        "parallel": "parallel session limit",
+        "memory": "Host memory",
+        "unconfigured": "not configured",
+    }
+    assert expected[blocked_by] in result["remote_reason"]
+    if blocked_by in (None, "memory"):
+        memory.assert_awaited_once_with(control, override_mb=1024)
+    else:
+        memory.assert_not_awaited()

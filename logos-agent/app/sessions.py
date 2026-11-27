@@ -312,6 +312,18 @@ async def memory_admission_block(control: controls.Controls, *, override_mb: int
     )
 
 
+async def remote_admission_block(control: controls.Controls, *, active: int, override_mb: int | None = None) -> str:
+    """Why new remote sessions cannot start; local GPU measurements are irrelevant."""
+    if not inference_settings.remote_transport_configured():
+        return "The remote inference relay is not configured"
+    blocked = control.admission_block(override_mb)
+    if blocked:
+        return blocked
+    if active >= control.parallel_for(override_mb):
+        return "The runner has reached its parallel session limit"
+    return await memory_admission_block(control, override_mb=override_mb)
+
+
 # The memory each session was started with, from the claim or, after a
 # restart, from its row. Its helpers get the same limit.
 _session_memory: dict[int, int] = {}
@@ -1187,9 +1199,7 @@ class SessionManager:
                 return False
             override_mb = candidate.get("memory_override_mb")
             ceiling = control.parallel_for(override_mb)
-            if control.admission_block(override_mb) or len(running) + len(paused) >= ceiling:
-                return False
-            if await memory_admission_block(control, override_mb=override_mb):
+            if await remote_admission_block(control, active=len(running) + len(paused), override_mb=override_mb):
                 return False
             limit_mb = override_mb or control.session_memory_mb
             budget = memory_budget.current()
