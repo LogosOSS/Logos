@@ -84,7 +84,7 @@ class AgentInferenceRelayTest {
                                    provider_type text, cloud_provider_type cloud_provider_type_enum,
                                    auth_name text, auth_format text, privacy_level text);
             CREATE TABLE teams(id integer primary key, privacy_scope text);
-            CREATE TABLE team_repositories(id integer primary key, team_id integer, agent_enabled boolean, repo_slug text);
+            CREATE TABLE team_repositories(id integer primary key, team_id integer, agent_enabled boolean, repo_slug text, automatic_workflow_analysis boolean);
             CREATE VIEW team_privacy_providers AS
             SELECT t.id AS team_id, p.id AS provider_id FROM teams t CROSS JOIN providers p
               WHERE t.privacy_scope='WORLDWIDE' OR
@@ -94,7 +94,10 @@ class AgentInferenceRelayTest {
                                         primary key(provider_id, model_id));
             CREATE TABLE agent_sessions(id bigint primary key, status text, error text, inference_grant_hash text UNIQUE,
                                         inference_client_tag text, inference_provider_id integer, inference_model_id integer, model text,
-                                        team_repository_id integer REFERENCES team_repositories ON DELETE SET NULL, repo_slug text);
+                                        team_repository_id integer REFERENCES team_repositories ON DELETE SET NULL, repo_slug text,
+                                        trigger_kind text, no_push boolean, created_by text NOT NULL);
+            CREATE TABLE ai_workflow_analyses(agent_session_id bigint, team_repository_id integer, team_id integer,
+                                               automatically_queued boolean NOT NULL);
             """);
         Path storePath = tmp.resolve("loopback.p12");
         var keytool = new ProcessBuilder(Path.of(System.getProperty("java.home"), "bin", "keytool").toString(),
@@ -134,6 +137,12 @@ class AgentInferenceRelayTest {
                     byte[] leak = PROVIDER_KEY.getBytes(StandardCharsets.UTF_8);
                     exchange.sendResponseHeaders(307, leak.length);
                     exchange.getResponseBody().write(leak);
+                } else if ("quota".equals(mode) || "wrong-type".equals(mode)) {
+                    byte[] message = PROVIDER_KEY.getBytes(StandardCharsets.UTF_8);
+                    exchange.getResponseHeaders().set("Content-Type", "text/plain");
+                    exchange.getResponseHeaders().set("Retry-After", "5");
+                    exchange.sendResponseHeaders("quota".equals(mode) ? 429 : 200, message.length);
+                    exchange.getResponseBody().write(message);
                 } else if ("hold".equals(mode)) {
                     exchange.getResponseHeaders().set("Content-Type", "text/event-stream");
                     exchange.sendResponseHeaders(200, 0);
@@ -162,11 +171,11 @@ class AgentInferenceRelayTest {
 
     @BeforeEach
     void seed() {
-        db.execute("TRUNCATE agent_sessions, model_provider, models, providers, team_repositories, teams");
+        db.execute("TRUNCATE ai_workflow_analyses, agent_sessions, model_provider, models, providers, team_repositories, teams");
         db.update("INSERT INTO providers VALUES (3, ?, 'wrong-provider-key', 'cloud', 'logos', 'Authorization', 'Bearer {}', 'CLOUD_IN_EU_BY_EU_PROVIDER')", allowedOrigin);
         db.update("INSERT INTO models VALUES (4, 'claude-test')");
         db.update("INSERT INTO model_provider VALUES (3, 4, ?)", PROVIDER_KEY);
-        db.update("INSERT INTO agent_sessions VALUES (2, 'starting', null, ?, null, 3, 4, 'claude-test', null, null)", HASH);
+        db.update("INSERT INTO agent_sessions VALUES (2, 'starting', null, ?, null, 3, 4, 'claude-test', null, null, null, false, 'test-operator')", HASH);
         MODE.set("ok");
         SEEN.set(null);
         CALLS.set(0);
@@ -262,9 +271,31 @@ class AgentInferenceRelayTest {
             .isInstanceOf(IllegalArgumentException.class);
     }
 
+    @Test
+    void suppressesUpstreamErrorDetailsAndRejectsUnexpectedSuccessContentType() throws Exception {
+        MODE.set("quota");
+        var result = mvc.perform(relayRequest(MESSAGES, JSON)).andExpect(request().asyncStarted()).andReturn();
+        var response = mvc.perform(asyncDispatch(result)).andExpect(status().isTooManyRequests())
+            .andExpect(header().string("Retry-After", "5")).andReturn().getResponse();
+        assertThat(response.getContentAsString()).doesNotContain(PROVIDER_KEY);
+        MODE.set("wrong-type");
+        mvc.perform(relayRequest(MESSAGES, JSON)).andExpect(status().isBadGateway());
+        assertThat(capacity.inFlight()).isZero();
+    }
+
+    @Test
+    void aMissingOrMalformedOriginConfigurationDisablesOnlyTheRelay() {
+        for (String origins : List.of("", allowedOrigin + ",http://untrusted.test")) {
+            var disabled = new AgentInferenceRelay(new NamedParameterJdbcTemplate(db), cap, origins, client);
+            assertThatThrownBy(() -> disabled.authorize(HASH, TAG))
+                .isInstanceOfSatisfying(ResponseStatusException.class, e -> assertThat(e.getStatusCode().value()).isEqualTo(503));
+        }
+        assertThat(CALLS).hasValue(0);
+    }
+
     private void linkRepository() {
         db.update("INSERT INTO teams VALUES (6, 'EU')");
-        db.update("INSERT INTO team_repositories VALUES (7, 6, true, 'Example/Repo')");
+        db.update("INSERT INTO team_repositories VALUES (7, 6, true, 'Example/Repo', true)");
         db.update("UPDATE agent_sessions SET team_repository_id=7, repo_slug='example/repo' WHERE id=2");
     }
 
@@ -286,6 +317,42 @@ class AgentInferenceRelayTest {
         db.update("DELETE FROM team_repositories WHERE id=7");
         mvc.perform(relayRequest(MESSAGES, JSON)).andExpect(status().isForbidden());
         assertThat(CALLS).hasValue(1);
+    }
+
+    @Test
+    void separatesOperatorRequestedAnalysesFromAutomaticAnalysesAndCoding() throws Exception {
+        linkRepository();
+        db.update("UPDATE team_repositories SET agent_enabled=false, automatic_workflow_analysis=false WHERE id=7");
+        mvc.perform(relayRequest(MESSAGES, JSON)).andExpect(status().isForbidden());
+        db.update("UPDATE agent_sessions SET trigger_kind='analysis', no_push=true WHERE id=2");
+        mvc.perform(relayRequest(MESSAGES, JSON)).andExpect(status().isForbidden());
+        db.update("INSERT INTO ai_workflow_analyses VALUES (2, 7, 9, false)");
+        mvc.perform(relayRequest(MESSAGES, JSON)).andExpect(status().isForbidden());
+        db.update("UPDATE ai_workflow_analyses SET team_id=6");
+        db.update("UPDATE agent_sessions SET no_push=false WHERE id=2");
+        mvc.perform(relayRequest(MESSAGES, JSON)).andExpect(status().isForbidden());
+        db.update("UPDATE agent_sessions SET no_push=true WHERE id=2");
+        var manual = mvc.perform(relayRequest(MESSAGES, JSON)).andExpect(request().asyncStarted()).andReturn();
+        mvc.perform(asyncDispatch(manual)).andExpect(status().isOk());
+        db.update("UPDATE ai_workflow_analyses SET automatically_queued=true");
+        mvc.perform(relayRequest(MESSAGES, JSON)).andExpect(status().isForbidden());
+        db.update("UPDATE ai_workflow_analyses SET automatically_queued=false");
+        db.update("UPDATE agent_sessions SET created_by='logos-agent (analysis)' WHERE id=2");
+        mvc.perform(relayRequest(MESSAGES, JSON)).andExpect(status().isForbidden());
+        db.update("UPDATE team_repositories SET automatic_workflow_analysis=true WHERE id=7");
+        var automatic = mvc.perform(relayRequest(MESSAGES, JSON)).andExpect(request().asyncStarted()).andReturn();
+        mvc.perform(asyncDispatch(automatic)).andExpect(status().isOk());
+        db.update("UPDATE agent_sessions SET team_repository_id=NULL, repo_slug=NULL WHERE id=2");
+        mvc.perform(relayRequest(MESSAGES, JSON)).andExpect(status().isForbidden());
+        assertThat(CALLS).hasValue(2);
+    }
+
+    @Test
+    void closesRunningAutomaticAnalysisWhenOptOutChanges() throws Exception {
+        linkRepository();
+        db.update("UPDATE agent_sessions SET trigger_kind='analysis', no_push=true WHERE id=2");
+        db.update("INSERT INTO ai_workflow_analyses VALUES (2, 7, 6, true)");
+        assertIdleStreamClosedBy(() -> db.update("UPDATE team_repositories SET automatic_workflow_analysis=false WHERE id=7"));
     }
 
     @Test
@@ -312,7 +379,7 @@ class AgentInferenceRelayTest {
             @Override public void flush() { gotChunk.countDown(); }
         };
         try (var io = Executors.newVirtualThreadPerTaskExecutor()) {
-            var response = controller.messages(input);
+            var response = controller.relayMessages(input);
             assertThat(response.getHeaders().getFirst("X-Accel-Buffering")).isEqualTo("no");
             var writing = io.submit(() -> {
                 try {

@@ -36,7 +36,7 @@ import org.springframework.web.server.ResponseStatusException;
 final class AgentInferenceRelay {
     private static final Logger LOG = LoggerFactory.getLogger(AgentInferenceRelay.class);
     private static final Duration IDLE = Duration.ofMinutes(30);
-    private static final String ACTIVE = """
+    private static final String ACTIVE_SESSION = """
         s.status IN ('starting', 'running') AND COALESCE(s.error, '') NOT LIKE 'cancel_requested:%'
         """;
 
@@ -50,12 +50,22 @@ final class AgentInferenceRelay {
 
     private static final String TEAM_SCOPE = """
         (
-            (s.team_repository_id IS NULL AND s.repo_slug IS NULL)
+            (s.team_repository_id IS NULL AND s.repo_slug IS NULL AND s.trigger_kind IS DISTINCT FROM 'analysis')
             OR EXISTS (
                 SELECT 1 FROM team_repositories tr
                 JOIN team_privacy_providers pp ON pp.team_id = tr.team_id AND pp.provider_id = s.inference_provider_id
-                WHERE tr.id = s.team_repository_id AND tr.agent_enabled = TRUE
-                  AND LOWER(tr.repo_slug) = LOWER(s.repo_slug)
+                WHERE tr.id = s.team_repository_id AND LOWER(tr.repo_slug) = LOWER(s.repo_slug)
+                  AND (
+                      (s.trigger_kind IS DISTINCT FROM 'analysis' AND tr.agent_enabled = TRUE)
+                      OR (
+                          s.trigger_kind = 'analysis' AND s.no_push AND EXISTS (
+                              SELECT 1 FROM ai_workflow_analyses a
+                              WHERE a.agent_session_id = s.id AND a.team_repository_id = tr.id AND a.team_id = tr.team_id
+                                AND (tr.automatic_workflow_analysis
+                                     OR NOT (a.automatically_queued OR s.created_by = 'logos-agent (analysis)'))
+                          )
+                      )
+                  )
             )
         )
         """;
@@ -73,7 +83,7 @@ final class AgentInferenceRelay {
     private final HttpClient upstream;
     private final Set<URI> allowedOrigins;
     private final Semaphore admission = new Semaphore(8);
-    private final Set<ActiveRelay> active = ConcurrentHashMap.newKeySet();
+    private final Set<ActiveRelay> activeRelays = ConcurrentHashMap.newKeySet();
 
     @Autowired
     AgentInferenceRelay(NamedParameterJdbcTemplate jdbc, ProviderSpendCapService providerSpend,
@@ -121,7 +131,7 @@ final class AgentInferenceRelay {
             jdbc.update("""
                 UPDATE agent_sessions s SET inference_client_tag = :tag
                 WHERE inference_grant_hash = :hash AND inference_client_tag IS NULL AND
-                """ + ACTIVE, identity);
+                """ + ACTIVE_SESSION, identity);
             return jdbc.query("""
                 SELECT s.id, s.inference_provider_id, m.id AS inference_model_id, m.name, p.base_url,
                        COALESCE(NULLIF(mp.api_key, ''), p.api_key, '') AS operating_key,
@@ -133,7 +143,7 @@ final class AgentInferenceRelay {
                 JOIN model_provider mp ON mp.provider_id = p.id AND mp.model_id = m.id
                 WHERE s.inference_grant_hash = :hash AND s.inference_client_tag = :tag
                     AND
-                """ + REMOTE_SCOPE + " AND " + ACTIVE, identity, rs -> {
+                """ + REMOTE_SCOPE + " AND " + ACTIVE_SESSION, identity, rs -> {
                     if (!rs.next()) throw denied();
                     if (!rs.getBoolean("privacy_permitted")) {
                         throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Agent repository privacy does not allow remote inference");
@@ -161,7 +171,7 @@ final class AgentInferenceRelay {
     ActiveRelay open(Grant grant) {
         if (!admission.tryAcquire()) throw unavailable();
         ActiveRelay relay = new ActiveRelay(grant);
-        active.add(relay);
+        activeRelays.add(relay);
         return relay;
     }
 
@@ -196,7 +206,7 @@ final class AgentInferenceRelay {
 
     @Scheduled(scheduler = "agentInferenceRelayScheduler", fixedDelay = 1000)
     void closeInactive() {
-        ActiveRelay[] relays = active.toArray(ActiveRelay[]::new);
+        ActiveRelay[] relays = activeRelays.toArray(ActiveRelay[]::new);
         if (relays.length == 0) return;
         Map<Long, Scope> valid = new HashMap<>();
         Set<Long> sessions = new HashSet<>();
@@ -211,7 +221,7 @@ final class AgentInferenceRelay {
                                       AND mp.model_id = s.inference_model_id
                 JOIN providers p ON p.id = s.inference_provider_id
                 WHERE s.id IN (:sessions) AND
-                """ + REMOTE_SCOPE + " AND " + ACTIVE + " AND " + TEAM_SCOPE, Map.of("sessions", sessions), rs -> {
+                """ + REMOTE_SCOPE + " AND " + ACTIVE_SESSION + " AND " + TEAM_SCOPE, Map.of("sessions", sessions), rs -> {
                     long id = rs.getLong("id");
                     try {
                         valid.put(id, new Scope(rs.getString("inference_grant_hash"),
@@ -277,7 +287,7 @@ final class AgentInferenceRelay {
                 if (future != null) future.cancel(true);
                 if (body != null) closeBody(body);
             } finally {
-                active.remove(this);
+                activeRelays.remove(this);
                 admission.release();
             }
         }

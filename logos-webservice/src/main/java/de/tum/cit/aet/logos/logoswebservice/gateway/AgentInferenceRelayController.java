@@ -52,7 +52,7 @@ public final class AgentInferenceRelayController {
     }
 
     @PostMapping(path = MESSAGES, consumes = MediaType.APPLICATION_JSON_VALUE)
-    public ResponseEntity<StreamingResponseBody> messages(HttpServletRequest request) throws IOException {
+    public ResponseEntity<StreamingResponseBody> relayMessages(HttpServletRequest request) throws IOException {
         String presentedSecret = singleHeader(request, RELAY_SECRET);
         if (secret.length == 0 || presentedSecret == null
                 || !MessageDigest.isEqual(secret, presentedSecret.getBytes(StandardCharsets.UTF_8))) {
