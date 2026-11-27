@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 _REFRESH_INTERVAL_SECONDS = 1
 _MAX_VALIDITY_MS = 5_000
 _POLICY_ONLY_VALIDITY_SECONDS = 4
+_STARTUP_POLICY_TIMEOUT_SECONDS = 0.5
 
 
 @dataclass(frozen=True)
@@ -92,6 +93,15 @@ async def _refresh_policies_if_needed() -> None:
     _snapshot = SpendSnapshot(frozenset(), now + _POLICY_ONLY_VALIDITY_SECONDS, unknown_ids=active_ids)
 
 
+async def _try_refresh_policies() -> None:
+    try:
+        await _refresh_policies_if_needed()
+    except SQLAlchemyError:
+        # Without verified policy information, do not admit any cloud
+        # work from a stale or absent snapshot.
+        pass
+
+
 async def _refresh_loop() -> None:
     warned = False
     async with httpx.AsyncClient(timeout=2, follow_redirects=False, trust_env=False) as client:
@@ -104,12 +114,7 @@ async def _refresh_loop() -> None:
                 if not warned:
                     logger.warning("Could not refresh provider monthly spend status: %s", type(exc).__name__)
                     warned = True
-                try:
-                    await _refresh_policies_if_needed()
-                except SQLAlchemyError:
-                    # Without verified policy information, do not admit any
-                    # cloud work from the stale (or absent) snapshot.
-                    pass
+                await _try_refresh_policies()
             await asyncio.sleep(_REFRESH_INTERVAL_SECONDS)
 
 
@@ -118,6 +123,10 @@ async def refreshing():
     """Refresh spend status for this app process and clear it at shutdown."""
     global _snapshot
     _snapshot = None
+    # A fresh process can serve confirmed uncapped providers even if the
+    # webservice has not come up yet. Do not delay local inference on a slow DB.
+    with suppress(TimeoutError):
+        await asyncio.wait_for(_try_refresh_policies(), timeout=_STARTUP_POLICY_TIMEOUT_SECONDS)
     task = asyncio.create_task(_refresh_loop())
     try:
         yield

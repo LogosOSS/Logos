@@ -189,6 +189,10 @@ async def test_lifespan_refresh_runs_in_background_and_cleans_up(monkeypatch):
         finally:
             stopped.set()
 
+    def unavailable_db():
+        raise SQLAlchemyError("connection unavailable")
+
+    monkeypatch.setattr(provider_spend, "_read_active_policy_ids", unavailable_db)
     monkeypatch.setattr(provider_spend, "_refresh_loop", loop)
     async with provider_spend.refreshing():
         await asyncio.wait_for(entered.wait(), timeout=1)
@@ -196,3 +200,63 @@ async def test_lifespan_refresh_runs_in_background_and_cleans_up(monkeypatch):
             await provider_spend.check(22)
     assert stopped.is_set()
     assert provider_spend._snapshot is None
+
+
+@pytest.mark.parametrize("webservice_failure", [404, httpx.ReadTimeout])
+async def test_startup_prewarms_uncapped_providers_when_webservice_is_unavailable(
+    monkeypatch, endpoint, webservice_failure
+):
+    lookups = []
+    status_attempted = asyncio.Event()
+
+    def policies():
+        lookups.append("lookup")
+        return frozenset({22})
+
+    def handler(request):
+        status_attempted.set()
+        if webservice_failure == 404:
+            return httpx.Response(404)
+        raise webservice_failure("webservice is not ready")
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        provider_spend.httpx,
+        "AsyncClient",
+        lambda **settings: real_client(transport=httpx.MockTransport(handler), **settings),
+    )
+    monkeypatch.setattr(provider_spend, "_read_active_policy_ids", policies)
+
+    async with provider_spend.refreshing():
+        # Serving starts with the policy-only state, not after a network request.
+        assert lookups == ["lookup"]
+        assert not status_attempted.is_set()
+        await provider_spend.check(23)
+        with pytest.raises(HTTPException, match="503"):
+            await provider_spend.check(22)
+        await asyncio.wait_for(status_attempted.wait(), timeout=1)
+        await provider_spend.check(23)
+        with pytest.raises(HTTPException, match="503"):
+            await provider_spend.check(22)
+
+
+async def test_startup_bounds_policy_wait_and_still_enters_lifespan(monkeypatch):
+    cancelled = asyncio.Event()
+
+    async def slow_db():
+        try:
+            await asyncio.Future()
+        finally:
+            cancelled.set()
+
+    async def background():
+        await asyncio.Future()
+
+    monkeypatch.setattr(provider_spend, "_try_refresh_policies", slow_db)
+    monkeypatch.setattr(provider_spend, "_refresh_loop", background)
+    monkeypatch.setattr(provider_spend, "_STARTUP_POLICY_TIMEOUT_SECONDS", 0.01)
+    async with asyncio.timeout(1):
+        async with provider_spend.refreshing():
+            assert cancelled.is_set()
+            with pytest.raises(HTTPException, match="503"):
+                await provider_spend.check(22)
