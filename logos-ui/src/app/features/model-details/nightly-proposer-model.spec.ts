@@ -27,8 +27,8 @@ describe('NightlyProposerModel', () => {
 
   afterEach(() => http.verify());
 
-  async function load() {
-    http.expectOne(settingsUrl).flush(settings);
+  async function load(response: object = settings) {
+    http.expectOne(settingsUrl).flush(response);
     await fixture.whenStable();
     fixture.detectChanges();
   }
@@ -78,5 +78,49 @@ describe('NightlyProposerModel', () => {
     expect(component.provider()).toBe('logos_prod');
     expect(component.model()).toBe('prod/model');
     expect(component.error()).toContain('Another admin changed the selection');
+  });
+
+  it('allows retrying a failed catalog load', async () => {
+    http.expectOne(settingsUrl).flush({}, { status: 503, statusText: 'Unavailable' });
+    await fixture.whenStable();
+    fixture.detectChanges();
+    const element = fixture.nativeElement as HTMLElement;
+    expect(element.querySelector('[role=alert]')?.textContent).toContain('Could not load');
+    element.querySelector<HTMLButtonElement>('[role=alert] button')!.click();
+    await load();
+    expect(element.querySelector('[role=alert]')).toBeNull();
+  });
+
+  it('keeps the draft available when the server rejects a save', async () => {
+    await load();
+    const component = fixture.componentInstance;
+    component.selectProvider('local');
+    component.selectModel('local/alternative');
+    const save = component.save();
+    http.expectOne(settingsUrl + '/configure').flush(
+      { detail: 'This model is unavailable from the selected provider' },
+      { status: 400, statusText: 'Bad Request' },
+    );
+    await save;
+    expect(component.model()).toBe('local/alternative');
+    expect(component.canSave()).toBe(true);
+    expect(component.error()).toContain('This model is unavailable');
+  });
+
+  it('shows a retry option when the selected PROD catalog is unavailable', async () => {
+    await load({
+      ...settings,
+      selection: { provider: 'logos_prod', model: 'prod/model', revision: 1 },
+      logos_prod: { available: false, models: [] },
+    });
+    const element = fixture.nativeElement as HTMLElement;
+    expect(element.textContent).toContain('Could not load models from Logos PROD');
+    expect(element.querySelector<HTMLSelectElement>('select[name=model]')?.disabled).toBe(true);
+    element.querySelector<HTMLButtonElement>('[role=status] button')!.click();
+    await load({
+      ...settings,
+      selection: { provider: 'logos_prod', model: 'prod/model', revision: 1 },
+    });
+    expect(element.querySelector<HTMLSelectElement>('select[name=model]')?.value).toBe('prod/model');
   });
 });
