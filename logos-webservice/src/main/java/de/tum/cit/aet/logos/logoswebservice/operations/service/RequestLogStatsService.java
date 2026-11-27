@@ -1,7 +1,6 @@
 package de.tum.cit.aet.logos.logoswebservice.operations.service;
 
 import java.sql.Timestamp;
-import java.time.DayOfWeek;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
@@ -169,8 +168,10 @@ public class RequestLogStatsService {
         // requests mean zero, not an hour missing from the denominator.
         for (Instant hour = first; hour.isBefore(endExclusive); hour = hour.plus(1, ChronoUnit.HOURS)) {
             var localTime = hour.atZone(REQUEST_LOAD_ZONE);
-            var day = localTime.getDayOfWeek();
-            var dayGroup = day == DayOfWeek.SATURDAY || day == DayOfWeek.SUNDAY ? weekends : weekdays;
+            var dayGroup = switch (localTime.getDayOfWeek()) {
+                case SATURDAY, SUNDAY -> weekends;
+                default -> weekdays;
+            };
             var row = requestsByHour.get(hour.getEpochSecond());
             all.add(localTime.getHour(), row);
             dayGroup.add(localTime.getHour(), row);
