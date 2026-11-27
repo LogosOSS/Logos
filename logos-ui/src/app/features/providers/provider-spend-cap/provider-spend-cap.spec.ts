@@ -51,12 +51,14 @@ describe('ProviderSpendCap', () => {
     fixture.detectChanges();
   }
 
-  it('shows the current month, next UTC month, reservations and unsupported state', async () => {
+  it('shows the current limit, settled charges and upcoming change without exposing reservations', async () => {
     expect(host.textContent).toContain('Loading spend cap');
     await load();
-    for (const text of ['$400.00', '$87.25', '$10.50', 'December 1, 2026 (UTC)', '$500.00 limit', 'No deployments have a verified cost bound']) {
+    for (const text of ['$400.00', '$87.25', 'December 1, 2026 (UTC)', '$500.00 limit', 'No deployments have a verified cost bound']) {
       expect(host.textContent).toContain(text);
     }
+    expect(host.textContent).not.toContain('Reserved this month');
+    expect(host.textContent).not.toContain('$10.50');
   });
 
   it('keeps loading errors distinct from an uncapped response and allows retry', async () => {

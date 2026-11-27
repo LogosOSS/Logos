@@ -440,7 +440,7 @@ To remove the cap, clear **Enable cap next month** before you schedule the chang
 All changes take effect at the start of the next UTC calendar month.
 A limit of $0 blocks new billable requests through Logos.
 
-The section shows the current limit, the next change, settled charges, and outstanding reservations.
+The section shows the current limit, the next scheduled change, and settled charges for the current month.
 The cap applies only to spend that Logos tracks for the provider during a capped month.
 If an upstream charge exceeds its reservation, Logos stops new billable requests to that provider for that month.
 
