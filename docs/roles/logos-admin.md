@@ -864,7 +864,9 @@ The page has these parts, from top to bottom:
   Pausing freezes the countdown. An elapsed forecast or 20 active minutes without a new report displays
   **Awaiting updated estimate**. Session status records the actual outcome.
 - **Automatic work**, **Workspaces** and **What every session is told** are
-  at the bottom of the page.
+  at the bottom of the page. **Workspaces** shows the disk use of each checkout and its cache.
+  **Runner artifact disk** shows the capacity and free space of the filesystem that stores agent artifacts.
+  Docker volumes can use a different filesystem. This view does not set disk limits.
 
 Select a session to read **Agent messages** as the agent works. **Agent** identifies
 the parent. **Subagent** and a short identifier distinguish child messages.
