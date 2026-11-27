@@ -60,6 +60,7 @@ public class InferenceGatewayController {
     private final GatewayOrchestratorProxy orchestratorProxy;
     private final ObjectMapper objectMapper;
     private final GatewayInFlightLimit inFlightLimit;
+    private final ProviderSpendCapService providerSpend;
 
     public InferenceGatewayController(
             @Value("${logos.gateway.enabled:true}") boolean enabled,
@@ -68,7 +69,7 @@ public class InferenceGatewayController {
             GatewayCloudForwarder cloudForwarder,
             GatewayCloudRateLimiter cloudRateLimiter,
             GatewayOrchestratorProxy orchestratorProxy,
-            ObjectMapper objectMapper, GatewayInFlightLimit inFlightLimit) {
+            ObjectMapper objectMapper, GatewayInFlightLimit inFlightLimit, ProviderSpendCapService providerSpend) {
         this.enabled = enabled;
         this.authService = authService;
         this.cloudAccounting = cloudAccounting;
@@ -77,6 +78,7 @@ public class InferenceGatewayController {
         this.orchestratorProxy = orchestratorProxy;
         this.objectMapper = objectMapper;
         this.inFlightLimit = inFlightLimit;
+        this.providerSpend = providerSpend;
     }
 
     @RequestMapping(
@@ -154,9 +156,11 @@ public class InferenceGatewayController {
                 // never be missing from the request log.
                 final Integer logId;
                 final Map<String, String> upstreamHeaders;
+                String inferencePath = GatewayRouteResolver.normalizeInferencePath(path);
                 try {
                     upstreamHeaders = imageToolHeaders(ctx.key(), decision.deployment(), root);
                     cloudRateLimiter.enforce(ctx.key(), body);
+                    providerSpend.check(decision.deployment().providerId());
                     logId = cloudAccounting.admitAndReserve(
                         ctx.key(), decision.deployment(), body, logLevel, arrivedAt,
                         GatewayReasoningEffort.from(root));
@@ -170,7 +174,6 @@ public class InferenceGatewayController {
                         "Gateway error: " + e.getClass().getSimpleName(), false);
                     throw e;
                 }
-                String inferencePath = GatewayRouteResolver.normalizeInferencePath(path);
                 log.debug("Cloud forward {} {} model={} reason={}",
                     request.getMethod(), path, modelName, decision.reason());
                 return cloudForwarder.forward(

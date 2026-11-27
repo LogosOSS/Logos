@@ -1,0 +1,76 @@
+<section class="spend-cap" aria-label="Monthly spend cap">
+  <div class="heading">
+    <h3>Monthly spend cap</h3>
+    @if (status() && !editing()) {
+      <button type="button" class="btn-secondary" (click)="edit()">Edit spend cap</button>
+    }
+  </div>
+
+  @if (loading()) {
+    <p role="status">Loading spend cap…</p>
+  } @else if (loadFailed()) {
+    <p role="alert">Could not load the spend cap.</p>
+    <button type="button" class="btn-secondary" (click)="load()">Retry</button>
+  } @else if (status(); as details) {
+    <dl class="totals">
+      <div>
+        <dt>Current limit</dt>
+        <dd>
+          @if (details.current?.enabled) {
+            {{ usdLabel(details.current.limit_usd) }}
+          } @else { No cap }
+        </dd>
+      </div>
+      <div>
+        <dt>Recorded charges this month</dt>
+        <dd>{{ usdLabel(details.charged_usd) }}</dd>
+      </div>
+    </dl>
+    @if (details.scheduled; as scheduled) {
+      <p>
+        <strong>Scheduled for {{ (scheduled.effective_month + 'T00:00:00Z') | date:'MMMM d, y':'UTC' }} (UTC):</strong>
+        @if (scheduled.enabled) {
+          {{ usdLabel(scheduled.limit_usd) }} limit
+        } @else {
+          Remove cap
+        }
+      </p>
+    }
+    <p class="hint">When recorded charges reach the limit, Logos blocks new requests. In-flight requests can still finish.</p>
+
+    @if (editing()) {
+      <form class="editor" (submit)="$event.preventDefault(); save()">
+        <fieldset [disabled]="saving()">
+          <legend>Edit current limit</legend>
+          <label class="option">
+            <input type="checkbox" [checked]="enabled()" (change)="enabled.set($any($event.target).checked)" />
+            Enable cap
+          </label>
+          @if (enabled()) {
+            <label class="amount">
+              Monthly maximum (USD)
+              <input type="text" inputmode="decimal" [value]="limit()" [attr.aria-invalid]="limit().trim() && !limitValid() ? 'true' : null"
+                (input)="limit.set($any($event.target).value)" placeholder="400.00" autocomplete="off" />
+            </label>
+            @if (limit().trim() && !limitValid()) {
+              <p class="warning">Enter a nonnegative USD amount with up to 8 decimals.</p>
+            }
+          }
+          <p class="hint">Applies to this month and carries forward unless another limit is scheduled.</p>
+          <div class="actions">
+            <button type="submit" class="btn-primary" [disabled]="enabled() && !limitValid()">
+              {{ saving() ? 'Saving…' : 'Save changes' }}
+            </button>
+            <button type="button" class="btn-secondary" (click)="cancel()">Cancel</button>
+          </div>
+        </fieldset>
+        @if (saveFailed()) {
+          <p role="alert">Could not save the spend cap. Try again.</p>
+        }
+      </form>
+    }
+    @if (saved()) {
+      <p role="status">Spend cap updated.</p>
+    }
+  }
+</section>

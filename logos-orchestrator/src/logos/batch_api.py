@@ -48,6 +48,7 @@ from fastapi.responses import JSONResponse
 from logos.auth import AuthContext, authenticate_batch_api_key, explicit_log_level, resolve_log_level
 from logos.batch_local import local_batch_object, local_file_object, new_object_id, parse_request_lines, run_local_batch
 from logos.benchmarks.guidellm_runner import credential_transport_is_secure
+from logos.billing import provider_spend
 from logos.billing.budget import check_monthly_budget
 from logos.billing.finalize import finalize_billing_inputs
 from logos.dbutils.dbmanager import DBManager
@@ -736,6 +737,10 @@ async def forward_batch_operation(
     json_body: Optional[Dict[str, Any]] = None,
 ) -> Response:
     """Forward one Batch API operation to the provider and pass the answer back."""
+    if operation.is_batch_creation or operation.is_file_upload:
+        # Upload and creation can introduce chargeable work; polling and
+        # cleanup must remain available after the provider reaches its cap.
+        await provider_spend.check(int(provider["id"]))
     url = batch_operation_url(provider, operation)
     headers = batch_provider_headers(provider)
     _assert_secure_transport(provider, url, headers)

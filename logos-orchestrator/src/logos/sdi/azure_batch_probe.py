@@ -25,7 +25,9 @@ import os
 from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
+from fastapi import HTTPException
 
+from logos.billing import provider_spend
 from logos.dbutils.dbmanager import DBManager
 
 logger = logging.getLogger(__name__)
@@ -71,6 +73,10 @@ async def probe_deployment(
     if content is None:
         return False, f"The Batch API does not run {operation} requests."
 
+    blocked = await _probe_admission_failure(provider)
+    if blocked is not None:
+        return None, blocked
+
     headers = batch_provider_headers(provider)
     upload_url = batch_operation_url(provider, BatchOperation(resource="files", method="POST", path="v1/files"))
     try:
@@ -99,6 +105,16 @@ async def probe_deployment(
             logger.debug("Could not delete batch probe file %s", file_id, exc_info=True)
 
 
+async def _probe_admission_failure(provider: Dict[str, Any]) -> Optional[str]:
+    # A probe can execute before cancellation. Check spend before each
+    # chargeable stage; cancellation and deletion must always remain possible.
+    try:
+        await provider_spend.check(int(provider["id"]))
+    except HTTPException as exc:
+        return f"probe skipped by provider spend admission (HTTP {exc.status_code}): {exc.detail}"
+    return None
+
+
 async def _create_and_cancel(
     provider: Dict[str, Any],
     file_id: str,
@@ -107,6 +123,12 @@ async def _create_and_cancel(
     client: httpx.AsyncClient,
 ) -> Tuple[Optional[bool], str]:
     from logos.batch_api import BatchOperation, _looks_like_batch_model_error, _provider_error_text, batch_operation_url
+
+    # The policy can change while the upload is in flight. Recheck before
+    # creating a batch; deleting the uploaded file must remain permitted.
+    blocked = await _probe_admission_failure(provider)
+    if blocked is not None:
+        return None, blocked
 
     create_url = batch_operation_url(provider, BatchOperation(resource="batches", method="POST", path="v1/batches"))
     try:
@@ -139,7 +161,9 @@ async def _create_and_cancel(
             suboperation="cancel",
         )
         try:
-            await client.post(batch_operation_url(provider, cancel), headers=headers, timeout=30.0)
+            # Cancellation only stops work; never gate it on another charge.
+            cancelled = await client.post(batch_operation_url(provider, cancel), headers=headers, timeout=30.0)
+            cancelled.raise_for_status()
         except httpx.HTTPError:
             logger.warning("Could not cancel batch probe %s on provider %s", batch_id, provider.get("name"))
         return True, "The Batch API accepted this deployment."

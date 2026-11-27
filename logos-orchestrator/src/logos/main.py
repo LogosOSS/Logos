@@ -58,6 +58,7 @@ from logos.benchmarks.guidellm_runner import (
 from logos.benchmarks.maintenance import MaintenanceCoordinator
 from logos.benchmarks.nightly_scheduler import NightlyScheduler
 from logos.benchmarks.reservations import benchmark_reservations
+from logos.billing import provider_spend
 from logos.billing.budget import check_monthly_budget
 from logos.billing.finalize import finalize_billing_inputs
 from logos.capacity.calibration_orchestrator import CalibrationConfig, CalibrationOrchestrator
@@ -786,26 +787,27 @@ async def lifespan(app: FastAPI):
     # abort loudly instead of scheduling around them.
     _assert_no_ollama_typed_providers()
 
-    # Start Pipeline
-    await start_pipeline()
+    async with provider_spend.refreshing():
+        # Start Pipeline
+        await start_pipeline()
 
-    # Start gRPC server
-    global _grpc_server
-    _grpc_server = grpc.aio.server()
-    model_pb2_grpc.add_LogosServicer_to_server(LogosServicer(_pipeline), _grpc_server)
-    _grpc_server.add_insecure_port("[::]:50051")
-    await _grpc_server.start()
+        # Start gRPC server
+        global _grpc_server
+        _grpc_server = grpc.aio.server()
+        model_pb2_grpc.add_LogosServicer_to_server(LogosServicer(_pipeline), _grpc_server)
+        _grpc_server.add_insecure_port("[::]:50051")
+        await _grpc_server.start()
 
-    # A client may fire a batch and never poll it to completion. Without this
-    # pass its cost would never be booked, so the ledger would understate what
-    # the provider actually charged.
-    global _batch_reconciler_task, _local_batch_runner_task
-    _batch_reconciler_task = asyncio.create_task(batch_reconciler_loop())
-    # Batches Logos runs itself: started here, and picked up again after a
-    # restart that interrupted one mid-file.
-    _local_batch_runner_task = asyncio.create_task(local_batch_runner_loop())
+        # A client may fire a batch and never poll it to completion. Without this
+        # pass its cost would never be booked, so the ledger would understate what
+        # the provider actually charged.
+        global _batch_reconciler_task, _local_batch_runner_task
+        _batch_reconciler_task = asyncio.create_task(batch_reconciler_loop())
+        # Batches Logos runs itself: started here, and picked up again after a
+        # restart that interrupted one mid-file.
+        _local_batch_runner_task = asyncio.create_task(local_batch_runner_loop())
 
-    yield
+        yield
 
     # Shutdown logic: stop every background producer first — cancelling a
     # loop can still enqueue a final write on its way out — and only drain
@@ -1875,6 +1877,11 @@ def _is_effort_rejection_body(chunk: Any) -> bool:
     return text.lstrip().startswith("{") and parse_effort_rejection(text) is not None
 
 
+async def _check_cloud_spend(context, provider_id: int) -> None:
+    if context.provider_type == "cloud":
+        await provider_spend.check(provider_id)
+
+
 async def _streaming_response(
     context,
     payload,
@@ -2262,6 +2269,13 @@ async def _streaming_response(
 
     # ── HTTP executor path ────────────────────────────────────────────────
     stream_status = StreamingExecutionStatus()
+    try:
+        await _check_cloud_spend(context, provider_id)
+    except HTTPException as exc:
+        return _pre_stream_error_response(exc.status_code, {"error": exc.detail}, exc.detail)
+    except asyncio.CancelledError:
+        _release()
+        raise
     chunk_iter = _pipeline.executor.execute_streaming(
         context.forward_url,
         headers,
@@ -2303,6 +2317,10 @@ async def _streaming_response(
             prepared_payload = adapted
             _record_sent_effort(request_id, prepared_payload)
             stream_status = StreamingExecutionStatus()
+            try:
+                await _check_cloud_spend(context, provider_id)
+            except HTTPException as limit:
+                return _pre_stream_error_response(limit.status_code, {"error": limit.detail}, limit.detail)
             chunk_iter = _pipeline.executor.execute_streaming(
                 context.forward_url,
                 headers,
@@ -2327,6 +2345,9 @@ async def _streaming_response(
         )
     except StopAsyncIteration:
         first_chunk = None
+    except asyncio.CancelledError:
+        _release()
+        raise
     except Exception as exc:
         logger.error(
             "Pre-stream transport error from upstream (model_id=%s, provider_id=%s): %s: %s",
@@ -2850,6 +2871,7 @@ async def _sync_response(
                     headers=None,
                 )
         else:
+            await _check_cloud_spend(context, provider_id)
             exec_result = await _pipeline.executor.execute_sync(context.forward_url, headers, prepared_payload)
             # The effort rejection again (see the logosnode branch above): one
             # resend, whose dispatch and response instants are the ones kept.
@@ -2873,6 +2895,7 @@ async def _sync_response(
                 )
                 prepared_payload = adapted
                 _record_sent_effort(request_id, prepared_payload)
+                await _check_cloud_spend(context, provider_id)
                 exec_result = await _pipeline.executor.execute_sync(context.forward_url, headers, prepared_payload)
             # The executor captured both instants where they belong: the
             # dispatch after its request preparation (the multipart decode for
@@ -3661,6 +3684,9 @@ async def _execute_resource_mode(
         )
 
         if is_async_job:
+            if isinstance(e, HTTPException):
+                _, error_body = coerce_upstream_error(e.status_code, {"error": str(e.detail)})
+                return {"status_code": e.status_code, "data": error_body}
             return {"status_code": 500, "data": {"error": str(e)}}
         else:
             raise e

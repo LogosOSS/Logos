@@ -44,6 +44,7 @@ from logos.benchmarks.nightly import (
 from logos.benchmarks.progress import observe_response
 from logos.benchmarks.reservations import benchmark_reservations
 from logos.benchmarks.worker_limits import validate_worker_overrides, worker_limits
+from logos.billing import provider_spend
 from logos.capacity.capacity_planner import RestoreRecordError
 from logos.client_tags import cancel as cancel_client_tag
 from logos.dbutils.dbmanager import DBManager
@@ -672,115 +673,135 @@ async def internal_run_model_benchmark(data: InternalBenchmarkRequest, request: 
         if settings.text_column not in checked_datasets[key]["text_columns"]:
             raise HTTPException(status_code=400, detail="Select a valid text column for the dataset.")
 
-    # One orchestrator process owns benchmark execution. Serialize the short
-    # check-and-create section in memory so simultaneous starts cannot both
-    # admit a benchmark for the same provider.
-    if not NIGHTLY_CONTEXT.get() and (
-        (_main._calibration_orchestrator and _main._calibration_orchestrator.benchmarks_must_wait())
-        or any(_main._logosnode_registry.is_calibrating(pid) for pid in _main._logosnode_registry.active_provider_ids())
-    ):
-        raise HTTPException(status_code=409, detail="Calibration has priority over benchmarks")
-    with _benchmark_admission_lock, DBManager() as db:
-        if NIGHTLY_CONTEXT.get() and not can_start(local_now()):
-            raise NightlyStopped("window_closed")
-        target = db.get_model_provider_benchmark_target(data.model_provider_id)
-        if target is None:
-            raise HTTPException(status_code=404, detail="Provider-model pair not found")
-        provider_id = int(target["provider_id"])
-        if not NIGHTLY_CONTEXT.get() and not nightly_store.manual_admission(db, provider_id):
-            raise HTTPException(status_code=409, detail="Maintenance capacity or the selected worker is reserved")
-        provider_type = _normalize_provider_type(str(target.get("provider_type") or ""))
-        for settings in configurations:
-            if settings.workload_id:
-                from logos.benchmarks import workloads
-
-                if provider_type != "logosnode":
-                    raise HTTPException(status_code=400, detail="Request replay requires a Logos worker")
-                try:
-                    workload = workloads.load(settings.workload_id, target["model_id"])
-                    if settings.samples != workload["request_count"]:
-                        raise ValueError("Sample size must equal the frozen request count")
-                except ValueError as exc:
-                    raise HTTPException(status_code=400, detail=str(exc)) from exc
-        if any(s.serving_overrides.model_dump(exclude_none=True) for s in configurations) and (
-            provider_type != "logosnode" or _main._capacity_planner is None
+    checked_cloud_target = None
+    while True:
+        # One orchestrator process owns benchmark execution. Serialize the short
+        # check-and-create section in memory so simultaneous starts cannot both
+        # admit a benchmark for the same provider.
+        if not NIGHTLY_CONTEXT.get() and (
+            (_main._calibration_orchestrator and _main._calibration_orchestrator.benchmarks_must_wait())
+            or any(
+                _main._logosnode_registry.is_calibrating(pid) for pid in _main._logosnode_registry.active_provider_ids()
+            )
         ):
-            raise HTTPException(
-                status_code=400, detail="Serving overrides require a Logos worker with capacity planning"
-            )
-        if provider_type == "logosnode" and _main._capacity_planner is None:
-            raise HTTPException(status_code=503, detail="Benchmark lane preparation is unavailable")
-        endpoint = str(target.get("target") or "").strip()
-        if provider_type != "logosnode" and not endpoint.startswith(("http://", "https://")):
-            raise HTTPException(status_code=409, detail="Provider-model pair has no valid endpoint")
-        api_key = str(target.get("api_key") or "").strip()
-        if provider_type != "logosnode" and api_key and not credential_transport_is_secure(endpoint):
-            raise HTTPException(
-                status_code=409,
-                detail="Provider credentials require HTTPS (plain HTTP is allowed only on loopback)",
-            )
-
-        owner = benchmark_reservations.provider_owner(provider_id)
-        owns_nightly_reservation = NIGHTLY_CONTEXT.get() and owner == -data.model_provider_id
-        if provider_type == "logosnode" and owner is not None and not owns_nightly_reservation:
-            raise HTTPException(
-                status_code=409, detail="A benchmark still owns this worker. Wait for cleanup to finish."
-            )
-        active = db.find_active_model_benchmark_job(provider_id)
-        if active is not None:
-            return JSONResponse(
-                status_code=409,
-                content=jsonable_encoder(
-                    {
-                        "error": f"A benchmark is already running on {target['provider_name']}",
-                        "job_id": active["id"],
-                        "status": active["status"],
-                    }
-                ),
-            )
-        runtime_snapshot = _main._logosnode_registry.peek_runtime_snapshot(provider_id)
-        if provider_type == "logosnode":
-            if runtime_snapshot is None or not _logosnode_snapshot_is_connected(runtime_snapshot):
-                raise HTTPException(status_code=503, detail=f"Provider {target['provider_name']} is offline")
-            if not runtime_snapshot.get("first_status_received"):
-                raise HTTPException(status_code=503, detail="Provider has not sent its first status yet")
-
-        model_name = str(target["model_name"])
-        pinned_lane = benchmark_reservations.pinned_lane(provider_id, model_name) if owns_nightly_reservation else None
-        if provider_type == "logosnode" and NIGHTLY_CONTEXT.get() and pinned_lane is None:
-            raise HTTPException(status_code=409, detail="Nightly benchmark no longer owns its pinned lane")
-        try:
-            baseline_config = NIGHTLY_BASELINE_CONFIG.get() if owns_nightly_reservation else None
-            limits = worker_limits(runtime_snapshot, model_name, lane_id=pinned_lane, baseline_config=baseline_config)
+            raise HTTPException(status_code=409, detail="Calibration has priority over benchmarks")
+        with _benchmark_admission_lock, DBManager() as db:
+            if NIGHTLY_CONTEXT.get() and not can_start(local_now()):
+                raise NightlyStopped("window_closed")
+            target = db.get_model_provider_benchmark_target(data.model_provider_id)
+            if target is None:
+                raise HTTPException(status_code=404, detail="Provider-model pair not found")
+            provider_id = int(target["provider_id"])
+            if not NIGHTLY_CONTEXT.get() and not nightly_store.manual_admission(db, provider_id):
+                raise HTTPException(status_code=409, detail="Maintenance capacity or the selected worker is reserved")
+            provider_type = _normalize_provider_type(str(target.get("provider_type") or ""))
+            target_identity = (provider_id, target["model_id"]) if provider_type == "cloud" else None
+            if checked_cloud_target is not None and checked_cloud_target != target_identity:
+                raise HTTPException(
+                    status_code=409, detail="Benchmark target changed during admission. Retry the request."
+                )
             for settings in configurations:
-                validate_worker_overrides(settings.serving_overrides, limits, nightly=owns_nightly_reservation)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        except RuntimeError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        serving_configuration = limits["current"]
-        job_payload = {
-            "nightly": NIGHTLY_CONTEXT.get(),
-            "model_provider_id": data.model_provider_id,
-            "provider_id": provider_id,
-            "provider_name": target["provider_name"],
-            "model_id": target["model_id"],
-            "model_name": model_name,
-            **data.model_dump(exclude={"model_provider_id", "samples", "max_output_tokens"}),
-            "samples": data.samples,
-            "max_output_tokens": data.max_output_tokens,
-            "provider_session_id": runtime_snapshot.get("session_id") if runtime_snapshot else None,
-        }
-        job_id = db.create_job_record(
-            payload=job_payload,
-            api_key_id=None,
-            team_id=None,
-            user_id=None,
-            environment="model-provider-benchmark",
-        )
+                if settings.workload_id:
+                    from logos.benchmarks import workloads
 
-        if not NIGHTLY_CONTEXT.get() and _main._maintenance_coordinator:
-            nightly_store.claim_benchmark(db, job_id, provider_id)
+                    if provider_type != "logosnode":
+                        raise HTTPException(status_code=400, detail="Request replay requires a Logos worker")
+                    try:
+                        workload = workloads.load(settings.workload_id, target["model_id"])
+                        if settings.samples != workload["request_count"]:
+                            raise ValueError("Sample size must equal the frozen request count")
+                    except ValueError as exc:
+                        raise HTTPException(status_code=400, detail=str(exc)) from exc
+            if any(s.serving_overrides.model_dump(exclude_none=True) for s in configurations) and (
+                provider_type != "logosnode" or _main._capacity_planner is None
+            ):
+                raise HTTPException(
+                    status_code=400, detail="Serving overrides require a Logos worker with capacity planning"
+                )
+            if provider_type == "logosnode" and _main._capacity_planner is None:
+                raise HTTPException(status_code=503, detail="Benchmark lane preparation is unavailable")
+            endpoint = str(target.get("target") or "").strip()
+            if provider_type != "logosnode" and not endpoint.startswith(("http://", "https://")):
+                raise HTTPException(status_code=409, detail="Provider-model pair has no valid endpoint")
+            api_key = str(target.get("api_key") or "").strip()
+            if provider_type != "logosnode" and api_key and not credential_transport_is_secure(endpoint):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Provider credentials require HTTPS (plain HTTP is allowed only on loopback)",
+                )
+
+            owner = benchmark_reservations.provider_owner(provider_id)
+            owns_nightly_reservation = NIGHTLY_CONTEXT.get() and owner == -data.model_provider_id
+            if provider_type == "logosnode" and owner is not None and not owns_nightly_reservation:
+                raise HTTPException(
+                    status_code=409, detail="A benchmark still owns this worker. Wait for cleanup to finish."
+                )
+            active = db.find_active_model_benchmark_job(provider_id)
+            if active is not None:
+                return JSONResponse(
+                    status_code=409,
+                    content=jsonable_encoder(
+                        {
+                            "error": f"A benchmark is already running on {target['provider_name']}",
+                            "job_id": active["id"],
+                            "status": active["status"],
+                        }
+                    ),
+                )
+            runtime_snapshot = _main._logosnode_registry.peek_runtime_snapshot(provider_id)
+            if provider_type == "logosnode":
+                if runtime_snapshot is None or not _logosnode_snapshot_is_connected(runtime_snapshot):
+                    raise HTTPException(status_code=503, detail=f"Provider {target['provider_name']} is offline")
+                if not runtime_snapshot.get("first_status_received"):
+                    raise HTTPException(status_code=503, detail="Provider has not sent its first status yet")
+
+            model_name = str(target["model_name"])
+            pinned_lane = (
+                benchmark_reservations.pinned_lane(provider_id, model_name) if owns_nightly_reservation else None
+            )
+            if provider_type == "logosnode" and NIGHTLY_CONTEXT.get() and pinned_lane is None:
+                raise HTTPException(status_code=409, detail="Nightly benchmark no longer owns its pinned lane")
+            try:
+                baseline_config = NIGHTLY_BASELINE_CONFIG.get() if owns_nightly_reservation else None
+                limits = worker_limits(
+                    runtime_snapshot, model_name, lane_id=pinned_lane, baseline_config=baseline_config
+                )
+                for settings in configurations:
+                    validate_worker_overrides(settings.serving_overrides, limits, nightly=owns_nightly_reservation)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            except RuntimeError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            serving_configuration = limits["current"]
+            job_payload = {
+                "nightly": NIGHTLY_CONTEXT.get(),
+                "model_provider_id": data.model_provider_id,
+                "provider_id": provider_id,
+                "provider_name": target["provider_name"],
+                "model_id": target["model_id"],
+                "model_name": model_name,
+                **data.model_dump(exclude={"model_provider_id", "samples", "max_output_tokens"}),
+                "samples": data.samples,
+                "max_output_tokens": data.max_output_tokens,
+                "provider_session_id": runtime_snapshot.get("session_id") if runtime_snapshot else None,
+            }
+            if provider_type != "cloud" or checked_cloud_target is not None:
+                job_id = db.create_job_record(
+                    payload=job_payload,
+                    api_key_id=None,
+                    team_id=None,
+                    user_id=None,
+                    environment="model-provider-benchmark",
+                )
+                if not NIGHTLY_CONTEXT.get() and _main._maintenance_coordinator:
+                    nightly_store.claim_benchmark(db, job_id, provider_id)
+                break
+
+        # A cloud benchmark can make several billable calls. Check spend
+        # before starting it. Repeat the synchronous checks after I/O:
+        # another start may have created a job or the deployment may have moved.
+        await provider_spend.check(provider_id)
+        checked_cloud_target = target_identity
 
     is_internal_worker_benchmark = provider_type == "logosnode"
     benchmark_target = (

@@ -222,3 +222,18 @@ export interface UpdateProviderPayload {
   privacy_level?: PrivacyLevel;
   eu_processing_verified?: boolean;
 }
+
+export interface ProviderSpendPolicy {
+  enabled: boolean;
+  effective_month: string;
+  limit_usd: number | string | null;
+}
+
+/** The UTC calendar month's finalized charges recorded by Logos. */
+export interface ProviderSpendStatus {
+  current: ProviderSpendPolicy | null;
+  scheduled: ProviderSpendPolicy | null;
+  charged_usd: number | string;
+}
+
+export type ProviderSpendChange = { enabled: false } | { enabled: true; limit_usd: string };

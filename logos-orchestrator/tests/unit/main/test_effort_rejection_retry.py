@@ -12,6 +12,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 from tests.unit.main.test_request_logging import _make_dummy_db, _make_pipeline, _read_stream_response
 
 import logos as main
@@ -233,6 +234,29 @@ async def test_cloud_sync_resends_once_with_the_effort_adapted(monkeypatch):
     assert [payload["reasoning_effort"] for payload in executor.payloads] == ["xhigh", "high"]
     assert response.status_code == 200
     assert [call["result_status"] for call in completion_calls] == ["success"]
+
+
+@pytest.mark.parametrize("stream", [False, True])
+async def test_cloud_retry_consults_the_current_spend_status_before_resending(monkeypatch, stream):
+    executor, _, release_calls = _install_cloud(monkeypatch, REJECTION_BODY)
+    checks = []
+
+    async def check(provider_id):
+        checks.append((provider_id, len(executor.payloads)))
+        if len(checks) == 2:
+            raise HTTPException(402, "Provider monthly spend limit reached")
+
+    monkeypatch.setattr(main.provider_spend, "check", check)
+    args = (_context("cloud"), dict(PAYLOAD), 42, 12, 27, -1, {}, _scheduling("cloud"))
+    if stream:
+        response = await main._streaming_response(*args)
+        assert response.status_code == 402
+    else:
+        with pytest.raises(HTTPException, match="402"):
+            await main._sync_response(*args)
+    assert checks == [(12, 0), (12, 1)]
+    assert len(executor.payloads) == 1
+    assert release_calls == [(27, 12, "cloud", "req-effort")]
 
 
 @pytest.mark.asyncio

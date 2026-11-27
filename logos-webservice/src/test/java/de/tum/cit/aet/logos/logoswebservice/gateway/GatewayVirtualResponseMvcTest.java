@@ -164,7 +164,7 @@ class GatewayVirtualResponseMvcTest {
             }
         };
         controller = new InferenceGatewayController(enabled, auth, accounting, cloud,
-            mock(GatewayCloudRateLimiter.class), proxy, new ObjectMapper(), limit);
+            mock(GatewayCloudRateLimiter.class), proxy, new ObjectMapper(), limit, mock(ProviderSpendCapService.class));
         mvc = new AnnotationConfigWebApplicationContext();
         mvc.register(GatewayMvc.class, WebConfig.class, GatewayResponseExecutorConfiguration.class, ServletExecutorConfiguration.class);
         tomcat = new Tomcat();

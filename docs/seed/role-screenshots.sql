@@ -270,6 +270,21 @@ FROM (VALUES
 ) AS v(name, base_url, provider_type, cloud_provider_type, privacy_level, auth_name, auth_format)
 WHERE NOT EXISTS (SELECT 1 FROM providers p WHERE p.name = v.name);
 
+-- Synthetic cap and usage for the namespaced cloud provider. Never target a real provider.
+INSERT INTO provider_spend_policies (provider_id, effective_month, limit_micro_cents)
+SELECT p.id, (date_trunc('month', CURRENT_TIMESTAMP AT TIME ZONE 'UTC') + v.month_offset)::date, v.limit_micro_cents
+FROM providers p
+CROSS JOIN (VALUES (interval '0 month', 40000000000::bigint), (interval '1 month', 50000000000::bigint))
+    AS v(month_offset, limit_micro_cents)
+WHERE p.name = 'Docs Cloud (EU)' AND p.base_url = 'https://example.invalid/openai'
+ON CONFLICT (provider_id, effective_month) DO NOTHING;
+
+INSERT INTO log_entry (provider_id, timestamp_request, result_status, cost_finalized,
+                       settled_cost_micro_cents, environment, request_id)
+SELECT id, clock_timestamp(), 'success', true, 8725000000, 'docs-role-screenshots', 'docs-provider-cap-history'
+  FROM providers WHERE name = 'Docs Cloud (EU)' AND base_url = 'https://example.invalid/openai'
+ON CONFLICT DO NOTHING;
+
 -- Documentation-only worker identity for nightly-worker.mjs. This worker
 -- reports example telemetry but rejects inference and control commands.
 UPDATE providers

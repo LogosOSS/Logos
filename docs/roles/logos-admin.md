@@ -429,6 +429,38 @@ Expand a provider for its connected models, or for the worker control actions
 
 ![Providers page](/img/roles/logos-admin-providers.png)
 
+<span id="schedule-a-monthly-cloud-spend-cap" />
+
+### Set a monthly cloud spend cap
+
+1. Expand a cloud provider in **Providers**.
+2. In **Monthly spend cap**, select **Edit spend cap**.
+3. Select **Enable cap** and enter the **Monthly maximum (USD)**.
+4. Select **Save changes**.
+
+To remove the cap, clear **Enable cap** and select **Save changes**.
+Changes are saved for the current UTC month and continue each month unless a scheduled change replaces them.
+A limit of $0 blocks new billable requests through Logos.
+
+The section shows the current limit, the next scheduled change, and recorded charges for this month.
+Logos adds positive, finalized costs from the provider's request logs in the current UTC billing month.
+This total includes recorded costs from periods without a cap when you enable or re-enable it.
+Logos does not count unpriced requests or spend outside Logos. For example, provider-native batches or
+benchmarks without a finalized request cost do not add to the total. This total is not the vendor invoice.
+
+When recorded charges reach the limit, Logos blocks new requests.
+Admission checks can take up to 5 seconds to pick up a limit change, newly recorded charges, or the UTC month rollover.
+Requests already in progress can finish. The final total can exceed the limit.
+
+![Monthly spend cap editor for a cloud provider](/img/roles/logos-admin-provider-spend-cap.png)
+
+The administrator API also accepts GET and PUT at `/logosdb/providers/{providerId}/monthly-spend-cap`.
+Use the provider record ID, not the vendor account ID.
+To set the current limit, send `{"enabled": true, "limit_usd": "400"}`.
+To remove the current limit, send `{"enabled": false}`.
+To schedule a separate change for the next UTC month, send the same payload to
+`PUT /logosdb/providers/{providerId}/monthly-spend-cap/scheduled`.
+
 ### Add a Provider
 
 Select **Add Provider**. The dialog asks for the classification first:

@@ -447,11 +447,25 @@ const SHOTS = [
   {
     file: "roles/logos-admin-provider-connections.png",
     user: ADMIN,
+    full: true,
     go: async (p) => {
       await p.goto(BASE + "/providers");
       await settle(p);
-      await p.getByRole("button", { name: "Expand Docs Cloud (EU)" }).first().click();
+      await p.getByRole("button", { name: "Expand Docs Cloud (EU)" }).filter({ visible: true }).click();
       await p.locator('[data-testid="batch-support"]').first().waitFor();
+      await button(p, "Edit spend cap").waitFor();
+    },
+  },
+  {
+    file: "roles/logos-admin-provider-spend-cap.png",
+    user: ADMIN,
+    full: true,
+    go: async (p) => {
+      await p.goto(BASE + "/providers");
+      await settle(p);
+      await p.getByRole("button", { name: "Expand Docs Cloud (EU)" }).filter({ visible: true }).click();
+      await button(p, "Edit spend cap").click();
+      await p.getByLabel("Monthly maximum (USD)").waitFor();
     },
   },
   {
