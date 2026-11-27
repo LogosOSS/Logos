@@ -804,6 +804,11 @@ and prebuilt dependencies the build and test command needs belong in
 `$LOGOS_CACHE_DIR`, which the command can read; a command that needs more than
 the default ten minutes needs a larger `LOGOS_AGENT_HELPER_TIMEOUT_S`.
 
+A fresh branch whose trusted candidate tree exactly matches its prepared base
+has nothing to publish. The runner records verification as skipped, without
+running the build command, pushing a branch, or changing the workspace's base.
+Existing branch retries still verify the complete pull request diff.
+
 #### Model disclosure
 
 Every comment, review, inline review comment, reply and pull request
