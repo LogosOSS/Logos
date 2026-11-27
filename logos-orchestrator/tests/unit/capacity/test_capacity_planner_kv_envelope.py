@@ -119,6 +119,7 @@ def test_orchestrator_flags_collapsed_envelope_for_recalibration():
 
     orch = CalibrationOrchestrator.__new__(CalibrationOrchestrator)
     orch._facade = facade
+    orch._registry = MagicMock(peek_runtime_snapshot=lambda provider_id: None)
     assert orch._provider_has_uncalibrated_models(provider_id=42) is True
 
 
@@ -149,6 +150,7 @@ def test_orchestrator_skips_models_with_proper_envelope():
 
     orch = CalibrationOrchestrator.__new__(CalibrationOrchestrator)
     orch._facade = facade
+    orch._registry = MagicMock(peek_runtime_snapshot=lambda provider_id: None)
     assert orch._provider_has_uncalibrated_models(provider_id=42) is False
 
 
@@ -176,6 +178,7 @@ def test_orchestrator_flags_missing_kv_max_model_len_pairs_for_recalibration():
 
     orch = CalibrationOrchestrator.__new__(CalibrationOrchestrator)
     orch._facade = facade
+    orch._registry = MagicMock(peek_runtime_snapshot=lambda provider_id: None)
     assert orch._provider_has_uncalibrated_models(provider_id=42) is True
 
 
@@ -383,5 +386,5 @@ def test_estimate_available_for_kv_uses_full_base_for_uncalibrated():
 
     avail = planner._estimate_available_for_kv_mb(profile, capacity, provider_id=1, tp=2)
     # node-ownership: per_gpu_total 45000 - per_gpu_base 20000 - 1024 headroom = 23976
-    # (measured profile → no kv_budget subtraction from the weights-only base)
+    # (uncalibrated → no kv_budget subtraction from the weights-only base)
     assert abs(avail - 23976.0) < 1.0

@@ -206,18 +206,15 @@ Prefetch: downloading mlx-community/Qwen3.8-27B-4bit …
 capability profile and the registration:
 
 ```
-  ● mlx-community/Qwen3.8-27B-4bit [OVERRIDE]: base_residency=16680 MB | disk=15.0 GB | kv_per_token=138344 B | max_ctx=262144 | engine=vllm
+  ● mlx-community/Qwen3.8-27B-4bit [UNKNOWN]: base_residency=27000 MB | disk=15.0 GB | kv_per_token=138344 B | max_ctx=262144 | engine=vllm
 ══ BRIDGE CONNECTED ══ worker_id=<uuid> capabilities=['mlx-community/Qwen3.8-27B-4bit'] url=<websocket URL>
 ```
 
-The profile dot is cyan for a hand-measured `override`. A red `UNCALIBRATED`
-dot and `Excluding 1 uncalibrated model(s) from capabilities` instead means
+The profile dot is yellow until a calibration has run. A red `UNCALIBRATED` dot and `Excluding 1 uncalibrated model(s) from capabilities` instead means
 the model is advertised to no one — the profile is missing or has no
 `base_residency_mb` (*Troubleshooting*).
 
-The orchestrator otherwise refuses to load a model that has never been
-calibrated on the node it would run on — Metal/MLX providers are the one
-exception, so an `override` profile here keeps working exactly as before.
+The orchestrator loads a model only after it has been calibrated on that node.
 
 On the orchestrator, add this Mac as a provider with the privacy level
 **`THIRD_PARTY_HARDWARE`** (*Privacy* below). When a request routed there
@@ -411,7 +408,7 @@ engines:
 
 model_profile_overrides:
   "Qwen/Qwen3-Embedding-8B":
-    base_residency_mb: 15400        # (15.13 + 0.64) GB -> 15039 MiB, rounded up
+    base_residency_mb: 22200        # (15.13 + 0.64 + 7.00) GB -> 21715 MiB, rounded up
     kv_per_token_bytes: 147456      # 36 layers x 2 x 8 kv_heads x 128 head_dim x 2 B
     max_context_length: 32768
     disk_size_bytes: 15134634568
@@ -421,9 +418,10 @@ model_profile_overrides:
 any of these numbers. Proof from the same machine: MLX reports
 `max_recommended_working_set_size = 26800603136` bytes, which is 26.80 GB
 decimal (24.96 GiB), and the lane logs `metal_limit=26.80GB`. So
-`base_residency_mb` is `(15.13 + 0.64) x 10^9 / 1024^2 = 15039 MiB`, rounded up
-to 15400. Reading those figures as GiB would inflate the profile by about
-1.1 GB and reject placements that in fact fit.
+`base_residency_mb` is `(15.13 + 0.64 + 7.00) x 10^9 / 1024^2 = 21715 MiB`,
+rounded up to 22200. It includes the KV budget, because a pinned base replaces
+the calibrated total. Reading those figures as GiB would inflate the profile
+by about 1.6 GB and reject placements that in fact fit.
 
 That lane reports `usable_metal=22.78GB`, `kv_budget=7.00GB` and
 `max_tokens_cached=47488` — 1.45x concurrency at the full 32k window. It
@@ -437,7 +435,7 @@ answers `/v1/embeddings` with 4096-dimensional vectors.
 |---|---|---|
 | Tensor parallelism | ✅ | ❌ one integrated GPU; a TP>1 lane is rejected at spawn |
 | Sleep / wake | ✅ | ❌ needs CuMemAllocator → orchestrator uses stop/start |
-| Auto-calibration | ✅ | ❌ hand-written profiles |
+| Auto-calibration | ✅ | ✅ one probe, no KV sweep |
 | CUDA graphs / torch.compile | ✅ | ❌ not applicable to MLX |
 | Auto-placement across GPUs | ✅ | n/a — a single device |
 | Model unload without stopping | ❌ | ❌ (identical: vLLM cannot unload weights) |
@@ -468,10 +466,8 @@ remains available on Metal nodes. Automatic calibration runs first in the
 time on supported vLLM workers. Calibration and benchmarks never overlap across
 the cluster, including manual starts.
 
-`model_profile_overrides` remains available as a manual fallback (e.g. to
-pin a number before the automatic probe has run, or to work around a
-model that fails the probe) — a profile with `residency_source="override"`
-still counts as valid. `config.example.mlx.yml` has worked examples. To
+`model_profile_overrides` pins single values on top of the calibration.
+`config.example.mlx.yml` has worked examples. To
 measure `base_residency_mb` by hand: start the lane, let it idle, then
 read `used_memory_mb` from `GET /runtime`. Round up — underestimating
 makes the planner over-subscribe the node.

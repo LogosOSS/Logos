@@ -1,12 +1,10 @@
-"""No model may be loaded before it has been calibrated here.
-
-Except on Metal/MLX providers, where calibration is impossible by
-design — they run on operator-provided override profiles instead.
-"""
+"""No model may be loaded before it has been calibrated here."""
 
 from __future__ import annotations
 
 from types import SimpleNamespace
+
+import pytest
 
 from logos.capacity.capacity_planner import CapacityPlanner
 from logos.sdi.models import ModelProfile
@@ -19,7 +17,7 @@ def _planner(*, metal: bool = False) -> CapacityPlanner:
     return planner
 
 
-def _profile(residency_source: str, base_residency_mb: float = 4000.0) -> ModelProfile:
+def _profile(residency_source: str | None, base_residency_mb: float = 4000.0) -> ModelProfile:
     return ModelProfile(
         model_name="org/model-a",
         engine="vllm",
@@ -46,45 +44,17 @@ class TestProviderIsMetal:
 
 class TestLoadRequiresCalibration:
     def test_calibrated_never_requires_it(self):
-        assert _planner()._load_requires_calibration(_profile("calibrated"), 1) is False
+        assert CapacityPlanner._load_requires_calibration(_profile("calibrated")) is False
 
-    def test_a_stored_measured_source_requires_it(self):
-        assert _planner()._load_requires_calibration(_profile("measured"), 1) is True
+    @pytest.mark.parametrize("residency_source", [None, "hf", "override", "cached", "measured"])
+    def test_every_other_source_requires_it(self, residency_source):
+        """An estimate, a pinned value or a stored leftover is not a calibration."""
+        assert CapacityPlanner._load_requires_calibration(_profile(residency_source)) is True
 
-    def test_override_requires_it_on_cuda(self):
-        assert _planner()._load_requires_calibration(_profile("override"), 1) is True
-
-    def test_override_is_exempt_on_metal(self):
-        planner = _planner(metal=True)
-        assert planner._load_requires_calibration(_profile("override"), 1) is False
-
-    def test_only_override_is_exempt_on_metal(self):
-        """The Metal exemption is for an operator override specifically —
-        not a seeded stub (residency_source=None), an HF-precheck estimate,
-        or a cached/unproven source; those must still be refused.
-        """
-        planner = _planner(metal=True)
-        for residency_source in (None, "hf", "cached"):
-            assert planner._load_requires_calibration(_profile(residency_source), 1) is True
-        assert planner._load_requires_calibration(_profile("override"), 1) is False
-
-    def test_hf_precheck_requires_it_on_cuda(self):
-        """A compatibility-precheck estimate is not a calibration run."""
-        assert _planner()._load_requires_calibration(_profile("hf"), 1) is True
-
-    def test_cached_requires_it_on_cuda(self):
-        """A profile reloaded from disk with no recorded source is unproven."""
-        assert _planner()._load_requires_calibration(_profile("cached"), 1) is True
-
-    def test_no_profile_requires_it_on_cuda(self):
-        assert _planner()._load_requires_calibration(None, 1) is True
-
-    def test_no_profile_requires_it_even_on_metal(self):
-        """The Metal exemption is for an override profile, not for having
-        nothing — a missing profile would build a load with no backend
-        config (see load_lane_manually's docstring)."""
-        planner = _planner(metal=True)
-        assert planner._load_requires_calibration(None, 1) is True
+    def test_no_profile_requires_it(self):
+        """A missing profile would build a load with no backend config
+        (see load_lane_manually's docstring)."""
+        assert CapacityPlanner._load_requires_calibration(None) is True
 
 
 class TestFeasibilityGateRequiresCalibration:
@@ -93,30 +63,14 @@ class TestFeasibilityGateRequiresCalibration:
     def _capacity(self):
         return SimpleNamespace(available_vram_mb=80_000.0)
 
-    def test_rejects_hf_precheck_profile_on_cuda(self):
-        planner = _planner(metal=False)
+    def test_rejects_hf_precheck_profile(self):
+        planner = _planner()
         planner.get_pending_vram_mb = lambda pid: 0.0
         ok = planner._passes_minimum_load_feasibility("org/model-a", _profile("hf"), self._capacity(), provider_id=1)
         assert ok is False
 
-    def test_rejects_model_with_no_profile_on_cuda(self):
-        planner = _planner(metal=False)
-        planner.get_pending_vram_mb = lambda pid: 0.0
-        ok = planner._passes_minimum_load_feasibility("org/model-a", None, self._capacity(), provider_id=1)
-        assert ok is False
-
-    def test_accepts_override_profile_on_metal(self):
-        planner = _planner(metal=True)
-        planner.get_pending_vram_mb = lambda pid: 0.0
-        ok = planner._passes_minimum_load_feasibility(
-            "org/model-a", _profile("override", base_residency_mb=2000.0), self._capacity(), provider_id=1
-        )
-        assert ok is True
-
-    def test_rejects_model_with_no_profile_even_on_metal(self):
-        """Metal is exempt from calibration, not from having a profile at
-        all — a missing override is refused, not guessed from the name."""
-        planner = _planner(metal=True)
+    def test_rejects_model_with_no_profile(self):
+        planner = _planner()
         planner.get_pending_vram_mb = lambda pid: 0.0
         # "70B" would match the disk-size-from-name heuristic if it were
         # still consulted here — it must not be.

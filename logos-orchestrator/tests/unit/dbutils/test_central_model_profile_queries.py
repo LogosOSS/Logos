@@ -110,6 +110,11 @@ def test_malformed_worker_values_bind_as_null_instead_of_failing():
     assert params["last_measured_at"] is None
 
 
+def test_a_source_the_store_does_not_know_binds_as_null():
+    assert _model_profile_column_params({"residency_source": "cached"})["residency_source"] is None
+    assert _model_profile_column_params({"residency_source": "calibrated"})["residency_source"] == "calibrated"
+
+
 def test_profile_requests_are_bounded():
     with pytest.raises(ValidationError):
         LogosNodeModelProfilesRequest(shared_key="k", calibration_key_hashes={str(i): "h" for i in range(1001)})

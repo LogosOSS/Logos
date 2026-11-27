@@ -4057,7 +4057,7 @@ def result_to_profile_dict(r: CalibrationResult) -> dict[str, Any]:
         "base_residency_mb": round(r.base_residency_mb, 1),
         "kv_budget_mb": round(r.kv_cache_sent_mb, 1),
         "calibrated_kv_mb": round(r.kv_cache_sent_mb, 1) if r.kv_cache_sent_mb > 0 else None,
-        "calibrated_footprint_mb": round(r.base_residency_mb, 1) if r.kv_cache_sent_mb > 0 else None,
+        "calibrated_footprint_mb": round(r.base_residency_mb, 1),
         "min_kv_cache_mb": (round(r.min_kv_cache_mb, 1) if r.min_kv_cache_mb > 0 else None),
         "max_kv_cache_mb": (round(r.max_kv_cache_mb, 1) if r.max_kv_cache_mb > 0 else None),
         "engine": "vllm",

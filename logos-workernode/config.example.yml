@@ -105,16 +105,15 @@ logos:
   #
   #   kv_cache_memory_bytes: str   — KV cache budget for this model, e.g. "6G".
   #     Set this once here; it is automatically wired to two places:
-  #       • the model profile (kv_budget_mb) — scheduler uses it to predict total
-  #         VRAM as base_residency_mb + kv_cache_memory_bytes
+  #       • the model profile (kv_budget_mb) — the KV cache the scheduler counts
   #       • engines.vllm.model_overrides — passed to vLLM as --kv-cache-memory-bytes
   #     An explicit value in engines.vllm.model_overrides overrides this default.
-  #     How to choose: (total_vram - base_residency_mb - idle_baseline) × 0.6–0.8
+  #     How to choose: (total_vram - weights - idle_baseline) × 0.6–0.8
   #     Leave headroom for CUDA context and concurrent lane wake/sleep transitions.
   #
-  #   base_residency_mb: int       — manual VRAM weight footprint (MB), excluding
-  #     KV cache. Only set this if auto-calibration fails or gives wrong values.
-  #     Normal workflow: leave this unset and let calibration measure it.
+  #   base_residency_mb: int       — manual VRAM footprint (MB): weights,
+  #     overhead and the KV cache. It replaces the calibrated total. Only set
+  #     this if auto-calibration fails. Normal workflow: leave it unset.
   #
   #   min_context_fraction: float  — smallest share of this model's own context
   #     length a lane here may serve, 0.0-1.0. The server refuses to place the
@@ -139,7 +138,7 @@ logos:
     # Recommended form — set kv_cache_memory_bytes so scheduling and vLLM agree
     - model: Qwen/Qwen2.5-Coder-14B-Instruct-AWQ
       tensor_parallel_size: 2          # needs 2 GPUs
-      kv_cache_memory_bytes: 8G        # adjust to (available_vram - base_residency) × 0.7
+      kv_cache_memory_bytes: 8G        # adjust to (available_vram - weights) × 0.7
 
     - model: meta-llama/Llama-3.1-70B-Instruct
       tensor_parallel_size: 4
@@ -150,7 +149,7 @@ logos:
     - model: some-org/some-very-large-model
       tensor_parallel_size: 2
       kv_cache_memory_bytes: 12G
-      base_residency_mb: 42000
+      base_residency_mb: 67000         # weights 42000 + KV 2 x 12G, rounded up
 
     # Coding-assistant model: only worth serving at its full context, so the
     # server places it here or not at all rather than at whatever fits.
@@ -225,8 +224,8 @@ engines:
     #   kv_cache_memory_bytes: str — exact KV-cache allocation passed to vLLM at
     #     launch (e.g. "4G", "2048M"). This is a vLLM invocation flag — it controls
     #     how much GPU memory vLLM actually reserves for KV cache at runtime.
-    #     If you also set base_residency_mb manually in capabilities_models, set
-    #     this to the same value so the scheduler's VRAM estimate matches reality.
+    #     If you also set base_residency_mb manually in capabilities_models, it
+    #     must include this KV cache.
     #     When set, the KV cache is sized from this value instead of
     #     gpu_memory_utilization, but the startup gate above still applies, so
     #     keep gpu_memory_utilization at a value the node's GPUs can satisfy.
@@ -435,8 +434,9 @@ static_lanes: []
 # All fields are auto-populated by calibration. Set them manually only as a
 # last resort (e.g. the model is too large to calibrate on available hardware).
 #
-#   base_residency_mb: int     — weight footprint (MB) excluding KV cache.
-#                                This is what calibration measures in step 3/5.
+#   base_residency_mb: int     — full footprint (MB): weights, overhead and KV
+#                                cache. This is what calibration measures in
+#                                step 3/5.
 #
 #   sleeping_residual_mb: int  — VRAM retained while the model is asleep
 #                                (vLLM sleep mode, step 5/5 of calibration).
@@ -454,16 +454,14 @@ static_lanes: []
 #   • engines.vllm.model_overrides[model].kv_cache_memory_bytes
 #       → how much GPU memory vLLM actually allocates for KV cache at launch
 #   • model_profile_overrides[model].base_residency_mb
-#       → what the scheduler assumes the weights cost, before adding KV cache
-# The scheduler predicts: base_residency_mb + kv_cache_memory_bytes = total VRAM.
-# If you set base_residency_mb manually here, set kv_cache_memory_bytes in
-# engines.vllm.model_overrides to the same value you intend to use for lanes,
-# so the two numbers stay consistent.
+#       → the full footprint the scheduler assumes: weights, overhead, KV cache
+# The scheduler uses base_residency_mb as the total VRAM of a lane. If you set
+# it manually here, include the KV cache of kv_cache_memory_bytes in it.
 
 model_profile_overrides: {}
 # model_profile_overrides:
 #   meta-llama/Llama-3.1-70B-Instruct:
-#     base_residency_mb: 39000
+#     base_residency_mb: 39000      # weights, overhead and KV cache
 #     sleeping_residual_mb: 2100
 #     engine: vllm
 #     tensor_parallel_size: 4

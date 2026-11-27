@@ -2398,7 +2398,8 @@ def test_the_cache_a_calibration_measured_with_is_kept_apart_from_the_audit_fiel
     assert data["calibrated_footprint_mb"] == data["base_residency_mb"]
     assert data["kv_budget_mb"] == 24576.0
     unmeasured = result_to_profile_dict(_success_result("kv/model", kv_cache_sent_mb=0.0))
-    assert unmeasured["calibrated_kv_mb"] is None and unmeasured["calibrated_footprint_mb"] is None
+    assert unmeasured["calibrated_kv_mb"] is None
+    assert unmeasured["calibrated_footprint_mb"] == unmeasured["base_residency_mb"]
 
 
 def test_every_measured_size_names_the_cache_it_was_measured_with():

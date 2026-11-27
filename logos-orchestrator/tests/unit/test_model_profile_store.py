@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from logos.model_profile_store import (
     ProfileWriteCache,
     base_residency_agrees,
@@ -9,12 +11,14 @@ from logos.model_profile_store import (
     effective_profile,
     is_central_profile_payload,
     is_new_local_calibration,
+    known_residency_source,
     material_profile,
     persistable_profile,
     profile_digest,
     profile_needs_calibration,
     reported_profile,
     shared_profiles_enabled,
+    snapshot_is_metal,
 )
 
 
@@ -178,7 +182,7 @@ def test_sharing_is_on_by_default_and_switchable(monkeypatch):
     assert shared_profiles_enabled() is True
 
 
-_MEASURED = {
+_CALIBRATED = {
     "base_residency_mb": 5000.0,
     "sleeping_residual_mb": 100.0,
     "sleep_l1_transient_host_ram_mb": 50.0,
@@ -188,30 +192,26 @@ _MEASURED = {
 
 
 def test_a_complete_calibration_needs_no_calibration():
-    assert profile_needs_calibration(_MEASURED) is False
+    assert profile_needs_calibration(_CALIBRATED) is False
 
 
 def test_every_missing_measurement_needs_calibration():
     assert profile_needs_calibration(None) is True
-    assert profile_needs_calibration({**_MEASURED, "base_residency_mb": None}) is True
-    assert profile_needs_calibration({**_MEASURED, "sleeping_residual_mb": None}) is True
-    assert profile_needs_calibration({**_MEASURED, "kv_cache_to_max_model_len_pairs": None}) is True
-    assert profile_needs_calibration({**_MEASURED, "calibration_stale": True}) is True
-    assert profile_needs_calibration({**_MEASURED, "min_kv_cache_mb": 8.0, "max_kv_cache_mb": 8.0}) is True
+    assert profile_needs_calibration({**_CALIBRATED, "sleeping_residual_mb": None}) is True
+    assert profile_needs_calibration({**_CALIBRATED, "kv_cache_to_max_model_len_pairs": None}) is True
+    assert profile_needs_calibration({**_CALIBRATED, "calibration_stale": True}) is True
+    assert profile_needs_calibration({**_CALIBRATED, "min_kv_cache_mb": 8.0, "max_kv_cache_mb": 8.0}) is True
 
 
-def test_a_collapsed_envelope_counts_only_for_a_calibrated_profile():
-    envelope = {**_MEASURED, "min_kv_cache_mb": 8.0, "max_kv_cache_mb": 8.0}
-    assert profile_needs_calibration({**envelope, "residency_source": "override"}) is False
-
-
-def test_an_hf_estimate_still_needs_calibration():
-    assert profile_needs_calibration({**_MEASURED, "residency_source": "hf"}) is True
-    assert profile_needs_calibration({**_MEASURED, "residency_source": "hf", "calibration_unsupported": True}) is False
+@pytest.mark.parametrize("residency_source", [None, "hf", "override", "cached"])
+def test_every_source_but_a_calibration_needs_calibration(residency_source):
+    profile = {**_CALIBRATED, "residency_source": residency_source}
+    assert profile_needs_calibration(profile) is True
+    assert profile_needs_calibration({**profile, "calibration_unsupported": True}) is False
 
 
 def test_a_model_that_cannot_sleep_is_judged_without_sleep_fields():
-    profile = {**_MEASURED, "sleeping_residual_mb": None, "sleep_l1_transient_host_ram_mb": None}
+    profile = {**_CALIBRATED, "sleeping_residual_mb": None, "sleep_l1_transient_host_ram_mb": None}
     assert profile_needs_calibration({**profile, "sleep_mode_disabled": True}) is False
 
 
@@ -282,3 +282,59 @@ def test_a_live_edit_to_an_out_of_range_cache_is_seen_once_the_worker_reports_it
     assert effective_profile(1, before_report)["calibration_stale"] is False
     # The next status of the worker carries the fingerprint of the edited configuration.
     assert effective_profile(1, after_report)["calibration_stale"] is True
+
+
+def test_a_metal_calibration_is_complete_without_pairs_or_sleep():
+    profile = {"base_residency_mb": 16680.0, "residency_source": "calibrated"}
+    assert profile_needs_calibration(profile, metal=True) is False
+    assert profile_needs_calibration(profile) is True
+
+
+def test_a_snapshot_carries_the_measured_base_under_an_operator_override():
+    echoed = {
+        "residency_source": "calibrated",
+        "base_residency_mb": 7500.0,
+        "calibrated_footprint_mb": 9000.0,
+        "overridden_fields": ["base_residency_mb"],
+    }
+    snapshot = calibration_snapshot(persistable_profile(echoed))
+    assert snapshot["base_residency_mb"] == 9000.0
+
+
+def test_snapshot_is_metal_reads_the_device_mode():
+    assert snapshot_is_metal({"runtime": {"devices": {"mode": "metal"}}}) is True
+    assert snapshot_is_metal({"runtime": {"devices": {"mode": "cuda"}}}) is False
+    assert snapshot_is_metal(None) is False
+
+
+def test_a_restored_profile_regains_the_measured_base_once_the_override_is_gone():
+    echoed = {
+        "residency_source": "calibrated",
+        "base_residency_mb": 7500.0,
+        "calibrated_footprint_mb": 9000.0,
+        "overridden_fields": ["base_residency_mb"],
+    }
+    stored = persistable_profile(echoed)
+    assert "base_residency_mb" not in stored
+
+    restored = effective_profile(1, {"profile": stored, "sync_revision": 4})
+
+    assert restored["base_residency_mb"] == 9000.0
+    assert restored["residency_source"] == "calibrated"
+
+
+def test_only_a_known_source_is_stored():
+    assert known_residency_source("calibrated") == "calibrated"
+    assert known_residency_source("hf") == "hf"
+    for label in ("override", "cached", "measured", "", None):
+        assert known_residency_source(label) is None
+    assert persistable_profile({"residency_source": "cached"})["residency_source"] is None
+    assert persistable_profile({"residency_source": "hf"})["residency_source"] == "hf"
+
+
+def test_a_recalibration_under_an_override_replaces_an_older_stored_base():
+    stored = {"residency_source": "calibrated", "base_residency_mb": 6000.0, "calibrated_footprint_mb": 9000.0}
+
+    restored = effective_profile(1, {"profile": stored, "sync_revision": 5})
+
+    assert restored["base_residency_mb"] == 9000.0

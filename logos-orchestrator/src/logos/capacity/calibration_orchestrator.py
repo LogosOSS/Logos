@@ -40,7 +40,7 @@ from logos.asyncio_tasks import cancel_and_wait
 # one definition keeps the two from drifting apart.
 from logos.logosnode_registry import TERMINAL_CALIBRATION_SESSION_EVENTS as _TERMINAL_SESSION_EVENTS
 from logos.maintenance_window import MaintenanceWindow, maintenance_node_limit
-from logos.model_profile_store import profile_needs_calibration
+from logos.model_profile_store import profile_needs_calibration, snapshot_is_metal
 
 # Commands a worker must list in its hello before it is calibrated automatically.
 _CALIBRATION_ACTIONS = ("start_calibration_session", "stop_calibration_session", "get_calibration_status")
@@ -430,12 +430,13 @@ class CalibrationOrchestrator:
         except Exception:
             profiles = {}
         capacity_skip = self._capacity_skip_models(provider_id)
+        metal = snapshot_is_metal(self._registry.peek_runtime_snapshot(provider_id))
 
         for model_name in candidates:
             if model_name in capacity_skip:
                 continue
             profile = profiles.get(model_name)
-            if profile_needs_calibration(vars(profile) if profile is not None else None):
+            if profile_needs_calibration(vars(profile) if profile is not None else None, metal=metal):
                 return True
         return False
 
