@@ -106,8 +106,8 @@ async function markNotificationsRead(page) {
 }
 
 // Waits for fonts, for skeletons and spinners to disappear, then for paint.
-async function settle(page, extra = 1500) {
-  await page.locator(".shell-layout").waitFor();
+async function settle(page, extra = 1500, readySelector = ".shell-layout") {
+  await page.locator(readySelector).waitFor();
   await page.evaluate(() => document.fonts.ready);
   await page
     .waitForFunction(
@@ -378,6 +378,7 @@ const SHOTS = [
     user: null,
     needs: "seed/public-hourly-request-load.sql and a public cache refresh",
     full: true,
+    readySelector: ".public-stats-page",
     go: async (p) => {
       await p.goto(BASE + "/usage");
       await p.getByRole("heading", { name: "Typical hourly request load" }).waitFor();
@@ -1011,7 +1012,7 @@ const SHOTS = [
     const { page } = session;
     try {
       await shot.go(page, ids);
-      await settle(page);
+      await settle(page, undefined, shot.readySelector);
       if (shot.full) await unlock(page);
       const target = path.join(OUT, shot.file);
       fs.mkdirSync(path.dirname(target), { recursive: true });
