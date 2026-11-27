@@ -1376,47 +1376,6 @@ public interface LogEntryRepository extends JpaRepository<LogEntry, Integer> {
         @Param("errorsOnly") Boolean errorsOnly);
 
     /**
-     * Source lives on individual requests, not the existing hourly rollup.
-     * Read only scalar identities and timestamps, over the bounded effective-time
-     * index. Never use a caller-configurable environment label as proof of source.
-     */
-    @Transactional(readOnly = true, timeout = 15)
-    @Query(value = """
-        WITH agent AS (SELECT id FROM api_keys WHERE internal_service = 'agent'),
-        points AS (
-            SELECT FLOOR(EXTRACT(EPOCH FROM COALESCE(le.timestamp_forwarding, le.timestamp_request,
-                                                    le.timestamp_response)) / 3600)::bigint * 3600 AS hour_epoch,
-                   CASE
-                       WHEN le.api_key_id IS NULL AND le.team_id IS NULL AND le.user_id IS NULL
-                           AND le.environment = 'model-provider-benchmark' THEN 'benchmark'
-                       WHEN le.api_key_id = (SELECT id FROM agent)
-                           AND le.environment = 'model-provider-benchmark-proposal' THEN 'benchmark'
-                       WHEN le.api_key_id = (SELECT id FROM agent) THEN 'agent'
-                       ELSE 'other'
-                   END AS source
-            FROM log_entry le
-            WHERE COALESCE(le.timestamp_forwarding, le.timestamp_request, le.timestamp_response) >= :start
-              AND COALESCE(le.timestamp_forwarding, le.timestamp_request, le.timestamp_response) < :end
-              AND (CAST(:userId AS INTEGER) IS NULL OR le.user_id = CAST(:userId AS INTEGER))
-              AND (CAST(:teamId AS INTEGER) IS NULL OR le.team_id = CAST(:teamId AS INTEGER))
-              AND (CAST(:providerId AS INTEGER) IS NULL OR le.provider_id = CAST(:providerId AS INTEGER))
-              AND (CAST(:apiKeyId AS INTEGER) IS NULL OR le.api_key_id = CAST(:apiKeyId AS INTEGER))
-              AND (:allModels = TRUE OR le.model_id IN (:modelIds))
-        )
-        SELECT hour_epoch AS hourEpoch,
-               COUNT(*) FILTER (WHERE source = 'other') AS otherRequests,
-               COUNT(*) FILTER (WHERE source = 'agent') AS agentRequests,
-               COUNT(*) FILTER (WHERE source = 'benchmark') AS benchmarkRequests
-        FROM points
-        GROUP BY hour_epoch
-        """, nativeQuery = true)
-    List<HourlyRequestSourceProjection> findHourlyRequestSources(
-        @Param("start") Timestamp start, @Param("end") Timestamp end,
-        @Param("userId") Integer userId, @Param("teamId") Integer teamId,
-        @Param("providerId") Integer providerId, @Param("apiKeyId") Integer apiKeyId,
-        @Param("allModels") boolean allModels, @Param("modelIds") List<Integer> modelIds);
-
-    /**
      * The request-volume series.
      *
      * {@code useRollup} is false for the sub-hour buckets, which the hourly

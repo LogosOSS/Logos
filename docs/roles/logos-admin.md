@@ -150,21 +150,6 @@ loads two lanes at the same time only if they use different GPUs. If the only
 GPUs that fit are in use by a lane that loads, the second lane waits until the
 first lane has started.
 
-In **Statistics → Requests**, use **Average hourly request load** to find
-hours with less traffic. The chart shows the average number of logged
-requests for each hour of the day in Europe/Berlin. Select **Weekdays** or
-**Weekends** to compare traffic on different days. Use the filters at the top
-of the page to limit the chart to a provider, model, team, or requester.
-
-The chart uses only complete hours in the selected range. A zero means the
-log has no matching requests for that hour. A blank means the range does not
-contain that complete hour. The chart shows request counts, not GPU use.
-
-The chart shows **Logos Agent** requests as a separate series. Clear **Logos Agent**
-to remove them from the chart. Select **Internal benchmarks** to include benchmarks.
-Older benchmark proposals can appear under **Logos Agent** because they used its key
-and had no separate source in the log.
-
 ![Statistics page](/img/roles/logos-admin-statistics.png)
 
 ## Models

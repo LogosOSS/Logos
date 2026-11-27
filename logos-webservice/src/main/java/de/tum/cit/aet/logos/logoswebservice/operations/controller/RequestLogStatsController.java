@@ -64,25 +64,6 @@ public class RequestLogStatsController {
         }
     }
 
-    @ReadOnlyQuery
-    @PostMapping("/logosdb/hourly_request_load")
-    @PreAuthorize("hasAuthority('" + Role.Names.LOGOS_ADMIN + "')")
-    public ResponseEntity<?> hourlyRequestLoad(@RequestAttribute("authContext") AuthContext auth,
-                                               @RequestBody(required = false) Map<String, Object> body) {
-        if (body == null) body = Map.of();
-        try {
-            return ResponseEntity.ok(requestLogStatsService.getHourlyRequestLoad(
-                (String) body.get("start_date"), (String) body.get("end_date"),
-                body.get("user_id") instanceof Number n ? n.intValue() : null,
-                body.get("team_id") instanceof Number n ? n.intValue() : null,
-                body.get("provider_id") instanceof Number n ? n.intValue() : null,
-                body.get("api_key_id") instanceof Number n ? n.intValue() : null,
-                RequestLogService.readFeedIds(body, "model_ids")));
-        } catch (IllegalArgumentException | java.time.format.DateTimeParseException | ClassCastException e) {
-            return ResponseEntity.badRequest().body(Map.of("error", "Invalid range for hourly request load."));
-        }
-    }
-
     /**
      * Delay percentiles of finished requests per model, provider and reasoning
      * effort, on local workers and cloud providers: time spent inside Logos

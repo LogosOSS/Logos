@@ -66,12 +66,3 @@
     font-size: var(--font-size-sm);
   }
 }
-
-// The Statistics filters share a narrow page column with the chart. Keep all
-// date presets visible without scrolling the whole page sideways at 375px.
-@media (max-width: 400px) {
-  :host(.stats-time-range) .preset-pills {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-}

@@ -13,6 +13,7 @@ describe('Public hourly load', () => {
     });
     fixture.detectChanges();
     const root: HTMLElement = fixture.nativeElement;
+    expect(root.querySelector('select')).toBeNull();
     const slots = [...root.querySelectorAll<HTMLButtonElement>('.hourly-public-hour')];
     expect(slots[0].getAttribute('aria-label')).toContain('Under 5 requests per hour');
     expect(slots[1].classList.contains('suppressed')).toBe(true);

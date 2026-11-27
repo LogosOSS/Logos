@@ -26,17 +26,11 @@
     </div>
   </div>
   <div class="hourly-public-detail">
-    <label>Inspect an hour
-      <select #hour [value]="selected() ?? ''" (change)="chooseHour(hour.value)">
-        <option value="">Choose</option>
-        @for (slot of slots(); track slot.hour) {
-          <option [value]="slot.hour">{{ hourLabel(slot.hour) }}–{{ hourLabel(slot.hour + 1) }}</option>
-        }
-      </select>
-    </label>
     <output aria-live="polite">
       @if (activeSlot(); as slot) {
         <strong>{{ hourLabel(slot.hour) }}–{{ hourLabel(slot.hour + 1) }}:</strong> {{ slotLabel(slot) }}
+      } @else {
+        Hover, focus, or tap a bar for its hour and range.
       }
     </output>
   </div>

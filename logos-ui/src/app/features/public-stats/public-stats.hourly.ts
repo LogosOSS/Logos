@@ -38,8 +38,4 @@ export class PublicStatsHourly {
     return slot.band_start === null ? 0 : (slot.band_start + band / 2) / this.maximum() * 100;
   }
 
-  protected chooseHour(value: string): void {
-    this.preview.set(null);
-    this.selected.set(value === '' ? null : Number(value));
-  }
 }

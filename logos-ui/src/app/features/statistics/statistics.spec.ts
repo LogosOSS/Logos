@@ -1,4 +1,3 @@
-import { NEVER } from 'rxjs';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { vi } from 'vitest';
 
@@ -45,7 +44,7 @@ async function pageAt(
     imports: [Statistics],
     providers: [
       { provide: StatsWebsocketService, useValue: ws },
-      { provide: StatisticsService, useValue: { getScopeOptions, getHourlyRequestLoad: () => NEVER } },
+      { provide: StatisticsService, useValue: { getScopeOptions } },
       // The page reads ?tab= and navigates on a tab switch, so it needs a real
       // router: without one construction fails before any test body runs.
       provideRouter([]),
@@ -57,42 +56,6 @@ async function pageAt(
   fx.detectChanges();
   return { fx, component: fx.componentInstance, ws, getScopeOptions };
 }
-
-describe('Statistics hourly request load range', () => {
-  afterEach(() => vi.useRealTimers());
-
-  it('keeps the exclusive midnight bound of a historic month', async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date(2026, 10, 27, 15, 45));
-    const { fx, component } = await pageAt();
-    try {
-      component.setPreset('month');
-      component.setOffset(1);
-      expect(component.requestLoadWindow()).toEqual({
-        start: new Date(2026, 9, 1).toISOString(),
-        end: new Date(2026, 10, 1).toISOString(),
-      });
-    } finally {
-      fx.destroy();
-    }
-  });
-
-  it('only changes the live endpoint window when a full hour elapses', async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date('2026-11-27T12:45:00Z'));
-    const { fx, component } = await pageAt();
-    try {
-      const previous = component.requestLoadWindow();
-      expect(previous.end).toBe('2026-11-27T12:00:00.000Z');
-      component.nowMs.set(Date.parse('2026-11-27T12:59:59Z'));
-      expect(component.requestLoadWindow()).toBe(previous);
-      component.nowMs.set(Date.parse('2026-11-27T13:00:00Z'));
-      expect(component.requestLoadWindow().end).toBe('2026-11-27T13:00:00.000Z');
-    } finally {
-      fx.destroy();
-    }
-  });
-});
 
 describe('Statistics calendar rollover', () => {
   let fixture: ComponentFixture<Statistics> | undefined;

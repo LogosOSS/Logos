@@ -45,8 +45,7 @@ DELETE FROM usage_tokens
 WHERE log_entry_id IN (
     SELECT id FROM log_entry WHERE environment = 'docs-role-screenshots'
 );
-DELETE FROM log_entry
-WHERE environment = 'docs-role-screenshots' OR request_id LIKE 'docs-hourly-load-%';
+DELETE FROM log_entry WHERE environment = 'docs-role-screenshots';
 
 DELETE FROM batch_objects
 WHERE upstream_id LIKE 'batch_docs_%'
@@ -464,39 +463,6 @@ FROM generate_series(1, 48) AS g(n)
 JOIN api_keys k ON k.name = 'docs-role-tobias.wasner-key'
 JOIN models m ON m.name = 'llama-3.1-8b-instruct'
 JOIN providers p ON p.name = 'Docs Cloud (EU)';
-
--- Three request sources in the average hourly load chart. These examples
--- use the actual internal identities but never execute an inference request.
-WITH sources AS (
-    SELECT 'other' AS source, id AS key_id, team_id, user_id, 'docs-role-screenshots' AS environment
-        FROM api_keys WHERE name = 'docs-role-tobias.wasner-key'
-    UNION ALL
-    SELECT 'agent', id, NULL, NULL, 'agent' FROM api_keys WHERE internal_service = 'agent'
-    UNION ALL
-    SELECT 'benchmark', NULL, NULL, NULL, 'model-provider-benchmark'
-), hours AS (
-    SELECT s.*, g.n, date_trunc('day', now()) - g.n * interval '1 day'
-        + CASE s.source
-            WHEN 'other' THEN (7 + g.n % 10) * interval '1 hour'
-            WHEN 'agent' THEN (8 + g.n % 9) * interval '1 hour'
-            ELSE (3 + g.n % 2) * interval '1 hour'
-          END AS received_at,
-        CASE s.source WHEN 'other' THEN 5 + g.n % 8 WHEN 'agent' THEN 2 + g.n % 4 ELSE 12 END AS requests
-    FROM sources s CROSS JOIN generate_series(1, 14) AS g(n)
-)
-INSERT INTO log_entry (
-    request_id, api_key_id, model_id, provider_id, result_status,
-    timestamp_request, timestamp_forwarding, timestamp_response,
-    user_id, team_id, environment, rate_limit_admitted, cost_finalized
-)
-SELECT
-    'docs-hourly-load-' || h.source || '-' || h.n || '-' || r.id,
-    h.key_id, m.id, p.id, 'success',
-    h.received_at, h.received_at + interval '1 second', h.received_at + interval '3 seconds',
-    h.user_id, h.team_id, h.environment, true, true
-FROM hours h CROSS JOIN LATERAL generate_series(1, h.requests) AS r(id)
-JOIN models m ON m.name = 'llama-3.1-8b-instruct'
-JOIN providers p ON p.name = 'Docs Local Worker';
 
 -- Recent in-window traffic so My Workspace rate-limit bars show used > 0.
 INSERT INTO log_entry (
