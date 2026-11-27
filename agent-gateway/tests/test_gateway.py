@@ -22,6 +22,15 @@ def docker(*args):
     return subprocess.check_output(["docker", *args], text=True).strip()
 
 
+CONTEXT_FILES = (
+    "Dockerfile",
+    "nginx.conf",
+    "internal-secret.envsh",
+    "select-model-gateway.sh",
+    "remote-model-gateway.conf.template",
+    "remote-model-proxy.conf.template",
+)
+
 SECRET = "test-internal-secret"
 # Every character with a meaning in an nginx configuration or a shell.
 HOSTILE_SECRET = 'a")(b!c]#d\\"(e@\\f[g.h!i^j[k\'l`m$n${o};p{q}r s'
@@ -34,11 +43,12 @@ def authorizations(upstream):
 
 @pytest.fixture
 def gateway(tmp_path, request):
-    secret = getattr(request, "param", SECRET)
+    config_override = getattr(request, "param", SECRET)
+    secret, mode = config_override if isinstance(config_override, tuple) else (config_override, "local")
     root = Path(__file__).resolve().parents[1]
     context = tmp_path / "context" / "agent-gateway"
     context.mkdir(parents=True)
-    for name in ("Dockerfile", "nginx.conf", "internal-secret.envsh"):
+    for name in CONTEXT_FILES:
         shutil.copyfile(root / name, context / name)
     identity = "agent-gateway-test-" + uuid.uuid4().hex[:12]
     upstream, proxy = identity + "-upstream", identity + "-proxy"
@@ -46,6 +56,16 @@ def gateway(tmp_path, request):
     config.write_text("""log_format authorization escape=none '$http_authorization';
     server {
         listen 8080;
+        listen 8081;
+        location /internal/agent-inference/ {
+            default_type application/json;
+            add_header X-Logos-Agent-Relay-Secret "not visible to callers";
+            add_header Authorization "not visible to callers";
+            return 200 '{"path":"$uri","authorization":"$http_authorization",
+                         "secret":"$http_x_logos_agent_relay_secret", "tag":"$http_x_logos_client_tag",
+                         "alternative":"$http_logos_key", "anthropic":"$http_x_api_key",
+                         "anthropic_version":"$http_anthropic_version","anthropic_beta":"$http_anthropic_beta"}';
+        }
         location = /internal/agent_credentials {
             access_log /tmp/authorization.log authorization;
             if (-f /tmp/revoked) { return 403; }
@@ -71,6 +91,8 @@ def gateway(tmp_path, request):
             identity,
             "--network-alias",
             "logos-orchestrator",
+            "--network-alias",
+            "logos-webservice",
             "-v",
             f"{config}:/etc/nginx/conf.d/default.conf:ro",
             "--entrypoint",
@@ -90,6 +112,8 @@ def gateway(tmp_path, request):
             "127.0.0.1::80",
             "-e",
             "LOGOS_INTERNAL_SECRET=" + secret,
+            "-e",
+            "LOGOS_AGENT_MODEL_GATEWAY_MODE=" + mode,
             identity,
         )
         port = docker("port", proxy, "80/tcp").split(":")[-1]
@@ -155,7 +179,7 @@ def test_gateway_refuses_a_secret_that_is_not_one_line_of_printable_ascii(tmp_pa
     root = Path(__file__).resolve().parents[1]
     context = tmp_path / "context" / "agent-gateway"
     context.mkdir(parents=True)
-    for name in ("Dockerfile", "nginx.conf", "internal-secret.envsh"):
+    for name in CONTEXT_FILES:
         shutil.copyfile(root / name, context / name)
     identity = "agent-gateway-test-" + uuid.uuid4().hex[:12]
     docker("build", "-q", "-t", identity, "-f", str(context / "Dockerfile"), str(context.parent))
@@ -170,3 +194,38 @@ def test_gateway_refuses_a_secret_that_is_not_one_line_of_printable_ascii(tmp_pa
         assert "printable ASCII" in run.stderr
     finally:
         subprocess.run(["docker", "image", "rm", identity], check=False, capture_output=True)
+
+
+@pytest.mark.parametrize("gateway", [(SECRET, "remote")], indirect=True)
+def test_remote_gateway_only_exposes_messages_and_replaces_control_headers(gateway):
+    base, upstream = gateway
+    request_headers = {
+        "Authorization": "Bearer opaque-session-grant",
+        "Content-Type": "application/json",
+        "Logos-Key": "untrusted-key",
+        "X-Api-Key": "untrusted-key",
+        "X-Logos-Client-Tag": "spoofed",
+        "X-Logos-Agent-Relay-Secret": "spoofed",
+        "Anthropic-Version": "2023-06-01",
+        "Anthropic-Beta": "test-beta",
+    }
+    for suffix in ("", "/count_tokens"):
+        with urlopen(Request(base + "/v1/messages" + suffix, data=b"{}", headers=request_headers), timeout=5) as response:
+            body = json.load(response)
+            assert response.headers.get("Authorization") is None
+            assert response.headers.get("X-Logos-Agent-Relay-Secret") is None
+        assert body["authorization"] == "Bearer opaque-session-grant"
+        assert body["secret"] == SECRET
+        assert body["tag"].startswith("agent:") and body["tag"] != "spoofed"
+        assert body["alternative"] == body["anthropic"] == ""
+        assert body["anthropic_version"] == "2023-06-01"
+        assert body["anthropic_beta"] == "test-beta"
+        assert body["path"] == "/internal/agent-inference/" + (suffix.lstrip("/") or "messages")
+    for path in ("/v1/models", "/internal/agent-inference/messages", "/internal/agent_credentials", "/v1/chat/completions"):
+        with pytest.raises(HTTPError) as exc:
+            urlopen(Request(base + path, data=b"{}"), timeout=5)
+        assert exc.value.code == 404
+    with pytest.raises(HTTPError) as exc:
+        urlopen(base + "/v1/messages", timeout=5)
+    assert exc.value.code == 403
+    assert authorizations(upstream) == []
