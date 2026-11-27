@@ -3,10 +3,10 @@ package de.tum.cit.aet.logos.logoswebservice.gateway;
 import java.util.List;
 import java.util.UUID;
 
+import io.valkey.springframework.data.valkey.core.StringValkeyTemplate;
+import io.valkey.springframework.data.valkey.core.script.DefaultValkeyScript;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
@@ -21,11 +21,11 @@ import com.fasterxml.jackson.databind.ObjectMapper;
  * the resolution order in {@code main.py}: key {@code cloud_*_limit}, then
  * generic {@code rpm_limit}/{@code tpm_limit}, then team defaults.
  *
- * <p>Both <b>RPM</b> and <b>TPM</b> are enforced in Redis with a sliding
+ * <p>Both <b>RPM</b> and <b>TPM</b> are enforced in Valkey with a sliding
  * window shared by every webservice replica. Admission is a single Lua
  * script (prune → check → claim), so concurrent replicas cannot each pass
  * against the same totals. When no limit is configured the script is skipped.
- * When a limit is set and Redis is unreachable, admission fails closed (503).
+ * When a limit is set and Valkey is unreachable, admission fails closed (503).
  */
 @Service
 public class GatewayCloudRateLimiter {
@@ -39,7 +39,7 @@ public class GatewayCloudRateLimiter {
         local rpm_key = KEYS[1]
         local tpm_key = KEYS[2]
         local tpm_sum_key = KEYS[3]
-        -- Redis server time so skewed replica clocks cannot prune each other early.
+        -- Shared server time so skewed replica clocks cannot prune each other early.
         local redis_time = redis.call('TIME')
         local now = tonumber(redis_time[1]) * 1000 + math.floor(tonumber(redis_time[2]) / 1000)
         local window_ms = tonumber(ARGV[1])
@@ -102,17 +102,17 @@ public class GatewayCloudRateLimiter {
 
     private final ObjectMapper objectMapper;
     private final GatewayDeploymentRepository deploymentRepository;
-    private final StringRedisTemplate redis;
-    private final DefaultRedisScript<Long> admitScript;
+    private final StringValkeyTemplate valkey;
+    private final DefaultValkeyScript<Long> admitScript;
 
     public GatewayCloudRateLimiter(
             ObjectMapper objectMapper,
             GatewayDeploymentRepository deploymentRepository,
-            StringRedisTemplate redis) {
+            StringValkeyTemplate valkey) {
         this.objectMapper = objectMapper;
         this.deploymentRepository = deploymentRepository;
-        this.redis = redis;
-        this.admitScript = new DefaultRedisScript<>(ADMIT_SCRIPT, Long.class);
+        this.valkey = valkey;
+        this.admitScript = new DefaultValkeyScript<>(ADMIT_SCRIPT, Long.class);
     }
 
     /**
@@ -137,7 +137,7 @@ public class GatewayCloudRateLimiter {
 
         Long result;
         try {
-            result = redis.execute(
+            result = valkey.execute(
                 admitScript,
                 List.of(rpmKey, tpmKey, tpmSumKey),
                 Long.toString(windowMs),
@@ -146,7 +146,7 @@ public class GatewayCloudRateLimiter {
                 Integer.toString(Math.max(0, estimatedTokens)),
                 member);
         } catch (RuntimeException e) {
-            log.error("Redis unavailable for cloud rate limit keyId={}", key.id(), e);
+            log.error("Valkey unavailable for cloud rate limit keyId={}", key.id(), e);
             throw new ResponseStatusException(
                 HttpStatus.SERVICE_UNAVAILABLE,
                 "Rate limiter unavailable");

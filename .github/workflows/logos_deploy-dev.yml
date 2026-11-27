@@ -311,7 +311,7 @@ jobs:
             # Scale logos-webservice from the node's .env without sourcing it
             # (sourcing would evaluate $(...) / backticks in values).
             ENV_FILE="${{ matrix.base-path }}/.env"
-            # Default 1. Cloud RPM/TPM are shared across replicas via Redis;
+            # Default 1. Cloud RPM/TPM are shared across replicas via Valkey;
             # raising replicas is for crash/deploy failover. Opt in with
             # LOGOS_WEBSERVICE_REPLICAS in .env — see
             # docs/deployment.md#inference-gateway-replicas.

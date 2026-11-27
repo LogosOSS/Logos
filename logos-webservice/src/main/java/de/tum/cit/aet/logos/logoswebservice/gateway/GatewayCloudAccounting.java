@@ -36,7 +36,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
  * <p>{@link #admitAndReserve} checks the budget from the short-TTL snapshot,
  * then inserts an in-flight reservation ({@code result_status IS NULL}) and
  * after commit adds it to this instance's snapshot. Cloud RPM/TPM are enforced
- * separately in Redis ({@link GatewayCloudRateLimiter}) before this method runs.
+ * separately in Valkey ({@link GatewayCloudRateLimiter}) before this method runs.
  * Nothing on this path locks a shared row or touches more than the key's own
  * recent rows: requests on one key run concurrently, across threads and across
  * replicas, and their cost does not grow with the size of the log. The budget
@@ -236,7 +236,7 @@ public class GatewayCloudAccounting {
      * same key that are admitted in the same instant may both pass the budget
      * check — the overshoot that admits is one reservation per such request,
      * the bound the budget already documents. Cloud RPM/TPM are claimed in
-     * Redis before this method is called.
+     * Valkey before this method is called.
      *
      * @param requestBody the forwarded request, stored when the effective level is FULL
      * @return log_entry id, or {@code null} when reservation amount is 0

@@ -51,7 +51,7 @@ development accounts. The local realm supplies their identities and the explicit
 For production, use `docker-compose.yaml`. Logos publishes its images to
 public GHCR at `ghcr.io/logososs`. The compose file uses this registry
 by default. You do not need registry configuration or a login.
-Set `LOGOS_DB_PASSWORD` and `LOGOS_REDIS_PASSWORD` in `.env` first.
+Set `LOGOS_DB_PASSWORD` and `LOGOS_REDIS_PASSWORD` in `.env` first. The latter is the Valkey password.
 Use separate random values.
 Then start the services:
 
