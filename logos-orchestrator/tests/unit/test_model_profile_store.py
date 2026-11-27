@@ -304,3 +304,19 @@ def test_snapshot_is_metal_reads_the_device_mode():
     assert snapshot_is_metal({"runtime": {"devices": {"mode": "metal"}}}) is True
     assert snapshot_is_metal({"runtime": {"devices": {"mode": "cuda"}}}) is False
     assert snapshot_is_metal(None) is False
+
+
+def test_a_restored_profile_regains_the_measured_base_once_the_override_is_gone():
+    echoed = {
+        "residency_source": "calibrated",
+        "base_residency_mb": 7500.0,
+        "calibrated_footprint_mb": 9000.0,
+        "overridden_fields": ["base_residency_mb"],
+    }
+    stored = persistable_profile(echoed)
+    assert "base_residency_mb" not in stored
+
+    restored = effective_profile(1, {"profile": stored, "sync_revision": 4})
+
+    assert restored["base_residency_mb"] == 9000.0
+    assert restored["residency_source"] == "calibrated"

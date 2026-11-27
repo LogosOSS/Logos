@@ -202,6 +202,9 @@ def effective_profile(provider_id: int, row: Mapping[str, Any]) -> dict[str, Any
     """
     stored = row.get("profile")
     profile = dict(stored) if isinstance(stored, dict) else {}
+    # An overridden base is not stored; the footprint is the measured one.
+    if profile.get("calibrated_footprint_mb") is not None:
+        profile.setdefault("base_residency_mb", profile["calibrated_footprint_mb"])
     profile["sync_revision"] = int(row.get("sync_revision") or 0)
     cal_id = row.get("cal_id")
     if cal_id is None or row.get("cal_invalidated_at") is not None:
