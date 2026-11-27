@@ -7,7 +7,7 @@
 # Resolve the same Maven toolchain and project dependencies as the application
 # image while build-time network access is available. Running test-compile
 # warms compiler/plugin dependencies that dependency:go-offline can miss.
-FROM maven:3-eclipse-temurin-27@sha256:3d8de45e72f62c97735db13bbae86445966001d5c05c2c8a137d062c5e8379b2 AS java-verification
+FROM maven:3.10-eclipse-temurin-25@sha256:4ed0327629de542aefd6ea9fd5da0c52e80143bf8405e5dc32ac2bde55d70d88 AS java-verification
 COPY logos-webservice/install-temurin.sh /tmp/install-temurin.sh
 RUN sh /tmp/install-temurin.sh jdk && rm /tmp/install-temurin.sh
 ENV JAVA_VERSION=jdk-25.0.5.1+2
@@ -23,7 +23,7 @@ RUN --network=none rm -rf target \
 # Keep the content-addressed npm cache so npm ci can validate each session's
 # actual lockfile offline; changed dependency versions fail instead of using
 # node_modules from a different revision.
-FROM node:26-bookworm-slim@sha256:0042e17d232a87a2cd485be1da7900fca4d10a4ad11b29e9285da1d2e54798c9 AS ui-verification
+FROM node:22-bookworm-slim@sha256:66cb8ef75184df13dc0dcf866330488996b485d404db60555756865300ced4a5 AS ui-verification
 WORKDIR /build/logos-ui
 COPY logos-ui/package.json logos-ui/package-lock.json ./
 RUN npm ci --cache /opt/logos-verification/npm-cache --no-audit --no-fund
@@ -36,7 +36,7 @@ RUN --network=none npm ci --offline --cache /opt/logos-verification/npm-cache --
   && node node_modules/@angular/cli/bin/ng.js build --configuration production \
   && node node_modules/@angular/cli/bin/ng.js test --watch=false
 
-FROM node:26-bookworm-slim@sha256:0042e17d232a87a2cd485be1da7900fca4d10a4ad11b29e9285da1d2e54798c9
+FROM node:22-bookworm-slim@sha256:66cb8ef75184df13dc0dcf866330488996b485d404db60555756865300ced4a5
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \

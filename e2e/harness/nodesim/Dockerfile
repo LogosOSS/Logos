@@ -26,7 +26,7 @@ ENV PYTHONUNBUFFERED=1 \
 # apt installs exact versions from a fixed Debian archive snapshot, so every
 # build gets the same packages; bump APT_SNAPSHOT, the pins and the base image
 # digest together.
-ARG APT_SNAPSHOT=20261117T000000Z
+ARG APT_SNAPSHOT=20261123T000000Z
 RUN sed -i -E \
       -e "s#https?://deb\.debian\.org/debian-security/?#https://snapshot.debian.org/archive/debian-security/${APT_SNAPSHOT}/#g" \
       -e "s#https?://deb\.debian\.org/debian/?#https://snapshot.debian.org/archive/debian/${APT_SNAPSHOT}/#g" \
