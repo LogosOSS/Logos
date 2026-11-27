@@ -73,7 +73,7 @@ async def probe_deployment(
     if content is None:
         return False, f"The Batch API does not run {operation} requests."
 
-    blocked = _probe_admission_failure(provider)
+    blocked = await _probe_admission_failure(provider)
     if blocked is not None:
         return None, blocked
 
@@ -105,11 +105,11 @@ async def probe_deployment(
             logger.debug("Could not delete batch probe file %s", file_id, exc_info=True)
 
 
-def _probe_admission_failure(provider: Dict[str, Any]) -> Optional[str]:
+async def _probe_admission_failure(provider: Dict[str, Any]) -> Optional[str]:
     # A probe can execute before cancellation. Like forwarded batch creation,
     # it has no proven cost bound and must not start under an active cap.
     try:
-        provider_spend.reserve(int(provider["id"]))
+        await provider_spend.reserve(int(provider["id"]))
     except HTTPException as exc:
         return f"probe skipped by provider spend admission (HTTP {exc.status_code}): {exc.detail}"
     return None
@@ -126,7 +126,7 @@ async def _create_and_cancel(
 
     # The policy can change while the upload is in flight. Recheck before
     # creating a batch; deleting the uploaded file must remain permitted.
-    blocked = _probe_admission_failure(provider)
+    blocked = await _probe_admission_failure(provider)
     if blocked is not None:
         return None, blocked
 

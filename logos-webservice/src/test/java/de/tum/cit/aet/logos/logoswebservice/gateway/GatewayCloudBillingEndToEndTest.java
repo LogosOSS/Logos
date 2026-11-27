@@ -189,8 +189,23 @@ class GatewayCloudBillingEndToEndTest {
         // for cap validation, but keep all actual HTTP I/O on the local mock.
         var official = new GatewayDeployment(f.modelId(), modelName, f.providerId(), "local test",
             "cloud", "openai", "https://api.openai.com", null, null, null, null, null, null);
-        doAnswer(call -> providerSpend.reserve(official, call.getArgument(1), call.getArgument(2), call.getArgument(3)))
-            .when(providerSpend).reserve(argThat(deployment -> deployment != null
+        jdbc.update("UPDATE providers SET base_url = 'https://api.openai.com' WHERE id = ?", f.providerId());
+        jdbc.update("""
+            INSERT INTO provider_spend_bounds (model_provider_id, upstream_url, model_revision, output_limit_field,
+                max_input_tokens, max_output_tokens, evidence_url, verified_at)
+            SELECT id, 'https://api.openai.com/v1/chat/completions', ?, 'max_completion_tokens',
+                1000000, 32000, 'https://developers.openai.com/api/docs/models/gpt-4.1', now()
+              FROM model_provider WHERE provider_id = ?
+            """, modelName, f.providerId());
+        jdbc.update("UPDATE providers SET base_url = ? WHERE id = ?", upstreamBaseUrl(), f.providerId());
+        doAnswer(call -> {
+            jdbc.update("UPDATE providers SET base_url = 'https://api.openai.com' WHERE id = ?", f.providerId());
+            try {
+                return providerSpend.reserve(official, call.getArgument(1), call.getArgument(2), call.getArgument(3));
+            } finally {
+                jdbc.update("UPDATE providers SET base_url = ? WHERE id = ?", upstreamBaseUrl(), f.providerId());
+            }
+        }).when(providerSpend).reserve(argThat(deployment -> deployment != null
                 && f.providerId() == deployment.providerId() && upstreamBaseUrl().equals(deployment.baseUrl())),
                 eq("/v1/chat/completions"), isNull(), any(JsonNode.class));
 

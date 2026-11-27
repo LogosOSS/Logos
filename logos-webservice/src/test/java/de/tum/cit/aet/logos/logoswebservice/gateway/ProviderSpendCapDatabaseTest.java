@@ -1,4 +1,4 @@
-package de.tum.cit.aet.logos.logoswebservice.configuration;
+package de.tum.cit.aet.logos.logoswebservice.gateway;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -6,6 +6,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 
 import java.math.BigDecimal;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.sql.DriverManager;
 import java.time.LocalDate;
 import java.util.LinkedHashMap;
@@ -24,6 +25,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
+import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.web.server.ResponseStatusException;
 
 import de.tum.cit.aet.logos.logoswebservice.audit.AuditLogService;
@@ -35,9 +37,9 @@ import org.testcontainers.containers.PostgreSQLContainer;
 /** Real PostgreSQL row locks are the shared contract between the two relays. */
 class ProviderSpendCapDatabaseTest {
 
-    private static final String MODEL = "claude-haiku-4-5-20251001";
+    private static final String MODEL = "synthetic-20261101";
     private static final String PAYLOAD = """
-        {"model":"claude-haiku-4-5-20251001","messages":[{"role":"user","content":"hi"}],"max_tokens":100}
+        {"model":"synthetic-20261101","messages":[{"role":"user","content":"hi"}],"max_tokens":100}
         """;
 
     @Test
@@ -60,7 +62,11 @@ class ProviderSpendCapDatabaseTest {
                 var liquibase = new Liquibase("liquibase/changelog/master.xml", resource, new JdbcConnection(connection))) {
             liquibase.update(new Contexts(), new LabelExpression());
         }
-        var jdbc = new JdbcTemplate(new DriverManagerDataSource(url, user, password));
+        var dataSource = new DriverManagerDataSource(url, user, password);
+        var jdbc = new JdbcTemplate(dataSource);
+        var named = new NamedParameterJdbcTemplate(jdbc);
+        var ledger = new ProviderSpendLedger(named, new DataSourceTransactionManager(dataSource), new ProviderSpendPricing(named));
+        var mapper = new ObjectMapper();
         int provider = jdbc.queryForObject("""
             INSERT INTO providers (name, base_url, provider_type, cloud_provider_type, auth_name, auth_format)
             VALUES ('Synthetic Anthropic', 'https://api.anthropic.com', 'cloud', 'anthropic', 'x-api-key', '{}')
@@ -69,6 +75,7 @@ class ProviderSpendCapDatabaseTest {
         int model = jdbc.queryForObject("""
             INSERT INTO models (name) VALUES (?) RETURNING id
             """, Integer.class, MODEL);
+        jdbc.update("INSERT INTO model_provider (model_id, provider_id) VALUES (?, ?)", model, provider);
         jdbc.update("""
             INSERT INTO token_prices (type_id, model_id, provider_id, valid_from, price_per_k_unit)
             SELECT id, ?, ?, clock_timestamp() - interval '1 minute',
@@ -79,29 +86,39 @@ class ProviderSpendCapDatabaseTest {
             INSERT INTO provider_spend_policies (provider_id, effective_month, limit_micro_cents)
             VALUES (?, date_trunc('month', current_timestamp AT TIME ZONE 'UTC'), 1500000)
             """, provider);
+        var request = mapper.readTree(PAYLOAD);
+        var messages = "https://api.anthropic.com/v1/messages";
+        assertThat(ledger.reserve(UUID.randomUUID(), provider, model, messages, request))
+            .isEqualTo(ProviderSpendLedger.Decision.UNBOUNDED);
+        ledger.recordReviewedBound(provider, model, new ProviderSpendLedger.BoundReview(messages, MODEL, "max_tokens",
+            1000000, 64000, "https://platform.claude.com/docs/en/models/haiku-4-5/overview"));
+        assertThat(ledger.coverage(provider)).isEqualTo(1);
+
         List<UUID> attempts = java.util.stream.IntStream.range(0, 12).mapToObj(i -> UUID.randomUUID()).toList();
-        List<Callable<String>> admit = attempts.stream()
-            .<Callable<String>>map(attempt -> () -> reserve(jdbc, attempt, provider, model, PAYLOAD)).toList();
-        List<String> results;
+        List<Callable<ProviderSpendLedger.Decision>> admit = attempts.stream()
+            .<Callable<ProviderSpendLedger.Decision>>map(attempt -> () -> ledger.reserve(attempt, provider, model, messages, request)).toList();
+        List<ProviderSpendLedger.Decision> results;
         try (var exec = Executors.newFixedThreadPool(12)) {
             var futures = exec.invokeAll(admit);
-            var decisions = new java.util.ArrayList<String>();
+            var decisions = new java.util.ArrayList<ProviderSpendLedger.Decision>();
             for (var future : futures) {
                 decisions.add(future.get());
             }
             results = decisions;
         }
-        assertThat(results).containsOnly("reserved", "exhausted");
-        assertThat(results.stream().filter("reserved"::equals)).hasSize(1);
-        UUID first = attempts.get(results.indexOf("reserved"));
-        assertThat(reserve(jdbc, first, provider, model, PAYLOAD)).isEqualTo("duplicate");
-        assertThat(reserve(jdbc, UUID.randomUUID(), provider, model, PAYLOAD.replace(":100", ":\"unbounded\"")))
-            .isEqualTo("unbounded");
+        var reserved = ProviderSpendLedger.Decision.RESERVED;
+        var exhausted = ProviderSpendLedger.Decision.EXHAUSTED;
+        assertThat(results).containsOnly(reserved, exhausted);
+        assertThat(results.stream().filter(reserved::equals)).hasSize(1);
+        UUID first = attempts.get(results.indexOf(reserved));
+        assertThat(ledger.reserve(first, provider, model, messages, request)).isEqualTo(ProviderSpendLedger.Decision.DUPLICATE);
+        assertThat(ledger.reserve(UUID.randomUUID(), provider, model, messages, mapper.readTree(
+            PAYLOAD.replace(":100", ":\"unbounded\"")))).isEqualTo(ProviderSpendLedger.Decision.UNBOUNDED);
 
-        assertThat(settle(jdbc, first, "{\"prompt_tokens\":10,\"completion_tokens\":4,\"usage_estimated\":1}"))
-            .isFalse();
-        assertThat(settle(jdbc, first, "{\"prompt_tokens\":10,\"completion_tokens\":4}")).isTrue();
-        assertThat(settle(jdbc, first, "{\"prompt_tokens\":10,\"completion_tokens\":4}")).isFalse();
+        assertThat(ledger.settle(first, Map.of("prompt_tokens", 10L, "completion_tokens", 4L, "usage_estimated", 1L),
+            null, false)).isFalse();
+        assertThat(ledger.settle(first, Map.of("prompt_tokens", 10L, "completion_tokens", 4L), null, false)).isTrue();
+        assertThat(ledger.settle(first, Map.of("prompt_tokens", 10L, "completion_tokens", 4L), null, false)).isFalse();
         assertThat(jdbc.queryForObject("""
             SELECT charged_micro_cents AS cost FROM provider_spend_months WHERE provider_id = ?
             """, Long.class, provider)).isEqualTo(18);
@@ -113,35 +130,35 @@ class ProviderSpendCapDatabaseTest {
             """, provider);
         jdbc.update("""
             INSERT INTO provider_spend_attempts
-                (attempt_id, provider_id, month_start, model_id, priced_at, reserved_micro_cents)
+                (attempt_id, provider_id, month_start, model_id, priced_at, reserved_micro_cents, anthropic_usage)
             VALUES (?, ?, date_trunc('month', current_timestamp AT TIME ZONE 'UTC') - interval '1 month',
-                ?, current_timestamp, 1000)
+                ?, current_timestamp, 1000, true)
             """, previous, provider, model);
-        assertThat(settle(jdbc, previous, "{\"prompt_tokens\":20,\"completion_tokens\":30}")).isTrue();
+        assertThat(ledger.settle(previous, Map.of("prompt_tokens", 20L, "completion_tokens", 30L), null, false)).isTrue();
         assertThat(jdbc.queryForList("""
             SELECT charged_micro_cents FROM provider_spend_months WHERE provider_id = ? ORDER BY month_start
             """, Long.class, provider)).containsExactly(80L, 18L);
 
         UUID wrongBound = UUID.randomUUID();
-        assertThat(reserve(jdbc, wrongBound, provider, model, PAYLOAD)).isEqualTo("reserved");
-        assertThat(settle(jdbc, wrongBound, "{\"prompt_tokens\":5000000,\"completion_tokens\":4}")).isTrue();
+        assertThat(ledger.reserve(wrongBound, provider, model, messages, request)).isEqualTo(reserved);
+        assertThat(ledger.settle(wrongBound, Map.of("prompt_tokens", 5000000L, "completion_tokens", 4L), null, false)).isTrue();
         assertThat(jdbc.queryForObject("""
             SELECT BOOL_OR(bound_violation) FROM provider_spend_months WHERE provider_id = ?
             """, Boolean.class, provider)).isTrue();
-        assertThat(reserve(jdbc, UUID.randomUUID(), provider, model, PAYLOAD)).isEqualTo("exhausted");
+        assertThat(ledger.reserve(UUID.randomUUID(), provider, model, messages, request)).isEqualTo(exhausted);
 
-        checkAdminPolicy(jdbc, provider);
+        checkAdminPolicy(jdbc, provider, ledger);
     }
 
-    private static void checkAdminPolicy(JdbcTemplate jdbc, int provider) {
+    private static void checkAdminPolicy(JdbcTemplate jdbc, int provider, ProviderSpendLedger ledger) {
         var audit = mock(AuditLogService.class);
-        var service = new ProviderSpendPolicyService(new NamedParameterJdbcTemplate(jdbc), audit);
-        var controller = new ProviderSpendPolicyController(service);
+        var service = new ProviderSpendPolicyService(new NamedParameterJdbcTemplate(jdbc), audit, ledger);
+        var controller = new ProviderSpendPolicyController(service, ledger, audit);
         var currentMonth = jdbc.queryForObject("""
             SELECT date_trunc('month', CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::date
             """, LocalDate.class);
         Map<String, Object> current = Map.of(
-            "enabled", true, "effective_month", currentMonth.toString(), "limit_usd", new BigDecimal("0.01500000"));
+            "enabled", true, "effective_month", currentMonth.toString(), "limit_usd", "0.01500000");
         assertThat(controller.get(provider)).containsEntry("current", current)
             .containsEntry("scheduled", null).containsEntry("bound_violation", true);
 
@@ -166,7 +183,7 @@ class ProviderSpendCapDatabaseTest {
 
         Map<String, Object> next = Map.of(
             "enabled", true, "effective_month", currentMonth.plusMonths(1).toString(),
-            "limit_usd", new BigDecimal("123.00000001"));
+            "limit_usd", "123.00000001");
         assertThat(controller.schedule(provider, new Change(true, new BigDecimal("123.00000001"))))
             .containsEntry("current", current).containsEntry("scheduled", next);
         Map<String, Object> disabled = new LinkedHashMap<>();
@@ -179,15 +196,4 @@ class ProviderSpendCapDatabaseTest {
         verify(audit).record("provider.monthly_spend_cap_scheduled", "provider", provider, null, next, disabled);
     }
 
-    private static String reserve(JdbcTemplate jdbc, UUID attempt, int provider, int model, String body) {
-        return jdbc.queryForObject("""
-            SELECT logos_reserve_provider_spend(?, ?, ?, 'messages', CAST(? AS jsonb))
-            """, String.class, attempt, provider, model, body);
-    }
-
-    private static boolean settle(JdbcTemplate jdbc, UUID attempt, String usage) {
-        return Boolean.TRUE.equals(jdbc.queryForObject("""
-            SELECT logos_settle_provider_spend(?, CAST(? AS jsonb), NULL)
-            """, Boolean.class, attempt, usage));
-    }
 }

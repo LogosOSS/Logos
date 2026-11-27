@@ -15,6 +15,7 @@ import org.springframework.web.server.ResponseStatusException;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
 import de.tum.cit.aet.logos.logoswebservice.audit.AuditLogService;
+import de.tum.cit.aet.logos.logoswebservice.gateway.ProviderSpendLedger;
 
 @Service
 public class ProviderSpendPolicyService {
@@ -23,10 +24,12 @@ public class ProviderSpendPolicyService {
 
     private final NamedParameterJdbcTemplate jdbc;
     private final AuditLogService audit;
+    private final ProviderSpendLedger ledger;
 
-    public ProviderSpendPolicyService(NamedParameterJdbcTemplate jdbc, AuditLogService audit) {
+    public ProviderSpendPolicyService(NamedParameterJdbcTemplate jdbc, AuditLogService audit, ProviderSpendLedger ledger) {
         this.jdbc = jdbc;
         this.audit = audit;
+        this.ledger = ledger;
     }
 
     public Map<String, Object> get(int providerId) {
@@ -42,6 +45,7 @@ public class ProviderSpendPolicyService {
              WHERE provider_id = :provider AND month_start = date_trunc('month', CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::date
             """, Map.of("provider", providerId));
         result.putAll(totals);
+        result.put("bounded_deployments", ledger.coverage(providerId));
         return result;
     }
 
@@ -109,7 +113,7 @@ public class ProviderSpendPolicyService {
                 BigDecimal limit = rs.getBigDecimal("limit_micro_cents");
                 policy.put("enabled", limit != null);
                 policy.put("effective_month", rs.getObject("effective_month", LocalDate.class).toString());
-                policy.put("limit_usd", limit == null ? null : limit.movePointLeft(8));
+                policy.put("limit_usd", limit == null ? null : limit.movePointLeft(8).toPlainString());
                 return policy;
             });
     }

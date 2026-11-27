@@ -740,7 +740,7 @@ async def forward_batch_operation(
     if operation.is_batch_creation or operation.is_file_upload:
         # The complete external job is admitted on creation. Until its
         # provider can prove a full-job bound, do not create charged work.
-        provider_spend.reserve(int(provider["id"]))
+        await provider_spend.reserve(int(provider["id"]))
     url = batch_operation_url(provider, operation)
     headers = batch_provider_headers(provider)
     _assert_secure_transport(provider, url, headers)

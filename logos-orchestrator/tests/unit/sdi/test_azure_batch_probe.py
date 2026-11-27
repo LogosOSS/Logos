@@ -35,8 +35,11 @@ SKU_REFUSAL = {
 
 @pytest.fixture(autouse=True)
 def uncapped_provider(monkeypatch):
-    # The probe transport tests never need a real database.
-    monkeypatch.setattr(azure_batch_probe.provider_spend, "reserve", lambda _provider_id: None)
+    # The probe transport tests never need a real ledger.
+    async def uncapped(_provider_id):
+        return None
+
+    monkeypatch.setattr(azure_batch_probe.provider_spend, "reserve", uncapped)
 
 
 def _client(handler, seen):
@@ -101,7 +104,7 @@ async def test_an_unrelated_refusal_is_inconclusive():
 async def test_admission_denial_skips_probe_before_any_upload_or_create(monkeypatch, status):
     checked = []
 
-    def reject(provider_id):
+    async def reject(provider_id):
         checked.append(provider_id)
         raise HTTPException(status, "Provider spend admission refused")
 
@@ -119,7 +122,7 @@ async def test_admission_denial_skips_probe_before_any_upload_or_create(monkeypa
 async def test_admission_rechecks_before_create_and_allows_file_cleanup(monkeypatch):
     checked = []
 
-    def reserve(provider_id):
+    async def reserve(provider_id):
         checked.append(provider_id)
         if len(checked) > 1:
             raise HTTPException(402, "Provider monthly spend limit reached")
@@ -140,7 +143,7 @@ async def test_cancellation_and_cleanup_do_not_pass_through_spend_admission(monk
     checked = []
     seen = []
 
-    def reserve(provider_id):
+    async def reserve(provider_id):
         checked.append(provider_id)
         if len(checked) > 2:
             pytest.fail("Stopping work or deleting the probe file must not be gated on the cap")

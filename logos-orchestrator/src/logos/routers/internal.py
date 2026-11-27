@@ -775,7 +775,7 @@ async def internal_run_model_benchmark(data: InternalBenchmarkRequest, request: 
         if provider_type == "cloud":
             # The benchmark runner sends directly to the provider and can
             # make multiple billable calls. Do not start an unbounded run.
-            provider_spend.reserve(provider_id)
+            await provider_spend.reserve(provider_id)
         job_id = db.create_job_record(
             payload=job_payload,
             api_key_id=None,

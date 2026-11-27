@@ -2279,7 +2279,7 @@ async def test_provider_spend_denial_never_dispatches(monkeypatch, stream):
     attempts = []
     upstream_calls = []
 
-    def deny(provider_id, model_id, *, url, payload):
+    async def deny(provider_id, model_id, *, url, payload):
         attempts.append((provider_id, model_id, url, payload))
         raise HTTPException(402, "Provider monthly spend limit reached")
 

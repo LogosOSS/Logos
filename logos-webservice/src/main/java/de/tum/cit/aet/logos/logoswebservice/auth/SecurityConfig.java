@@ -89,7 +89,8 @@ public class SecurityConfig {
                 .requestMatchers(HttpMethod.POST, "/internal/models_discovered").permitAll()
                 // /internal/notifications is the orchestrator's emission door,
                 // also authenticated with the internal secret in the controller.
-                .requestMatchers(HttpMethod.POST, "/internal/notifications").permitAll()
+                .requestMatchers(HttpMethod.POST, "/internal/notifications",
+                    "/internal/provider-spend/reserve", "/internal/provider-spend/settle").permitAll()
                 // Per-replica StreamingResponseBody occupancy for the gateway
                 // concurrency benchmark. Counters only; not routed via Traefik.
                 .requestMatchers("/internal/gateway_relay_stats", "/internal/gateway_relay_stats/**")
@@ -263,6 +264,8 @@ public class SecurityConfig {
             if ("/logosdb/get_model_health".equals(path)
                     || "/internal/models_discovered".equals(path)
                     || "/internal/notifications".equals(path)
+                    || "/internal/provider-spend/reserve".equals(path)
+                    || "/internal/provider-spend/settle".equals(path)
                     || path.equals("/internal/gateway_relay_stats")
                     || path.startsWith("/internal/gateway_relay_stats/")
                     || path.startsWith("/deployments/deployer/")) {

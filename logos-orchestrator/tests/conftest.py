@@ -362,27 +362,12 @@ def _sync_write_queue():
 
 @pytest.fixture(autouse=True)
 def _uncapped_cloud_by_default(monkeypatch):
-    """Cloud forwarding unit tests have no shared budget database."""
+    """Cloud forwarding unit tests have no Java accounting service."""
+    import httpx
+
     from logos.billing import provider_spend
 
-    class UncappedDb:
-        def __enter__(self):
-            return self
+    async def uncapped(operation, body):
+        return httpx.Response(200, json={"attemptId": None}, request=httpx.Request("POST", "http://ledger.test"))
 
-        def __exit__(self, *exc_info):
-            pass
-
-        @property
-        def session(self):
-            return self
-
-        def execute(self, *args):
-            return self
-
-        def scalar_one(self):
-            return "uncapped"
-
-        def commit(self):
-            pass
-
-    monkeypatch.setattr(provider_spend, "DBManager", UncappedDb)
+    monkeypatch.setattr(provider_spend, "_call", uncapped)
