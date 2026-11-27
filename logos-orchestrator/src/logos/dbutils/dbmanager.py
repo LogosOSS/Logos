@@ -26,7 +26,7 @@ from logos.dbutils.types import (
     normalize_provider_type,
 )
 from logos.model_names import is_safe_model_name
-from logos.model_profile_store import CALIBRATION_FIELDS, base_residency_agrees
+from logos.model_profile_store import CALIBRATION_FIELDS, base_residency_agrees, known_residency_source
 from logos.node_config import selection_covered, selection_of
 
 # Backwards-compatible re-export (temporary; remove once all imports are migrated)
@@ -360,7 +360,7 @@ def _model_profile_column_params(data: Dict[str, Any]) -> Dict[str, Any]:
         "kv_per_token_bytes": _number(data.get("kv_per_token_bytes"), int),
         "max_context_length": _number(data.get("max_context_length"), int),
         "max_reported_context_length": derived_reported_context_length(data),
-        "residency_source": _text(data.get("residency_source")),
+        "residency_source": known_residency_source(data.get("residency_source")),
         "measurement_count": _number(data.get("measurement_count"), int) or 0,
         "last_measured_at": _epoch_to_datetime(data.get("last_measured_epoch")),
         "observed_gpu_memory_utilization": _number(data.get("observed_gpu_memory_utilization"), float),

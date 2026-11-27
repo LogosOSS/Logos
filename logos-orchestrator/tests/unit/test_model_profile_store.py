@@ -11,6 +11,7 @@ from logos.model_profile_store import (
     effective_profile,
     is_central_profile_payload,
     is_new_local_calibration,
+    known_residency_source,
     material_profile,
     persistable_profile,
     profile_digest,
@@ -320,3 +321,20 @@ def test_a_restored_profile_regains_the_measured_base_once_the_override_is_gone(
 
     assert restored["base_residency_mb"] == 9000.0
     assert restored["residency_source"] == "calibrated"
+
+
+def test_only_a_known_source_is_stored():
+    assert known_residency_source("calibrated") == "calibrated"
+    assert known_residency_source("hf") == "hf"
+    for label in ("override", "cached", "measured", "", None):
+        assert known_residency_source(label) is None
+    assert persistable_profile({"residency_source": "cached"})["residency_source"] is None
+    assert persistable_profile({"residency_source": "hf"})["residency_source"] == "hf"
+
+
+def test_a_recalibration_under_an_override_replaces_an_older_stored_base():
+    stored = {"residency_source": "calibrated", "base_residency_mb": 6000.0, "calibrated_footprint_mb": 9000.0}
+
+    restored = effective_profile(1, {"profile": stored, "sync_revision": 5})
+
+    assert restored["base_residency_mb"] == 9000.0
