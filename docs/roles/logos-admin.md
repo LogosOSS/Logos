@@ -439,16 +439,17 @@ Expand a provider for its connected models, or for the worker control actions
 4. Select **Save changes**.
 
 To remove the cap, clear **Enable cap** and select **Save changes**.
-Changes apply immediately and continue each UTC calendar month unless a scheduled change replaces them.
+Changes are saved for the current UTC month and continue each month unless a scheduled change replaces them.
 A limit of $0 blocks new billable requests through Logos.
 
 The section shows the current limit, the next scheduled change, and recorded charges for this month.
 Logos adds positive, finalized costs from the provider's request logs in the current UTC billing month.
 This total includes recorded costs from periods without a cap when you enable or re-enable it.
-Logos does not count unpriced requests or spend outside Logos. This total is not the vendor invoice.
+Logos does not count unpriced requests or spend outside Logos. For example, provider-native batches or
+benchmarks without a finalized request cost do not add to the total. This total is not the vendor invoice.
 
 When recorded charges reach the limit, Logos blocks new requests.
-The spend total that the check uses can be up to 5 s old.
+The admission check can take up to 5 seconds to see an updated limit or newly recorded charges.
 Requests already in progress can finish. The final total can exceed the limit.
 
 ![Monthly spend cap editor for a cloud provider](/img/roles/logos-admin-provider-spend-cap.png)
