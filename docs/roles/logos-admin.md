@@ -449,7 +449,7 @@ Logos does not count unpriced requests or spend outside Logos. For example, prov
 benchmarks without a finalized request cost do not add to the total. This total is not the vendor invoice.
 
 When recorded charges reach the limit, Logos blocks new requests.
-The admission check can take up to 5 seconds to see an updated limit or newly recorded charges.
+Admission checks can take up to 5 seconds to pick up a limit change, newly recorded charges, or the UTC month rollover.
 Requests already in progress can finish. The final total can exceed the limit.
 
 ![Monthly spend cap editor for a cloud provider](/img/roles/logos-admin-provider-spend-cap.png)

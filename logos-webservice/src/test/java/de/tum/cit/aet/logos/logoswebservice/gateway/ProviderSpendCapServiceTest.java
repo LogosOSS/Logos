@@ -74,14 +74,15 @@ class ProviderSpendCapServiceTest {
     }
 
     @Test
-    void expiresAtUtcMonthBoundaryAndNextRefreshUsesNewMonth() {
+    void utcRolloverUsesTheNextRefreshWithoutInterruptingUncappedCalls() {
         configureClock("2026-12-01T13:59:59+14:00");
         configureLimits(Map.of(1, 0L));
         service.refresh();
         assertRejected(1, 402);
-        assertThat(service.status().validForMs()).isEqualTo(1000);
+        assertThat(service.status().validForMs()).isEqualTo(5000);
         clock.set(TimeUnit.SECONDS.toNanos(1));
-        assertRejected(1, 503);
+        service.check(2);
+        assertRejected(1, 402);
 
         configureClock("2026-12-01T14:00:00+14:00");
         configureLimits(Map.of());

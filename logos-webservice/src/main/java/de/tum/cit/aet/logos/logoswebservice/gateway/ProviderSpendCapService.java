@@ -1,7 +1,6 @@
 package de.tum.cit.aet.logos.logoswebservice.gateway;
 
 import java.math.BigDecimal;
-import java.time.Duration;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
@@ -63,9 +62,9 @@ public class ProviderSpendCapService {
                      ORDER BY provider_id, effective_month DESC
                 ) current_policy WHERE limit_micro_cents IS NOT NULL
                 """, Map.of("month", month), (rs, row) -> new Limit(rs.getInt(1), rs.getLong(2)));
-            long untilRollover = Duration.between(now,
-                month.plusMonths(1).atStartOfDay().atOffset(ZoneOffset.UTC)).toNanos();
-            long expiresAt = start + Math.min(FRESHNESS, untilRollover);
+            // Keep the same bounded lease across rollover; the next refresh switches UTC months.
+            // Expiring both snapshots at midnight would briefly deny even uncapped providers.
+            long expiresAt = start + FRESHNESS;
             var active = new HashSet<Integer>();
             limits.forEach(limit -> active.add(limit.provider()));
             knownActive = new Snapshot(Set.copyOf(active), expiresAt);
