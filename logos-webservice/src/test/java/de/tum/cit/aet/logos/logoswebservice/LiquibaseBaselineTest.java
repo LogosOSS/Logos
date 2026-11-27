@@ -99,9 +99,10 @@ class LiquibaseBaselineTest {
         String database = "request_scope_" + UUID.randomUUID().toString().replace("-", "");
         jdbc.execute("CREATE DATABASE " + database);
         String url = postgres.getJdbcUrl().replace("/logosdb", "/" + database);
-        try (var connection = DriverManager.getConnection(url, postgres.getUsername(), postgres.getPassword());
+        try (var releaseConnection = DriverManager.getConnection(url, postgres.getUsername(), postgres.getPassword());
+                var connection = DriverManager.getConnection(url, postgres.getUsername(), postgres.getPassword());
                 var resources = new ClassLoaderResourceAccessor();
-                var release = new Liquibase("liquibase/changelog/master.xml", resources, new JdbcConnection(connection));
+                var release = new Liquibase("liquibase/changelog/master.xml", resources, new JdbcConnection(releaseConnection));
                 var scope = new Liquibase("liquibase/changelog/108_log_entry_benchmark_source.xml",
                     resources, new JdbcConnection(connection))) {
             var isolated = new JdbcTemplate(new SingleConnectionDataSource(connection, true));
