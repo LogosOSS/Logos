@@ -40,13 +40,21 @@ final class AgentInferenceRelay {
         s.status IN ('starting', 'running') AND COALESCE(s.error, '') NOT LIKE 'cancel_requested:%'
         """;
 
+    private static final String REMOTE_SCOPE = """
+        p.provider_type = 'cloud' AND p.cloud_provider_type = 'logos'
+        AND (
+            (LOWER(BTRIM(COALESCE(p.auth_name, ''))) = '' AND COALESCE(p.auth_format, '') = '')
+            OR (LOWER(BTRIM(COALESCE(p.auth_name, ''))) IN ('', 'authorization') AND p.auth_format = 'Bearer {}')
+        )
+        """;
+
     record Grant(long sessionId, String hash, String tag, int providerId, int modelId, String model,
                  URI origin, String operatingKey) {
         // Do not expose credential-bearing record component values in logging.
         @Override public String toString() { return "AgentInferenceGrant[sessionId=" + sessionId + "]"; }
     }
 
-    private record Scope(String hash, String tag, int providerId, int modelId) { }
+    private record Scope(String hash, String tag, int providerId, int modelId, String model, URI origin) { }
 
     private final NamedParameterJdbcTemplate jdbc;
     private final ProviderSpendCapService providerSpend;
@@ -106,13 +114,12 @@ final class AgentInferenceRelay {
                 SELECT s.id, s.inference_provider_id, m.id AS inference_model_id, m.name, p.base_url,
                        COALESCE(NULLIF(mp.api_key, ''), p.api_key, '') AS operating_key
                 FROM agent_sessions s
-                JOIN models m ON m.id = s.inference_model_id
+                JOIN models m ON m.id = s.inference_model_id AND m.name = s.model
                 JOIN providers p ON p.id = s.inference_provider_id
                 JOIN model_provider mp ON mp.provider_id = p.id AND mp.model_id = m.id
                 WHERE s.inference_grant_hash = :hash AND s.inference_client_tag = :tag
-                    AND p.provider_type = 'cloud' AND p.cloud_provider_type = 'logos'
                     AND
-                """ + ACTIVE, identity, rs -> {
+                """ + REMOTE_SCOPE + " AND " + ACTIVE, identity, rs -> {
                     if (!rs.next()) throw denied();
                     URI destination;
                     try {
@@ -180,25 +187,31 @@ final class AgentInferenceRelay {
         try {
             jdbc.query("""
                 SELECT s.id, s.inference_grant_hash, s.inference_client_tag,
-                       s.inference_provider_id, s.inference_model_id
+                       s.inference_provider_id, s.inference_model_id, m.name, p.base_url
                 FROM agent_sessions s
+                JOIN models m ON m.id = s.inference_model_id AND m.name = s.model
                 JOIN model_provider mp ON mp.provider_id = s.inference_provider_id
                                       AND mp.model_id = s.inference_model_id
                 JOIN providers p ON p.id = s.inference_provider_id
-                WHERE s.id IN (:sessions) AND p.provider_type = 'cloud' AND p.cloud_provider_type = 'logos'
-                    AND
-                """ + ACTIVE, Map.of("sessions", sessions), rs -> {
+                WHERE s.id IN (:sessions) AND
+                """ + REMOTE_SCOPE + " AND " + ACTIVE, Map.of("sessions", sessions), rs -> {
                     long id = rs.getLong("id");
-                    valid.put(id, new Scope(rs.getString("inference_grant_hash"),
-                        rs.getString("inference_client_tag"), rs.getInt("inference_provider_id"),
-                        rs.getInt("inference_model_id")));
+                    try {
+                        valid.put(id, new Scope(rs.getString("inference_grant_hash"),
+                            rs.getString("inference_client_tag"), rs.getInt("inference_provider_id"),
+                            rs.getInt("inference_model_id"), rs.getString("name"), origin(rs.getString("base_url"))));
+                    } catch (IllegalArgumentException | NullPointerException ignored) {
+                        // A changed/invalid target must no longer own an active stream.
+                    }
                 });
             long now = System.nanoTime();
             for (ActiveRelay relay : relays) {
                 Grant grant = relay.grant;
                 Scope scope = valid.get(grant.sessionId());
                 if (scope == null || !grant.hash().equals(scope.hash()) || !grant.tag().equals(scope.tag())
-                        || grant.providerId() != scope.providerId() || grant.modelId() != scope.modelId() || now - relay.lastActivity > IDLE.toNanos()) {
+                        || grant.providerId() != scope.providerId() || grant.modelId() != scope.modelId()
+                        || !grant.model().equals(scope.model()) || !grant.origin().equals(scope.origin())
+                        || now - relay.lastActivity > IDLE.toNanos()) {
                     relay.close();
                 }
             }

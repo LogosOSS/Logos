@@ -81,12 +81,13 @@ class AgentInferenceRelayTest {
         db.execute("""
             CREATE TYPE cloud_provider_type_enum AS ENUM ('openai', 'anthropic', 'logos');
             CREATE TABLE providers(id integer primary key, base_url text, api_key text,
-                                   provider_type text, cloud_provider_type cloud_provider_type_enum);
+                                   provider_type text, cloud_provider_type cloud_provider_type_enum,
+                                   auth_name text, auth_format text);
             CREATE TABLE models(id integer primary key, name text);
             CREATE TABLE model_provider(provider_id integer, model_id integer, api_key text,
                                         primary key(provider_id, model_id));
             CREATE TABLE agent_sessions(id bigint primary key, status text, error text, inference_grant_hash text UNIQUE,
-                                        inference_client_tag text, inference_provider_id integer, inference_model_id integer);
+                                        inference_client_tag text, inference_provider_id integer, inference_model_id integer, model text);
             """);
         Path storePath = tmp.resolve("loopback.p12");
         var keytool = new ProcessBuilder(Path.of(System.getProperty("java.home"), "bin", "keytool").toString(),
@@ -155,10 +156,10 @@ class AgentInferenceRelayTest {
     @BeforeEach
     void seed() {
         db.execute("TRUNCATE agent_sessions, model_provider, models, providers");
-        db.update("INSERT INTO providers VALUES (3, ?, 'wrong-provider-key', 'cloud', 'logos')", allowedOrigin);
+        db.update("INSERT INTO providers VALUES (3, ?, 'wrong-provider-key', 'cloud', 'logos', 'Authorization', 'Bearer {}')", allowedOrigin);
         db.update("INSERT INTO models VALUES (4, 'claude-test')");
         db.update("INSERT INTO model_provider VALUES (3, 4, ?)", PROVIDER_KEY);
-        db.update("INSERT INTO agent_sessions VALUES (2, 'starting', null, ?, null, 3, 4)", HASH);
+        db.update("INSERT INTO agent_sessions VALUES (2, 'starting', null, ?, null, 3, 4, 'claude-test')", HASH);
         MODE.set("ok");
         SEEN.set(null);
         CALLS.set(0);
@@ -211,6 +212,22 @@ class AgentInferenceRelayTest {
         mvc.perform(relayRequest(MESSAGES, JSON)).andExpect(status().isUnauthorized());
         assertThat(CALLS).hasValue(0);
         assertThat(capacity.inFlight()).isZero();
+    }
+
+    @Test
+    void requiresCanonicalSessionModelAndGenuineBearerConfiguration() throws Exception {
+        db.update("UPDATE providers SET auth_format='' WHERE id=3");
+        mvc.perform(relayRequest(MESSAGES, JSON)).andExpect(status().isUnauthorized());
+        db.update("UPDATE providers SET auth_name='x-api-key', auth_format='Bearer {}' WHERE id=3");
+        mvc.perform(relayRequest(MESSAGES, JSON)).andExpect(status().isUnauthorized());
+        db.update("UPDATE providers SET auth_name='', auth_format='' WHERE id=3");
+        db.update("UPDATE agent_sessions SET model='different' WHERE id=2");
+        mvc.perform(relayRequest(MESSAGES, JSON)).andExpect(status().isUnauthorized());
+        assertThat(CALLS).hasValue(0);
+        db.update("UPDATE agent_sessions SET model='claude-test' WHERE id=2");
+        var result = mvc.perform(relayRequest(MESSAGES, JSON)).andExpect(request().asyncStarted()).andReturn();
+        mvc.perform(asyncDispatch(result)).andExpect(status().isOk());
+        assertThat(SEEN.get().get(1)).isEqualTo("Bearer " + PROVIDER_KEY);
     }
 
     @Test
