@@ -626,6 +626,16 @@ These capabilities allow Logos to reserve the benchmark lane's GPUs and check ca
 All schedules default to disabled.
 Enabled pairs follow the deployment's 05:00–08:00 Europe/Berlin default until an admin saves a custom window for that pair.
 
+To offer **Logos PROD** for DEV or TEST parameter suggestions, set
+`LOGOS_NIGHTLY_PROD_BASE_URL` to the PROD inference gateway HTTPS URL ending in
+`/v1` and provision the core deployment secret `LOGOS_NIGHTLY_PROD_API_KEY`.
+Use a PROD service key with billing-only logging and access scoped to the intended chat models.
+The gateway lists those models for administrators.
+Set `LOGOS_NIGHTLY_PROD_DEFAULT_MODEL` to an accessible model to use PROD before
+an administrator saves a selection. With no default configured, Logos uses the local
+`Qwen/Qwen2.5-Coder-14B-Instruct-AWQ`. A saved UI selection takes precedence.
+Deploy changelog `107_nightly_proposer_model.xml` with the webservice before enabling this configuration.
+
 Logos selects 1 vLLM lane or starts a temporary lane when needed.
 `LOGOS_MAINTENANCE_MAX_NODES` limits simultaneous maintenance workers. Its default is `1`.
 A value of `2` permits 2 workers at the same time.

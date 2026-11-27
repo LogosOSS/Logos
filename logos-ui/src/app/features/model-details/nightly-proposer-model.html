@@ -1,0 +1,49 @@
+<section class="proposer" aria-labelledby="nightly-proposer-title">
+  <div>
+    <h4 id="nightly-proposer-title">Model for parameter suggestions</h4>
+    <p id="nightly-proposer-description">Applies to all automatic benchmarks in this environment.</p>
+  </div>
+
+  @if (settings(); as state) {
+    <form (ngSubmit)="save()" aria-describedby="nightly-proposer-description">
+      <label>
+        Provider
+        <select name="provider" [ngModel]="provider()" (ngModelChange)="selectProvider($event)"
+          [disabled]="loading() || saving()">
+          <option value="local">Local</option>
+          <option value="logos_prod" [disabled]="!state.logos_prod && state.selection.provider !== 'logos_prod'">Logos PROD</option>
+        </select>
+      </label>
+      <label>
+        Model
+        <select name="model" [ngModel]="model()" (ngModelChange)="selectModel($event)"
+          [disabled]="loading() || saving() || !models().length">
+          <option value="" disabled>Select a model</option>
+          @if (model() && !models().includes(model())) {
+            <option [value]="model()" disabled>{{ model() }} (unavailable)</option>
+          }
+          @for (option of models(); track option) {
+            <option [value]="option">{{ option }}</option>
+          }
+        </select>
+      </label>
+      <button type="submit" [disabled]="!canSave()">{{ saving() ? 'Saving…' : 'Save' }}</button>
+    </form>
+    @if (provider() === 'logos_prod' && !state.logos_prod?.available) {
+      <p role="status">Could not load models from Logos PROD. <button class="retry" type="button" (click)="load()" [disabled]="loading() || saving()">Retry</button></p>
+    } @else if (!models().length) {
+      <p role="status">No models are available from this provider.</p>
+    }
+  } @else if (loading()) {
+    <p role="status">Loading models…</p>
+  }
+  @if (error(); as message) {
+    <p role="alert">{{ message }}
+      @if (!settings()) {
+        <button class="retry" type="button" (click)="load()">Retry</button>
+      }
+    </p>
+  } @else if (saved()) {
+    <p role="status">Saved for future parameter suggestions.</p>
+  }
+</section>

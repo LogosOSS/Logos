@@ -578,6 +578,9 @@
           @if (deployedPairs().length) {
             <section class="nightly-overview" aria-labelledby="nightly-rotation-heading">
               <h3 id="nightly-rotation-heading"><i class="pi pi-moon" aria-hidden="true"></i> Automatic benchmarks</h3>
+              @if (performanceView() === 'results') {
+                <app-nightly-proposer-model />
+              }
               <div class="nightly-overview__workers">
                 @for (pair of deployedPairs(); track pair.model_provider_id) {
                   <app-nightly-benchmarks [pairId]="pair.model_provider_id" [providerName]="pair.provider_name"

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+ xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+ xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+ xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.20.xsd">
+ <changeSet id="107-nightly-proposer-model" author="logos">
+  <sql>
+   CREATE TABLE nightly_proposer_model (
+     singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton),
+     provider text NOT NULL CHECK (provider IN ('local', 'logos_prod')),
+     model text NOT NULL CHECK (length(model) BETWEEN 1 AND 255),
+     revision integer NOT NULL DEFAULT 1
+   );
+  </sql>
+  <rollback><sql>DROP TABLE nightly_proposer_model;</sql></rollback>
+ </changeSet>
+</databaseChangeLog>

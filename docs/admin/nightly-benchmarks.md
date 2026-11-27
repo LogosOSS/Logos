@@ -44,6 +44,17 @@ If the model has more than one worker, then select the worker under **Worker**.
 Use **Timeline** and **Currently deployed** to inspect the results for that worker.
 Open **Analysis → Inspect saved runs** to inspect individual saved measurements.
 
+## Model for parameter suggestions
+
+Under **Performance → Overview → Automatic benchmarks**, choose a **Provider** and **Model**, then select **Save**.
+The selection applies to all automatic benchmarks in the current Logos environment.
+
+- **Local** offers models available to the local agent identity. Logos uses an eligible worker already serving the selected model and excludes the worker being benchmarked.
+- **Logos PROD** offers models accessible to the configured PROD service key. Only candidate parameters, aggregate measurements, and GPU limits are sent for a suggestion. Benchmark requests run on the selected benchmark worker.
+
+If a suggestion is unavailable or invalid, Logos chooses the next candidate using its tuning rules.
+See [deployment requirements](../deployment.md#nightly-benchmarks) for setting a DEV or TEST default.
+
 ## Results
 
 **Benchmark runs** shows the run, model, changed parameters, measurement times and output throughput.
@@ -537,6 +548,8 @@ require the shared internal secret.
 
 | Webservice endpoint | Request |
 |---|---|
+| `POST /logosdb/model_benchmarks/nightly/proposer` | Returns the current selection and available models. |
+| `POST /logosdb/model_benchmarks/nightly/proposer/configure` | Saves `provider`, `model`, and the last-read `revision`. |
 | `POST /logosdb/model_benchmarks/nightly/overview` | No request body. Returns the next-window candidates and rotation states. |
 | `POST /logosdb/model_benchmarks/nightly/status` | `{ "model_provider_id": 31 }` |
 | `POST /logosdb/model_benchmarks/nightly/configure` | `{ "model_provider_id": 31, "enabled": true, "expected_enabled": false }` |

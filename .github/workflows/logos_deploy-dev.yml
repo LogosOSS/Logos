@@ -145,6 +145,7 @@ jobs:
           DEPLOY_SECRET_LOGOS_DB_PASSWORD: ${{ matrix.compose-file == './docker-compose.yaml' && secrets.LOGOS_DB_PASSWORD || '' }}
           DEPLOY_SECRET_LOGOS_DEPLOYER_KEY: ${{ matrix.compose-file == './docker-compose.yaml' && secrets.LOGOS_DEPLOYER_KEY || '' }}
           DEPLOY_SECRET_LOGOS_INTERNAL_SECRET: ${{ matrix.compose-file == './docker-compose.yaml' && secrets.LOGOS_INTERNAL_SECRET || '' }}
+          DEPLOY_SECRET_LOGOS_NIGHTLY_PROD_API_KEY: ${{ matrix.compose-file == './docker-compose.yaml' && secrets.LOGOS_NIGHTLY_PROD_API_KEY || '' }}
           DEPLOY_SECRET_LOGOS_REDIS_PASSWORD: ${{ matrix.compose-file == './docker-compose.yaml' && secrets.LOGOS_REDIS_PASSWORD || '' }}
           DEPLOY_SECRET_LOGOS_REPO_CREDENTIALS_KEY: ${{ matrix.compose-file == './docker-compose.yaml' && secrets.LOGOS_REPO_CREDENTIALS_KEY || '' }}
           DEPLOY_SECRET_PROMETHEUS_API_KEY: ${{ matrix.compose-file == './docker-compose.yaml' && secrets.PROMETHEUS_API_KEY || '' }}

@@ -342,6 +342,10 @@ See the [nightly benchmark guide](../admin/nightly-benchmarks.md) for rotation, 
 
 ![Nightly schedule ready to enable](../static/img/roles/logos-admin-nightly-enable.png)
 
+To change the model that proposes vLLM parameter values, use **Model for parameter suggestions** above the worker tiles.
+Choose **Local** or **Logos PROD**, choose a model, and select **Save**.
+This selection applies to every automatic benchmark in the current environment.
+
 The worker tile then shows **Enabled** with a green dot.
 The tile shows **Offline** if Logos cannot connect to the worker.
 The schedule stays active after a page reload.

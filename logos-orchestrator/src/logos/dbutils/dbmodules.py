@@ -593,6 +593,15 @@ class NightlyBenchmark(Base):
     updated_at = Column(TIMESTAMP(timezone=True))
 
 
+class NightlyProposerModel(Base):
+    __tablename__ = "nightly_proposer_model"
+
+    singleton = Column(Boolean, primary_key=True)
+    provider = Column(Text, nullable=False)
+    model = Column(Text, nullable=False)
+    revision = Column(Integer, nullable=False)
+
+
 class PermissionAuditLog(Base):
     """Read-only permission history written by Postgres triggers, without foreign keys."""
 

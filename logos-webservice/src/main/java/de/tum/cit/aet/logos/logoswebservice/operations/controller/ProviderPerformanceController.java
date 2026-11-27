@@ -201,6 +201,18 @@ public class ProviderPerformanceController {
         return nightlyResponse("window", body);
     }
 
+    @PostMapping("/model_benchmarks/nightly/proposer")
+    @PreAuthorize("hasAuthority('" + Role.Names.LOGOS_ADMIN + "')")
+    public ResponseEntity<?> nightlyProposerSettings() {
+        return nightlyResponse("proposer", Map.of());
+    }
+
+    @PostMapping("/model_benchmarks/nightly/proposer/configure")
+    @PreAuthorize("hasAuthority('" + Role.Names.LOGOS_ADMIN + "')")
+    public ResponseEntity<?> configureNightlyProposer(@RequestBody Map<String, Object> body) {
+        return nightlyResponse("proposer/configure", body);
+    }
+
     private ResponseEntity<?> nightlyResponse(String operation, Map<String, Object> body) {
         try {
             return orchestratorWorkerAdminClient.nightlyBenchmark(operation, body);
