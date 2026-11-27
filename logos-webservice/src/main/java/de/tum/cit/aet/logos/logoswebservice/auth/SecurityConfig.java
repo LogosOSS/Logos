@@ -4,6 +4,8 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 
+import de.tum.cit.aet.logos.logoswebservice.gateway.AgentInferenceRelayController;
+
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
@@ -91,6 +93,7 @@ public class SecurityConfig {
                 // also authenticated with the internal secret in the controller.
                 .requestMatchers(HttpMethod.POST, "/internal/notifications").permitAll()
                 .requestMatchers(HttpMethod.GET, "/internal/provider-spend/status").permitAll()
+                .requestMatchers(HttpMethod.POST, AgentInferenceRelayController.MESSAGES).permitAll()
                 // Per-replica StreamingResponseBody occupancy for the gateway
                 // concurrency benchmark. Counters only; not routed via Traefik.
                 .requestMatchers("/internal/gateway_relay_stats", "/internal/gateway_relay_stats/**")
@@ -265,6 +268,7 @@ public class SecurityConfig {
                     || "/internal/models_discovered".equals(path)
                     || "/internal/notifications".equals(path)
                     || "/internal/provider-spend/status".equals(path)
+                    || (HttpMethod.POST.matches(request.getMethod()) && AgentInferenceRelayController.MESSAGES.equals(path))
                     || path.equals("/internal/gateway_relay_stats")
                     || path.startsWith("/internal/gateway_relay_stats/")
                     || path.startsWith("/deployments/deployer/")) {
