@@ -44,13 +44,17 @@ public interface TeamModelPermissionRepository
                t.name AS teamName,
                (tmp.model_id IS NOT NULL) AS modelGrant,
                mp.provider_id AS providerId,
-               (tpp.provider_id IS NOT NULL) AS providerGrant
+               (tpp.provider_id IS NOT NULL) AS providerGrant,
+               (effective.provider_id IS NOT NULL) AS deploymentAccess
         FROM teams t
         LEFT JOIN model_provider mp ON mp.model_id = :modelId
         LEFT JOIN team_model_permissions tmp
                ON tmp.team_id = t.id AND tmp.model_id = :modelId
         LEFT JOIN allowed_team_provider_grants tpp
                ON tpp.team_id = t.id AND tpp.provider_id = mp.provider_id
+        LEFT JOIN allowed_team_model_deployments effective
+               ON effective.team_id = t.id AND effective.model_id = :modelId
+              AND effective.provider_id = mp.provider_id
         ORDER BY t.id, mp.provider_id NULLS LAST
         """, nativeQuery = true)
     List<ModelAccessMatrixProjection> findModelAccessMatrix(@Param("modelId") Integer modelId);

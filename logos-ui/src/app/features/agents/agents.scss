@@ -1,4 +1,5 @@
 @use 'styles/glass' as *;
+@use 'agent-card';
 
 // ── Page shell ────────────────────────────────────────────────────────────
 .agents {
@@ -41,12 +42,7 @@
 }
 
 .section-count {
-  padding: 1px 8px;
-  border-radius: 8px;
-  font-size: var(--font-size-xs);
-  font-weight: var(--font-weight-semibold);
-  background: rgb(var(--color-outline-200) / var(--opacity-soft));
-  color: rgb(var(--color-typography-300));
+  @include agent-card.count;
 }
 
 // ── Status summary ────────────────────────────────────────────────────────
@@ -159,28 +155,7 @@
 
 // ── Cards ─────────────────────────────────────────────────────────────────
 .card {
-  @include glass-surface;
-  padding: 20px 24px;
-  margin-top: 20px;
-  min-width: 0;
-
-  &__head {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 12px;
-    margin-bottom: 16px;
-  }
-
-  &__title {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin: 0;
-    font-size: var(--font-size-lg);
-    font-weight: var(--font-weight-semibold);
-    color: rgb(var(--color-typography-0));
-  }
+  @include agent-card.base;
 
   &__subtitle {
     margin: 4px 0 0;
@@ -223,11 +198,7 @@
 }
 
 .field__hint {
-  display: block;
-  margin: 0;
-  font-size: var(--font-size-sm);
-  line-height: var(--line-height-normal);
-  color: rgb(var(--color-typography-700));
+  @include agent-card.hint;
 
   &--error {
     color: rgb(var(--color-error));
@@ -295,19 +266,7 @@
 }
 
 .link-btn {
-  padding: 0;
-  border: 0;
-  background: none;
-  font: inherit;
-  font-size: var(--font-size-sm);
-  font-weight: var(--font-weight-medium);
-  color: rgb(var(--color-text-accent));
-  cursor: pointer;
-  text-align: left;
-
-  &:disabled {
-    opacity: var(--opacity-disabled);
-  }
+  @include agent-card.link;
 }
 
 .form-actions {
@@ -844,56 +803,6 @@
     align-items: center;
     gap: 8px 12px;
     margin-top: 4px;
-  }
-}
-
-.workspace-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-
-.workspace {
-  display: flex;
-  align-items: center;
-  gap: 8px 10px;
-  min-height: 44px;
-  padding: 4px 0;
-  font-size: var(--font-size-md);
-  border-bottom: 1px solid rgb(var(--color-outline-200) / var(--opacity-border));
-
-  &:last-child {
-    border-bottom: 0;
-  }
-
-  &__icon {
-    color: rgb(var(--color-typography-700));
-  }
-
-  &__name {
-    font-weight: var(--font-weight-medium);
-    color: rgb(var(--color-typography-0));
-  }
-
-  &__branch {
-    flex: 1 1 auto;
-    white-space: nowrap;
-    color: rgb(var(--color-typography-700));
-    font-size: var(--font-size-sm);
-  }
-
-  &__busy {
-    min-width: 0;
-    max-width: 60%;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    font-size: var(--font-size-sm);
-    color: rgb(var(--color-typography-300));
-  }
-
-  .link-btn.workspace__busy {
-    color: rgb(var(--color-text-accent));
   }
 }
 

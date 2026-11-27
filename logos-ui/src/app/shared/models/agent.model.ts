@@ -33,6 +33,11 @@ export interface AgentWorkspace {
   active_sessions: number;
 }
 
+export interface AgentWorkspaceStorage {
+  artifact_filesystem: { total_bytes: number; available_bytes: number } | null;
+  workspace_used_bytes: Record<number, number | null>;
+}
+
 export interface AgentSession {
   id: number;
   workspace_id: number;

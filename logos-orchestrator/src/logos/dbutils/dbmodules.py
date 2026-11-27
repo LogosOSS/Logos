@@ -197,6 +197,8 @@ class ModelProvider(Base):
 
     api_key = Column(Text, nullable=True, default=None)
     endpoint = Column(Text, nullable=True, default=None)
+    azure_synced_endpoint = Column(Text, nullable=True)
+    azure_synced_provider_url = Column(Text, nullable=True)
     __table_args__ = (UniqueConstraint("model_id", "provider_id", name="uq_model_provider_mapping"),)
 
     provider = relationship("Provider")
@@ -341,6 +343,7 @@ class TeamProviderPermission(Base):
     __tablename__ = "team_provider_permissions"
     team_id = Column(Integer, ForeignKey("teams.id", ondelete="CASCADE"), primary_key=True)
     provider_id = Column(Integer, ForeignKey("providers.id", ondelete="CASCADE"), primary_key=True)
+    auto_azure_models = Column(Boolean, nullable=False, server_default="false")
 
 
 class TeamProviderBudget(Base):

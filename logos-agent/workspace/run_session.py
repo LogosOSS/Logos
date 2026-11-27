@@ -1700,6 +1700,8 @@ def run_snapshot(result: Result) -> None:
     )
     result.data["candidate_paths"] = [path for path in process.stdout.split("\0") if path]
     result.data["candidate_tree"] = run(["git", "write-tree"], cwd=CHECKOUT, quiet=True).stdout.strip()
+    if not result.data["candidate_paths"]:
+        result.data["comparison_tree"] = _ref_sha(f"{comparison}^{{tree}}")
 
 
 def _draft_existing_pull_request(branch: str) -> None:

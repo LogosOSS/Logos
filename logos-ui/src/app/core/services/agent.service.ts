@@ -12,6 +12,7 @@ import {
   AgentSession,
   AgentTriggers,
   AgentWorkspace,
+  AgentWorkspaceStorage,
   CreateSessionRequest,
   SessionMessages,
 } from '../../shared/models/agent.model';
@@ -25,6 +26,10 @@ export class AgentService {
   // ── workspaces ───────────────────────────────────────────────────────────
   getWorkspaces(): Promise<AgentWorkspace[]> {
     return firstValueFrom(this.http.get<AgentWorkspace[]>(`${AgentService.BASE}/workspaces`));
+  }
+
+  getWorkspaceStorage(): Promise<AgentWorkspaceStorage> {
+    return firstValueFrom(this.http.get<AgentWorkspaceStorage>(`${AgentService.BASE}/workspace-storage`));
   }
 
   createWorkspace(name: string, baseBranch: string): Promise<AgentWorkspace> {

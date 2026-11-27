@@ -52,6 +52,15 @@ public class PermissionController {
         return ResponseEntity.ok(permissionService.getPermissionCatalog(permissionService.teamForKey(keyId)));
     }
 
+    @GetMapping("/api-keys/{keyId}/effective-model-deployments")
+    @PreAuthorize("hasAnyAuthority('" + Role.Names.LOGOS_ADMIN + "', '" + Role.Names.APP_ADMIN + "')")
+    public ResponseEntity<?> getEffectiveModelDeployments(
+            @PathVariable Integer keyId,
+            @RequestAttribute("authContext") AuthContext auth) {
+        enforceKeyAccess(keyId, auth);
+        return ResponseEntity.ok(permissionService.getEffectiveModelDeployments(keyId));
+    }
+
     @GetMapping("/api-keys/{keyId}/model-permissions")
     @PreAuthorize("hasAnyAuthority('" + Role.Names.LOGOS_ADMIN + "', '" + Role.Names.APP_ADMIN + "')")
     public ResponseEntity<?> getApiKeyModelPermissions(
@@ -136,6 +145,26 @@ public class PermissionController {
         permissionService.setTeamProviderPermissions(teamId, body.providerIds());
         return ResponseEntity.ok(Map.of("result", "Team provider permissions updated"));
     }
+
+    @GetMapping("/teams/{teamId}/azure-model-auto-access")
+    @PreAuthorize("hasAuthority('" + Role.Names.LOGOS_ADMIN + "')")
+    public ResponseEntity<?> getTeamAzureAutoAccess(@PathVariable Integer teamId) {
+        return ResponseEntity.ok(permissionService.getTeamAzureAutoAccess(teamId));
+    }
+
+    @PutMapping("/teams/{teamId}/azure-model-auto-access/{providerId}")
+    @PreAuthorize("hasAuthority('" + Role.Names.LOGOS_ADMIN + "')")
+    public ResponseEntity<?> setTeamAzureAutoAccess(
+            @PathVariable Integer teamId, @PathVariable Integer providerId,
+            @RequestBody AzureAutoAccessRequest body) {
+        if (body.enabled() == null) {
+            return ResponseEntity.badRequest().body(Map.of("error", "enabled is required"));
+        }
+        permissionService.setTeamAzureAutoAccess(teamId, providerId, body.enabled());
+        return ResponseEntity.noContent().build();
+    }
+
+    public record AzureAutoAccessRequest(Boolean enabled) {}
 
     /**
      * One-click repair from the model access page: atomically adds a single

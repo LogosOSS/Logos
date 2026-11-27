@@ -249,7 +249,8 @@ capturing.
 
    The seed creates: team **Logos** with the three users as members; developer
    + application keys with rate-limit settings; cloud + local-looking
-   providers and three models (capabilities, aliases, prices); policies;
+   providers and three models (capabilities, aliases, prices), plus one model
+   automatically allowed through Azure only; policies;
    priced `log_entry` rows (billing + statistics + My Workspace usage bars);
    one `in_progress` and one `completed` batch; agent workspaces/sessions;
    the linked repository `docs-example/sample-app` with the coding agent,
@@ -379,7 +380,7 @@ flows use a **concept** name (no role prefix); role-only list pages keep the
 | `team-detail-deprecated-models.png` | owner | `/teams/<id>` — **Overview**, after a Logos Admin marks the seeded `llama-3.1-8b-instruct` model deprecated in the isolated docs stack | `roles/app-admin.md#overview` |
 | `team-members-csv.png` | `alexandra.szuminska` | **Members → Import CSV**, file mapped and existing team selected | `roles/app-admin.md#members` |
 | `team-detail-members.png` | same | `/teams/<id>` — **Members** | same |
-| `team-detail-application-keys.png` | owner or `logos_admin` | `/teams/<id>` — **Application Keys** | same |
+| `team-detail-application-keys.png` | owner or `logos_admin` | `/teams/<id>` — **Application Keys**, **Show permissions** for a default key | same |
 | `team-detail-repositories.png` | owner or `logos_admin` | `/teams/<id>` — **Repositories** | same |
 | `team-detail-repository-agent.png` | same | `/teams/<id>` — **Repositories → Edit**, coding agent enabled and automatic workflow analysis off | `roles/app-admin.md#enable-the-coding-agent` |
 | `team-detail-workflows.png` | owner or `logos_admin` | `/teams/<id>` — **Workflows** | same |
@@ -388,6 +389,7 @@ flows use a **concept** name (no role prefix); role-only list pages keep the
 | `team-detail-cloud-usage.png` | owner or `logos_admin` | `/teams/<id>` — **Cloud Usage** | same |
 | `team-detail-settings.png` | owner or `logos_admin` | `/teams/<id>` — **Settings** | same |
 | `team-detail-providers.png` | `tobias.wasner` (`logos_admin` only) | `/teams/<id>` — **Providers** | `roles/logos-admin.md#teams` |
+| `logos-admin-model-details-access.png` | `tobias.wasner` (`logos_admin` only) | `/models/<id>/details?tab=access` — **Access**, with the Azure auto provider label | `roles/logos-admin.md#access` |
 | `app-admin-my-workspace.png` | `alexandra.szuminska` | `/my-workspace` | `roles/app-admin.md` |
 | `batches.png` | any admin role | `/batches` | `roles/app-admin.md#batches` (Logos Admin links) |
 | `app-developer-models.png` | `henriette.huhn` | `/models` | `roles/app-developer.md` |

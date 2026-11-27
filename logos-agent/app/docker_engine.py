@@ -95,6 +95,23 @@ async def volume_mountpoint(name: str) -> str:
     return mountpoint
 
 
+async def volume_usage_bytes() -> dict[str, int | None]:
+    """Return Docker's logical volume sizes, with unknown entries kept as None."""
+    response = await _request("GET", "/system/df", params={"type": "volume"})
+    payload = response.json()
+    rows = payload.get("Volumes") if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        return {}
+    sizes: dict[str, int | None] = {}
+    for row in rows:
+        if not isinstance(row, dict) or not isinstance(row.get("Name"), str):
+            continue
+        data = row.get("UsageData")
+        size = data.get("Size") if isinstance(data, dict) else None
+        sizes[row["Name"]] = size if type(size) is int and size >= 0 else None
+    return sizes
+
+
 async def remove_volume(name: str, *, force: bool = False) -> None:
     try:
         await _request("DELETE", f"/volumes/{name}", params={"force": str(force).lower()})
