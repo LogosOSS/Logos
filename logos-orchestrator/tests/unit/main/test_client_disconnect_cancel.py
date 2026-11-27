@@ -456,7 +456,9 @@ async def test_cancel_during_lane_resolution_or_after_execution_handoff(monkeypa
     monkeypatch.setattr(main, "_check_budget_if_cloud", MagicMock())
     monkeypatch.setattr(main, "route_and_execute", route)
     monkeypatch.setattr(main, "DBManager", db_factory)
-    task = asyncio.create_task(main._execute_cancelling_on_disconnect(_Client(leaves=False), log_id=42, request_id=request_id))
+    task = asyncio.create_task(
+        main._execute_cancelling_on_disconnect(_Client(leaves=False), log_id=42, request_id=request_id)
+    )
     await asyncio.wait_for(entered.wait(), timeout=1)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
