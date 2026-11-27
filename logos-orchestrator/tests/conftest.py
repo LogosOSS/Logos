@@ -220,13 +220,15 @@ sa = _make_module(
         "inspect": _noop,
     },
 )
+_SQLAlchemyError = type("SQLAlchemyError", (Exception,), {})
 sa_exc = _make_submodule(
     sa,
     "exc",
     {
-        "ProgrammingError": type("ProgrammingError", (Exception,), {}),
-        "IntegrityError": type("IntegrityError", (Exception,), {}),
-        "OperationalError": type("OperationalError", (Exception,), {}),
+        "SQLAlchemyError": _SQLAlchemyError,
+        "ProgrammingError": type("ProgrammingError", (_SQLAlchemyError,), {}),
+        "IntegrityError": type("IntegrityError", (_SQLAlchemyError,), {}),
+        "OperationalError": type("OperationalError", (_SQLAlchemyError,), {}),
     },
 )
 sa_orm = _make_submodule(
@@ -362,12 +364,7 @@ def _sync_write_queue():
 
 @pytest.fixture(autouse=True)
 def _uncapped_cloud_by_default(monkeypatch):
-    """Cloud forwarding unit tests have no Java accounting service."""
-    import httpx
-
+    """Cloud tests without a Java service start with a healthy uncapped lease."""
     from logos.billing import provider_spend
 
-    async def uncapped(operation, body):
-        return httpx.Response(200, json={"attempt_id": None}, request=httpx.Request("POST", "http://ledger.test"))
-
-    monkeypatch.setattr(provider_spend, "_call", uncapped)
+    monkeypatch.setattr(provider_spend, "_snapshot", provider_spend.SpendSnapshot(frozenset(), float("inf")))

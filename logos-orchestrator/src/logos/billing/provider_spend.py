@@ -1,50 +1,40 @@
-"""The orchestrator asks the Java ledger before its existing provider I/O.
+"""Refresh the monthly cloud spend gate without I/O on the inference path."""
 
-Only the shape of a potential text request travels to the ledger: no prompt
-text, user identifier or upstream authorization header is necessary to bound it.
-"""
-
+import asyncio
 import logging
 import os
-import uuid
+from contextlib import asynccontextmanager, suppress
+from dataclasses import dataclass
+from time import monotonic
 from urllib.parse import urlsplit
 
 import httpx
 from fastapi import HTTPException
+from sqlalchemy.exc import SQLAlchemyError
+
+from logos.dbutils.dbmanager import DBManager
 
 logger = logging.getLogger(__name__)
-
-_FIELDS = frozenset("""model messages max_tokens max_completion_tokens max_output_tokens
-    stream stream_options temperature top_p stop n timeout_s service_tier
-    frequency_penalty presence_penalty seed user reasoning_effort system
-    stop_sequences top_k input instructions role content name type text""".split())
-_META = {"type", "model"}
-_POSITIVE_INTEGERS = {"max_tokens", "max_completion_tokens", "max_output_tokens", "n"}
+_REFRESH_INTERVAL_SECONDS = 1
+_MAX_VALIDITY_MS = 5_000
+_POLICY_ONLY_VALIDITY_SECONDS = 4
 
 
-def _shape(value, field="", depth=0):
-    if depth > 8:
-        return {"unsupported": None}
-    if isinstance(value, dict):
-        result = {}
-        for key, item in value.items():
-            if key not in _FIELDS:
-                result["unsupported"] = None
-            else:
-                result[key] = _shape(item, key, depth + 1)
-        return result
-    if isinstance(value, list):
-        return [_shape(item, field, depth + 1) for item in value] if field in {"messages", "content"} else []
-    if isinstance(value, str):
-        if field == "model":
-            return value if len(value) <= 200 else ""
-        return value if field in _META and value == "text" else ""
-    if field in _POSITIVE_INTEGERS:
-        return value if type(value) is int and 0 < value <= 2**31 - 1 else None
-    return None
+@dataclass(frozen=True)
+class SpendSnapshot:
+    blocked_ids: frozenset[int]
+    expires_at: float
+    unknown_ids: frozenset[int] | None = None
 
 
-async def _call(operation: str, body: dict) -> httpx.Response:
+_snapshot: SpendSnapshot | None = None
+
+
+def _valid_provider_id(value: object) -> bool:
+    return type(value) is int and 0 < value < 2**31
+
+
+def _endpoint() -> tuple[str, str]:
     base = os.getenv("LOGOS_WEBSERVICE_URL", "").rstrip("/")
     secret = os.getenv("LOGOS_INTERNAL_SECRET", "")
     target = urlsplit(base)
@@ -54,64 +44,99 @@ async def _call(operation: str, body: dict) -> httpx.Response:
         or target.username is not None
         or target.query
         or target.fragment
-        or not secret
+        or not secret.strip()
     ):
-        raise RuntimeError("Provider spend ledger is not configured")
-    async with httpx.AsyncClient(timeout=5, follow_redirects=False, trust_env=False) as client:
-        return await client.post(
-            f"{base}/internal/provider-spend/{operation}", headers={"Authorization": f"Bearer {secret}"}, json=body
-        )
+        raise ValueError("Provider spend gate is not configured")
+    return f"{base}/internal/provider-spend/status", secret
 
 
-async def reserve(
-    provider_id: int,
-    model_id: int | None = None,
-    *,
-    url: str = "",
-    payload: dict | None = None,
-) -> uuid.UUID | None:
-    """Reserve against the final cloud provider, or fail before upstream I/O."""
-    try:
-        response = await _call(
-            "reserve",
-            {"provider_id": provider_id, "model_id": model_id, "upstream_url": url or None, "shape": _shape(payload)},
-        )
-        if response.status_code == 402:
-            raise HTTPException(402, "Provider monthly spend limit reached")
-        if response.status_code == 422:
-            raise HTTPException(422, "Request cost cannot be bounded under this provider's monthly spend limit")
-        response.raise_for_status()
-        attempt = response.json()["attempt_id"]
-        return None if attempt is None else uuid.UUID(attempt)
-    except HTTPException:
-        raise
-    except (httpx.HTTPError, KeyError, ValueError, RuntimeError, TypeError, AttributeError) as exc:
-        logger.warning("Could not check provider spend cap for provider %s: %s", provider_id, type(exc).__name__)
-        raise HTTPException(503, "Provider monthly spend limit is unavailable") from exc
+async def _refresh(client: httpx.AsyncClient) -> None:
+    global _snapshot
+    url, secret = _endpoint()
+    started = monotonic()
+    response = await client.get(url, headers={"Authorization": f"Bearer {secret}"})
+    response.raise_for_status()
+    body = response.json()
+    if not isinstance(body, dict):
+        raise ValueError("Invalid provider spend status")
+    blocked = body.get("blocked_provider_ids")
+    validity = body.get("valid_for_ms")
+    if (
+        not isinstance(blocked, list)
+        or not all(_valid_provider_id(value) for value in blocked)
+        or type(validity) is not int
+        or not 0 <= validity <= _MAX_VALIDITY_MS
+    ):
+        raise ValueError("Invalid provider spend status fields")
+
+    # Network time consumes the lease; a slow response cannot renew stale data.
+    expires_at = started + validity / 1_000
+    if monotonic() >= expires_at:
+        raise ValueError("Provider spend status already expired")
+    _snapshot = SpendSnapshot(frozenset(blocked), expires_at)
 
 
-async def settle(attempt_id: uuid.UUID | None, usage: dict, service_tier: str | None) -> None:
-    """Record the price only when the response has complete, nonestimated usage."""
-    if attempt_id is None or "usage_estimated" in usage:
+def _read_active_policy_ids() -> frozenset[int]:
+    with DBManager() as db:
+        return db.get_active_provider_spend_policy_ids()
+
+
+async def _refresh_policies_if_needed() -> None:
+    global _snapshot
+    now = monotonic()
+    if _snapshot is not None and _snapshot.unknown_ids is None and now < _snapshot.expires_at:
         return
-    if not all(type(usage.get(name)) is int and usage[name] >= 0 for name in ("prompt_tokens", "completion_tokens")):
-        return
-    await _settle(
-        attempt_id,
-        {"attempt_id": str(attempt_id), "usage": usage, "tier": service_tier, "undispatched": False},
-    )
+    # Without a live spend snapshot, verified uncapped providers can still
+    # operate. Active caps remain unknown and fail closed, never queried by a request.
+    active_ids = await asyncio.to_thread(_read_active_policy_ids)
+    _snapshot = SpendSnapshot(frozenset(), now + _POLICY_ONLY_VALIDITY_SECONDS, unknown_ids=active_ids)
 
 
-async def release_undispatched(attempt_id: uuid.UUID | None) -> None:
-    """Release only when the executor can prove it never started the send."""
-    if attempt_id is not None:
-        await _settle(attempt_id, {"attempt_id": str(attempt_id), "undispatched": True})
+async def _refresh_loop() -> None:
+    warned = False
+    async with httpx.AsyncClient(timeout=2, follow_redirects=False, trust_env=False) as client:
+        while True:
+            try:
+                await _refresh(client)
+                warned = False
+            except (httpx.HTTPError, ValueError, TypeError) as exc:
+                # Keep a valid former lease only until its original deadline.
+                if not warned:
+                    logger.warning("Could not refresh provider monthly spend status: %s", type(exc).__name__)
+                    warned = True
+                try:
+                    await _refresh_policies_if_needed()
+                except SQLAlchemyError:
+                    # Without verified policy information, do not admit any
+                    # cloud work from the stale (or absent) snapshot.
+                    pass
+            await asyncio.sleep(_REFRESH_INTERVAL_SECONDS)
 
 
-async def _settle(attempt_id: uuid.UUID, body: dict) -> None:
+@asynccontextmanager
+async def refreshing():
+    """Refresh spend status for this app process and clear it at shutdown."""
+    global _snapshot
+    _snapshot = None
+    task = asyncio.create_task(_refresh_loop())
     try:
-        (await _call("settle", body)).raise_for_status()
-    except (httpx.HTTPError, ValueError, RuntimeError, TypeError) as exc:
-        logger.warning(
-            "Provider spend attempt %s could not settle (%s); keeping reservation", attempt_id, type(exc).__name__
-        )
+        yield
+    finally:
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+        _snapshot = None
+
+
+async def check(provider_id: int) -> None:
+    """Use only the in-process lease; never wait or perform I/O in a request."""
+    snapshot = _snapshot
+    if (
+        not _valid_provider_id(provider_id)
+        or snapshot is None
+        or monotonic() >= snapshot.expires_at
+        or (snapshot.unknown_ids is not None and provider_id in snapshot.unknown_ids)
+    ):
+        raise HTTPException(503, "Provider monthly spend limit is unavailable")
+    if provider_id in snapshot.blocked_ids:
+        raise HTTPException(402, "Provider monthly spend limit reached")

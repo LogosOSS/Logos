@@ -1,103 +1,161 @@
-import json
-import uuid
-from pathlib import Path
+import asyncio
 
 import httpx
 import pytest
 from fastapi import HTTPException
+from sqlalchemy.exc import SQLAlchemyError
 
 from logos.billing import provider_spend
-from logos.billing.finalize import finalize_billing_inputs
-from logos.billing.provider_spend import _call as real_call
-from logos.live_stream import _usage_tokens_from_payload
 
 
-def response(status, json=None):
-    return httpx.Response(status, json=json, request=httpx.Request("POST", "http://ledger.test"))
+@pytest.fixture
+def endpoint(monkeypatch):
+    monkeypatch.setenv("LOGOS_WEBSERVICE_URL", "http://ledger.test:8081/")
+    monkeypatch.setenv("LOGOS_INTERNAL_SECRET", "local-test-secret")
 
 
-@pytest.mark.parametrize("status", [402, 422, 503, 401])
-async def test_reserve_fails_closed(monkeypatch, status):
-    async def call(operation, body):
-        assert operation == "reserve"
-        assert body["provider_id"] == 22
-        return response(status)
-
-    monkeypatch.setattr(provider_spend, "_call", call)
-    with pytest.raises(HTTPException) as exc:
-        await provider_spend.reserve(22)
-    assert exc.value.status_code == (status if status in {402, 422} else 503)
+def client_for(handler):
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
 
-async def test_reserve_sends_only_request_shape(monkeypatch):
-    attempt = uuid.uuid4()
-    url = "https://api.anthropic.com/v1/messages"
-
-    async def call(operation, body):
-        assert operation == "reserve"
-        assert body == {
-            "provider_id": 22,
-            "model_id": 33,
-            "upstream_url": url,
-            "shape": {
-                "model": "synthetic-20261001",
-                "messages": [{"role": "", "content": [{"type": "text", "text": ""}]}],
-                "system": "",
-                "user": "",
-                "max_tokens": 400,
-                "unsupported": None,
-            },
-        }
-        return response(200, {"attempt_id": str(attempt)})
-
-    monkeypatch.setattr(provider_spend, "_call", call)
-    payload = {
-        "model": "synthetic-20261001",
-        "messages": [{"role": "user", "content": [{"type": "text", "text": "SENSITIVE"}]}],
-        "system": "SENSITIVE",
-        "user": "SENSITIVE",
-        "max_tokens": 400,
-        "SENSITIVE FIELD": {"private": "SENSITIVE"},
-    }
-    assert await provider_spend.reserve(22, 33, url=url, payload=payload) == attempt
-
-
-@pytest.mark.parametrize("invalid", [{}, {"attempt_id": "invalid"}, [], None])
-async def test_unconfirmed_hold_is_not_admitted(monkeypatch, invalid):
-    async def call(operation, body):
-        return response(200, invalid)
-
-    monkeypatch.setattr(provider_spend, "_call", call)
+@pytest.mark.parametrize("provider_id", [None, -1, 0, 2**31, True, "22"])
+async def test_check_rejects_invalid_provider_id(provider_id):
     with pytest.raises(HTTPException, match="503"):
-        await provider_spend.reserve(22)
+        await provider_spend.check(provider_id)
 
 
-async def test_release_requires_no_dispatch_and_settle_requires_real_report(monkeypatch):
-    attempt = uuid.uuid4()
+async def test_unknown_and_expired_snapshot_fail_closed(monkeypatch):
+    monkeypatch.setattr(provider_spend, "_snapshot", None)
+    with pytest.raises(HTTPException, match="503"):
+        await provider_spend.check(22)
+
+    monkeypatch.setattr(provider_spend, "monotonic", lambda: 3)
+    monkeypatch.setattr(provider_spend, "_snapshot", provider_spend.SpendSnapshot(frozenset({22}), 3))
+    with pytest.raises(HTTPException, match="503"):
+        await provider_spend.check(22)
+
+
+async def test_warm_checks_do_not_fetch_and_allow_uncapped_providers(monkeypatch, endpoint):
     seen = []
 
-    async def call(operation, body):
-        seen.append((operation, body))
-        return response(200)
+    def handler(request):
+        seen.append((request.method, request.url.path, request.headers.get("Authorization"), request.content))
+        return httpx.Response(200, json={"blocked_provider_ids": [22], "valid_for_ms": 5_000})
 
-    monkeypatch.setattr(provider_spend, "_call", call)
-    reported = {"prompt_tokens": 5, "completion_tokens": 3}
-    await provider_spend.settle(None, reported, "flex")
-    await provider_spend.release_undispatched(None)
-    for unknown in (
-        {**reported, "usage_estimated": 1},
-        {"prompt_tokens": 5},
-        {"prompt_tokens": True, "completion_tokens": 3},
-        {"prompt_tokens": -5, "completion_tokens": 3},
-    ):
-        await provider_spend.settle(attempt, unknown, "flex")
-    assert seen == []
-    await provider_spend.settle(attempt, reported, "flex")
-    await provider_spend.release_undispatched(attempt)
-    assert seen == [
-        ("settle", {"attempt_id": str(attempt), "usage": reported, "tier": "flex", "undispatched": False}),
-        ("settle", {"attempt_id": str(attempt), "undispatched": True}),
-    ]
+    async with client_for(handler) as client:
+        await provider_spend._refresh(client)
+        for _ in range(100):
+            await provider_spend.check(23)
+            with pytest.raises(HTTPException, match="402"):
+                await provider_spend.check(22)
+
+    assert seen == [("GET", "/internal/provider-spend/status", "Bearer local-test-secret", b"")]
+
+
+async def test_slow_response_does_not_extend_snapshot_deadline(monkeypatch, endpoint):
+    clock = [10.0]
+    monkeypatch.setattr(provider_spend, "monotonic", lambda: clock[0])
+
+    def handler(request):
+        clock[0] = 11
+        return httpx.Response(200, json={"blocked_provider_ids": [], "valid_for_ms": 2_000})
+
+    async with client_for(handler) as client:
+        await provider_spend._refresh(client)
+    clock[0] = 11.999
+    await provider_spend.check(22)
+    clock[0] = 12
+    with pytest.raises(HTTPException, match="503"):
+        await provider_spend.check(22)
+
+
+async def test_zero_lease_fails_closed(monkeypatch, endpoint):
+    monkeypatch.setattr(provider_spend, "monotonic", lambda: 10)
+    monkeypatch.setattr(provider_spend, "_snapshot", None)
+    async with client_for(
+        lambda req: httpx.Response(200, json={"blocked_provider_ids": [], "valid_for_ms": 0})
+    ) as client:
+        with pytest.raises(ValueError, match="expired"):
+            await provider_spend._refresh(client)
+    with pytest.raises(HTTPException, match="503"):
+        await provider_spend.check(22)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        [],
+        {},
+        {"blocked_provider_ids": "22", "valid_for_ms": 1000},
+        {"blocked_provider_ids": [True], "valid_for_ms": 1000},
+        {"blocked_provider_ids": [0], "valid_for_ms": 1000},
+        {"blocked_provider_ids": [2**31], "valid_for_ms": 1000},
+        {"blocked_provider_ids": [], "valid_for_ms": True},
+        {"blocked_provider_ids": [], "valid_for_ms": 5001},
+        {"blocked_provider_ids": [], "valid_for_ms": -1},
+    ],
+)
+async def test_malformed_refresh_retains_previous_lease_without_extension(monkeypatch, endpoint, payload):
+    previous = provider_spend.SpendSnapshot(frozenset({22}), 30)
+    monkeypatch.setattr(provider_spend, "_snapshot", previous)
+    async with client_for(lambda req: httpx.Response(200, json=payload)) as client:
+        with pytest.raises(ValueError):
+            await provider_spend._refresh(client)
+    assert provider_spend._snapshot is previous
+
+
+@pytest.mark.parametrize("status", [301, 401, 404, 503])
+async def test_failed_fetch_cannot_install_snapshot(monkeypatch, endpoint, status):
+    monkeypatch.setattr(provider_spend, "_snapshot", None)
+    async with client_for(lambda req: httpx.Response(status)) as client:
+        with pytest.raises(httpx.HTTPError):
+            await provider_spend._refresh(client)
+    with pytest.raises(HTTPException, match="503"):
+        await provider_spend.check(22)
+
+
+async def test_policy_only_refresh_allows_only_verified_uncapped_providers(monkeypatch):
+    clock = [11]
+    lookups = []
+    previous = provider_spend.SpendSnapshot(frozenset({22}), 12)
+    monkeypatch.setattr(provider_spend, "_snapshot", previous)
+    monkeypatch.setattr(provider_spend, "monotonic", lambda: clock[0])
+
+    def policies():
+        lookups.append("lookup")
+        return frozenset({22})
+
+    monkeypatch.setattr(provider_spend, "_read_active_policy_ids", policies)
+    await provider_spend._refresh_policies_if_needed()
+    assert provider_spend._snapshot is previous
+    assert lookups == []
+
+    clock[0] = 12
+    await provider_spend._refresh_policies_if_needed()
+    for _ in range(100):
+        await provider_spend.check(23)
+        with pytest.raises(HTTPException, match="503"):
+            await provider_spend.check(22)
+    assert lookups == ["lookup"]
+    clock[0] = 13
+    await provider_spend._refresh_policies_if_needed()
+    assert lookups == ["lookup", "lookup"]
+    clock[0] = 17
+    with pytest.raises(HTTPException, match="503"):
+        await provider_spend.check(23)
+
+
+async def test_failed_policy_refresh_leaves_absent_state_closed(monkeypatch):
+    monkeypatch.setattr(provider_spend, "_snapshot", None)
+
+    def fail():
+        raise SQLAlchemyError("connection unavailable")
+
+    monkeypatch.setattr(provider_spend, "_read_active_policy_ids", fail)
+    with pytest.raises(SQLAlchemyError):
+        await provider_spend._refresh_policies_if_needed()
+    with pytest.raises(HTTPException, match="503"):
+        await provider_spend.check(23)
 
 
 @pytest.mark.parametrize(
@@ -112,112 +170,29 @@ async def test_release_requires_no_dispatch_and_settle_requires_real_report(monk
         ("http://ledger.test", ""),
     ],
 )
-async def test_endpoint_configuration_fails_closed_before_opening_a_connection(monkeypatch, base, secret):
+async def test_bad_endpoint_configuration_cannot_open_a_connection(monkeypatch, base, secret):
     monkeypatch.setenv("LOGOS_WEBSERVICE_URL", base)
     monkeypatch.setenv("LOGOS_INTERNAL_SECRET", secret)
-    monkeypatch.setattr(provider_spend, "_call", real_call)
-    with pytest.raises(HTTPException) as exc:
-        await provider_spend.reserve(22)
-    assert exc.value.status_code == 503
+    async with client_for(lambda req: pytest.fail("Invalid configuration must not begin a fetch")) as client:
+        with pytest.raises(ValueError):
+            await provider_spend._refresh(client)
 
 
-async def test_internal_wire_uses_only_configured_client_and_routes(monkeypatch):
-    seen = []
-    attempt = uuid.uuid4()
+async def test_lifespan_refresh_runs_in_background_and_cleans_up(monkeypatch):
+    entered = asyncio.Event()
+    stopped = asyncio.Event()
 
-    def handler(request):
-        seen.append((request.url.path, request.headers.get("Authorization"), request.content))
-        if request.url.path.endswith("/reserve"):
-            return httpx.Response(200, json={"attempt_id": str(attempt)})
-        return httpx.Response(200)
+    async def loop():
+        try:
+            entered.set()
+            await asyncio.Future()
+        finally:
+            stopped.set()
 
-    real_client = httpx.AsyncClient
-
-    def client(**settings):
-        assert settings == {"timeout": 5, "follow_redirects": False, "trust_env": False}
-        return real_client(transport=httpx.MockTransport(handler), **settings)
-
-    monkeypatch.setenv("LOGOS_WEBSERVICE_URL", "http://ledger.test:8081/")
-    monkeypatch.setenv("LOGOS_INTERNAL_SECRET", "local-test-secret")
-    monkeypatch.setattr(provider_spend, "_call", real_call)
-    monkeypatch.setattr(provider_spend.httpx, "AsyncClient", client)
-    assert (
-        await provider_spend.reserve(
-            22,
-            3,
-            url="https://api.openai.com/v1/responses",
-            payload={"model": "fixture-revision", "input": "private prompt", "max_output_tokens": 10},
-        )
-        == attempt
-    )
-    zero = _settlement_fixture("zero-usage")
-    usage = _usage_tokens_from_payload(zero["response"], zero["request"], zero["path"], billable_request=False)
-    assert usage == zero["usage"]
-    await provider_spend.settle(attempt, usage, None)
-    await provider_spend.release_undispatched(attempt)
-
-    assert [path for path, _, _ in seen] == [
-        "/internal/provider-spend/reserve",
-        "/internal/provider-spend/settle",
-        "/internal/provider-spend/settle",
-    ]
-    assert {auth for _, auth, _ in seen} == {"Bearer local-test-secret"}
-    assert b"private prompt" not in seen[0][2]
-    assert json.loads(seen[1][2]) == {
-        "attempt_id": str(attempt),
-        "usage": zero["usage"],
-        "tier": None,
-        "undispatched": False,
-    }
-    assert b"Synthetic failure" not in seen[1][2]
-    assert b"Question?" not in seen[1][2]
-
-
-async def test_settlement_connection_failure_does_not_release_or_retry(monkeypatch, caplog):
-    checked = []
-
-    async def call(operation, body):
-        checked.append((operation, body))
-        raise httpx.ConnectError("synthetic connection failure")
-
-    monkeypatch.setattr(provider_spend, "_call", call)
-    await provider_spend.settle(uuid.uuid4(), {"prompt_tokens": 8, "completion_tokens": 1}, "flex")
-    assert [operation for operation, _ in checked] == ["settle"]
-    assert checked[0][1]["undispatched"] is False
-    assert "keeping reservation" in caplog.text
-
-
-def test_request_shape_fences_nested_or_oversized_unknown_metadata():
-    nested = {"text": "not carried"}
-    for _ in range(9):
-        nested = {"stream_options": nested}
-    response = provider_spend._shape(
-        {
-            "model": "x" * 201,
-            "messages": [{"role": "user", "content": [{"type": "image", "text": "not carried"}]}],
-            "max_tokens": 2**31,
-            "n": True,
-            "stream_options": nested,
-        }
-    )
-    assert response["model"] == ""
-    assert response["max_tokens"] is None
-    assert response["n"] is None
-    assert response["messages"] == [{"role": "", "content": [{"type": "", "text": ""}]}]
-    assert "unsupported" in str(response["stream_options"])
-    assert "not carried" not in str(response)
-
-
-def _settlement_fixture(suffix: str) -> dict:
-    fixture = (
-        Path(__file__).resolve().parents[4]
-        / f"logos-webservice/src/test/resources/fixtures/provider-spend-orchestrator-{suffix}.json"
-    )
-    return json.loads(fixture.read_text(encoding="utf-8"))
-
-
-def test_gateway_settlement_fixture_uses_real_orchestrator_finalized_usage():
-    data = _settlement_fixture("usage")
-    usage, tier = finalize_billing_inputs(data["request"], data["response"], data["path"])
-    assert usage == data["usage"]
-    assert tier is None
+    monkeypatch.setattr(provider_spend, "_refresh_loop", loop)
+    async with provider_spend.refreshing():
+        await asyncio.wait_for(entered.wait(), timeout=1)
+        with pytest.raises(HTTPException, match="503"):
+            await provider_spend.check(22)
+    assert stopped.is_set()
+    assert provider_spend._snapshot is None

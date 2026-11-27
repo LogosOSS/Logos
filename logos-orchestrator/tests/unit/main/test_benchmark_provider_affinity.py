@@ -612,7 +612,7 @@ async def test_cloud_admission_io_does_not_hold_the_lock_and_resumes_with_confli
             entered.set()
             await release_first.wait()
 
-    monkeypatch.setattr(internal_mod.provider_spend, "reserve", check)
+    monkeypatch.setattr(internal_mod.provider_spend, "check", check)
     data = main.InternalBenchmarkRequest(model_provider_id=31, samples=5)
     request = MagicMock(headers={"authorization": "Bearer internal-secret"})
     first = asyncio.create_task(internal_mod.internal_run_model_benchmark(data, request))
@@ -640,7 +640,7 @@ async def test_cloud_benchmark_does_not_use_an_admission_for_a_changed_target(mo
         assert not guard.lock.locked()
         target["provider_id"] = 21
 
-    monkeypatch.setattr(internal_mod.provider_spend, "reserve", check)
+    monkeypatch.setattr(internal_mod.provider_spend, "check", check)
     data = main.InternalBenchmarkRequest(model_provider_id=31, samples=5)
     request = MagicMock(headers={"authorization": "Bearer internal-secret"})
     with pytest.raises(main.HTTPException) as error:

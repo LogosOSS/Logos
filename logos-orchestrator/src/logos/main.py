@@ -787,26 +787,27 @@ async def lifespan(app: FastAPI):
     # abort loudly instead of scheduling around them.
     _assert_no_ollama_typed_providers()
 
-    # Start Pipeline
-    await start_pipeline()
+    async with provider_spend.refreshing():
+        # Start Pipeline
+        await start_pipeline()
 
-    # Start gRPC server
-    global _grpc_server
-    _grpc_server = grpc.aio.server()
-    model_pb2_grpc.add_LogosServicer_to_server(LogosServicer(_pipeline), _grpc_server)
-    _grpc_server.add_insecure_port("[::]:50051")
-    await _grpc_server.start()
+        # Start gRPC server
+        global _grpc_server
+        _grpc_server = grpc.aio.server()
+        model_pb2_grpc.add_LogosServicer_to_server(LogosServicer(_pipeline), _grpc_server)
+        _grpc_server.add_insecure_port("[::]:50051")
+        await _grpc_server.start()
 
-    # A client may fire a batch and never poll it to completion. Without this
-    # pass its cost would never be booked, so the ledger would understate what
-    # the provider actually charged.
-    global _batch_reconciler_task, _local_batch_runner_task
-    _batch_reconciler_task = asyncio.create_task(batch_reconciler_loop())
-    # Batches Logos runs itself: started here, and picked up again after a
-    # restart that interrupted one mid-file.
-    _local_batch_runner_task = asyncio.create_task(local_batch_runner_loop())
+        # A client may fire a batch and never poll it to completion. Without this
+        # pass its cost would never be booked, so the ledger would understate what
+        # the provider actually charged.
+        global _batch_reconciler_task, _local_batch_runner_task
+        _batch_reconciler_task = asyncio.create_task(batch_reconciler_loop())
+        # Batches Logos runs itself: started here, and picked up again after a
+        # restart that interrupted one mid-file.
+        _local_batch_runner_task = asyncio.create_task(local_batch_runner_loop())
 
-    yield
+        yield
 
     # Shutdown logic: stop every background producer first — cancelling a
     # loop can still enqueue a final write on its way out — and only drain
@@ -1876,24 +1877,9 @@ def _is_effort_rejection_body(chunk: Any) -> bool:
     return text.lstrip().startswith("{") and parse_effort_rejection(text) is not None
 
 
-async def _reserve_cloud_attempt(context, provider_id: int, model_id: int, payload: dict, headers: dict):
-    if context.provider_type != "cloud":
-        return None
-    # Aliases are resolved by the scheduler. The billed identity must agree
-    # with the model sent upstream, including Azure deployment aliases.
-    expected = getattr(context, "azure_body_deployment", None) or getattr(context, "model_name", None)
-    bounded_payload = payload if expected and payload.get("model") == expected else None
-    # Beta/versioned features can change the documented ceilings. The
-    # orchestrator supplies the stable Anthropic API version itself.
-    versions = {name.lower(): value for name, value in headers.items()}
-    auth_header = getattr(context, "auth_header", None)
-    if (
-        (auth_header and auth_header.lower() not in {"authorization", "x-api-key"})
-        or versions.keys() & {"anthropic-beta", "openai-beta"}
-        or (versions.get("anthropic-version") is not None and versions["anthropic-version"] != "2023-06-01")
-    ):
-        bounded_payload = None
-    return await provider_spend.reserve(provider_id, model_id, url=context.forward_url, payload=bounded_payload)
+async def _check_cloud_spend(context, provider_id: int) -> None:
+    if context.provider_type == "cloud":
+        await provider_spend.check(provider_id)
 
 
 async def _streaming_response(
@@ -2284,9 +2270,12 @@ async def _streaming_response(
     # ── HTTP executor path ────────────────────────────────────────────────
     stream_status = StreamingExecutionStatus()
     try:
-        spend_attempt = await _reserve_cloud_attempt(context, provider_id, model_id, prepared_payload, headers)
+        await _check_cloud_spend(context, provider_id)
     except HTTPException as exc:
         return _pre_stream_error_response(exc.status_code, {"error": exc.detail}, exc.detail)
+    except asyncio.CancelledError:
+        _release()
+        raise
     chunk_iter = _pipeline.executor.execute_streaming(
         context.forward_url,
         headers,
@@ -2329,7 +2318,7 @@ async def _streaming_response(
             _record_sent_effort(request_id, prepared_payload)
             stream_status = StreamingExecutionStatus()
             try:
-                spend_attempt = await _reserve_cloud_attempt(context, provider_id, model_id, prepared_payload, headers)
+                await _check_cloud_spend(context, provider_id)
             except HTTPException as limit:
                 return _pre_stream_error_response(limit.status_code, {"error": limit.detail}, limit.detail)
             chunk_iter = _pipeline.executor.execute_streaming(
@@ -2357,13 +2346,9 @@ async def _streaming_response(
     except StopAsyncIteration:
         first_chunk = None
     except asyncio.CancelledError:
-        if stream_status.dispatch_at is None:
-            await provider_spend.release_undispatched(spend_attempt)
         _release()
         raise
     except Exception as exc:
-        if stream_status.dispatch_at is None:
-            await provider_spend.release_undispatched(spend_attempt)
         logger.error(
             "Pre-stream transport error from upstream (model_id=%s, provider_id=%s): %s: %s",
             model_id,
@@ -2580,8 +2565,6 @@ async def _streaming_response(
                 request_path or "",
                 billable_request=not failed,
             )
-            if stream_log.has_final_usage():
-                await provider_spend.settle(spend_attempt, usage_tokens, extract_service_tier(response_payload))
             if log_id:
                 with DBManager() as db:
                     db.set_response_payload(
@@ -2717,7 +2700,6 @@ async def _sync_response(
     api_key_id: Optional[int] = None,
 ):
     """Execute sync request and return response."""
-    spend_attempt = None
     from fastapi.responses import JSONResponse
 
     request_id = scheduling_stats.get("request_id") if scheduling_stats else None
@@ -2889,7 +2871,7 @@ async def _sync_response(
                     headers=None,
                 )
         else:
-            spend_attempt = await _reserve_cloud_attempt(context, provider_id, model_id, prepared_payload, headers)
+            await _check_cloud_spend(context, provider_id)
             exec_result = await _pipeline.executor.execute_sync(context.forward_url, headers, prepared_payload)
             # The effort rejection again (see the logosnode branch above): one
             # resend, whose dispatch and response instants are the ones kept.
@@ -2907,20 +2889,13 @@ async def _sync_response(
                 else None
             )
             if adapted is not None:
-                if spend_attempt is not None and exec_result.dispatch_at is not None:
-                    previous_usage = _usage_tokens_from_payload(
-                        exec_result.response, prepared_payload, request_path or "", billable_request=exec_result.success
-                    )
-                    await provider_spend.settle(
-                        spend_attempt, previous_usage, extract_service_tier(exec_result.response)
-                    )
                 logger.warning(
                     "Upstream rejected the reasoning effort for %s; resending once with it adapted",
                     getattr(context, "model_name", None),
                 )
                 prepared_payload = adapted
                 _record_sent_effort(request_id, prepared_payload)
-                spend_attempt = await _reserve_cloud_attempt(context, provider_id, model_id, prepared_payload, headers)
+                await _check_cloud_spend(context, provider_id)
                 exec_result = await _pipeline.executor.execute_sync(context.forward_url, headers, prepared_payload)
             # The executor captured both instants where they belong: the
             # dispatch after its request preparation (the multipart decode for
@@ -3011,11 +2986,6 @@ async def _sync_response(
             request_path or "",
             billable_request=exec_result.success,
         )
-
-        if not exec_result.success and exec_result.dispatch_at is None:
-            await provider_spend.release_undispatched(spend_attempt)
-        else:
-            await provider_spend.settle(spend_attempt, usage_tokens, extract_service_tier(response_payload))
 
         if log_id:
             _result_status = "timeout" if timed_out else ("success" if exec_result.success else "error")

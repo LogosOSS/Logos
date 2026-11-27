@@ -106,10 +106,10 @@ async def probe_deployment(
 
 
 async def _probe_admission_failure(provider: Dict[str, Any]) -> Optional[str]:
-    # A probe can execute before cancellation. Like forwarded batch creation,
-    # it has no proven cost bound and must not start under an active cap.
+    # A probe can execute before cancellation. Check spend before each
+    # chargeable stage; cancellation and deletion must always remain possible.
     try:
-        await provider_spend.reserve(int(provider["id"]))
+        await provider_spend.check(int(provider["id"]))
     except HTTPException as exc:
         return f"probe skipped by provider spend admission (HTTP {exc.status_code}): {exc.detail}"
     return None

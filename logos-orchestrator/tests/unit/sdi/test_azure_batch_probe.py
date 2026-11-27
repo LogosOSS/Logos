@@ -39,7 +39,7 @@ def uncapped_provider(monkeypatch):
     async def uncapped(_provider_id):
         return None
 
-    monkeypatch.setattr(azure_batch_probe.provider_spend, "reserve", uncapped)
+    monkeypatch.setattr(azure_batch_probe.provider_spend, "check", uncapped)
 
 
 def _client(handler, seen):
@@ -100,7 +100,7 @@ async def test_an_unrelated_refusal_is_inconclusive():
     assert "quota" in detail
 
 
-@pytest.mark.parametrize("status", [402, 422, 503])
+@pytest.mark.parametrize("status", [402, 503])
 async def test_admission_denial_skips_probe_before_any_upload_or_create(monkeypatch, status):
     checked = []
 
@@ -108,7 +108,7 @@ async def test_admission_denial_skips_probe_before_any_upload_or_create(monkeypa
         checked.append(provider_id)
         raise HTTPException(status, "Provider spend admission refused")
 
-    monkeypatch.setattr(azure_batch_probe.provider_spend, "reserve", reject)
+    monkeypatch.setattr(azure_batch_probe.provider_spend, "check", reject)
     seen = []
     async with _client(lambda _request: httpx.Response(500), seen) as client:
         answer, detail = await probe_deployment(PROVIDER, "batch-deployment", "responses", client)
@@ -122,12 +122,12 @@ async def test_admission_denial_skips_probe_before_any_upload_or_create(monkeypa
 async def test_admission_rechecks_before_create_and_allows_file_cleanup(monkeypatch):
     checked = []
 
-    async def reserve(provider_id):
+    async def check(provider_id):
         checked.append(provider_id)
         if len(checked) > 1:
             raise HTTPException(402, "Provider monthly spend limit reached")
 
-    monkeypatch.setattr(azure_batch_probe.provider_spend, "reserve", reserve)
+    monkeypatch.setattr(azure_batch_probe.provider_spend, "check", check)
     seen = []
     upstream = _upstream(lambda _request: pytest.fail("A denied probe must not create a batch"))
     async with _client(upstream, seen) as client:
@@ -143,7 +143,7 @@ async def test_cancellation_and_cleanup_do_not_pass_through_spend_admission(monk
     checked = []
     seen = []
 
-    async def reserve(provider_id):
+    async def check(provider_id):
         checked.append(provider_id)
         if len(checked) > 2:
             pytest.fail("Stopping work or deleting the probe file must not be gated on the cap")
@@ -153,7 +153,7 @@ async def test_cancellation_and_cleanup_do_not_pass_through_spend_admission(monk
             return httpx.Response(409)
         return _upstream(lambda _request: httpx.Response(200, json={"id": "batch_probe"}))(request)
 
-    monkeypatch.setattr(azure_batch_probe.provider_spend, "reserve", reserve)
+    monkeypatch.setattr(azure_batch_probe.provider_spend, "check", check)
     async with _client(upstream, seen) as client:
         answer, _ = await probe_deployment(PROVIDER, "batch-deployment", "responses", client)
 

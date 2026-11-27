@@ -797,10 +797,10 @@ async def internal_run_model_benchmark(data: InternalBenchmarkRequest, request: 
                     nightly_store.claim_benchmark(db, job_id, provider_id)
                 break
 
-        # A cloud benchmark can make multiple billable calls. Do not start an
-        # unbounded run under a cap. Repeat the synchronous checks after I/O:
+        # A cloud benchmark can make several billable calls. Check spend
+        # before starting it. Repeat the synchronous checks after I/O:
         # another start may have created a job or the deployment may have moved.
-        await provider_spend.reserve(provider_id)
+        await provider_spend.check(provider_id)
         checked_cloud_target = target_identity
 
     is_internal_worker_benchmark = provider_type == "logosnode"

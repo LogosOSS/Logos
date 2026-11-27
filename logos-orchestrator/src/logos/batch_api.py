@@ -738,9 +738,9 @@ async def forward_batch_operation(
 ) -> Response:
     """Forward one Batch API operation to the provider and pass the answer back."""
     if operation.is_batch_creation or operation.is_file_upload:
-        # The complete external job is admitted on creation. Until its
-        # provider can prove a full-job bound, do not create charged work.
-        await provider_spend.reserve(int(provider["id"]))
+        # Upload and creation can introduce chargeable work; polling and
+        # cleanup must remain available after the provider reaches its cap.
+        await provider_spend.check(int(provider["id"]))
     url = batch_operation_url(provider, operation)
     headers = batch_provider_headers(provider)
     _assert_secure_transport(provider, url, headers)
