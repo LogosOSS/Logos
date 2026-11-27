@@ -74,12 +74,16 @@ This tab shows the application (service) keys of the team. You can create,
 rotate and revoke keys. You can also set limits and model permissions for each
 key.
 
-![Team detail — Application Keys](/img/roles/team-detail-application-keys.png)
+Select **Show permissions** next to a key to see which models it can use and which providers serve each model.
+In **Members**, expand a developer key to see the same list.
+
+![Application Keys with the reachable models and providers expanded](/img/roles/team-detail-application-keys.png)
 
 #### API Key Model Permissions
 
 The model and provider permissions of the team are the default for the API
-keys of the team. Custom grants may include other catalog entries within the team’s privacy setting.
+keys of the team. Defaults also include synced Azure deployments when a [Logos Admin enables automatic access](logos-admin.md#teams) for the team and provider.
+Custom grants may include other catalog entries within the team’s privacy setting.
 
 | **Override Team Permissions** | Models and providers that the key can use |
 |-------------------------------|-------------------------------------------|

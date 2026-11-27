@@ -391,6 +391,33 @@ WHERE t.name = 'Logos'
   AND p.name IN ('Docs Cloud (EU)', 'Docs Local Worker')
 ON CONFLICT DO NOTHING;
 
+-- Shown in the Access matrix and expanded default key, with no manual model
+-- grant. Put it on a second allowed host to demonstrate pair scoping in docs.
+INSERT INTO models (name, weight_latency, weight_accuracy, weight_cost, weight_quality, tags, description)
+SELECT 'docs-azure-model', 0, 0, 0, 0, 'chat',
+       'Example Azure deployment. [docs-role-screenshots]'
+WHERE NOT EXISTS (SELECT 1 FROM models WHERE name = 'docs-azure-model');
+
+INSERT INTO model_provider (provider_id, model_id, endpoint, azure_synced_endpoint, azure_synced_provider_url)
+SELECT p.id, m.id,
+       CASE WHEN p.cloud_provider_type = 'azure' THEN 'docs-azure-model' END,
+       CASE WHEN p.cloud_provider_type = 'azure' THEN 'docs-azure-model' END,
+       CASE WHEN p.cloud_provider_type = 'azure' THEN p.base_url END
+FROM providers p
+CROSS JOIN models m
+WHERE p.name IN ('Docs Cloud (EU)', 'Docs Local Worker')
+  AND m.name = 'docs-azure-model'
+  AND m.description LIKE '%[docs-role-screenshots]'
+ON CONFLICT (provider_id, model_id) DO NOTHING;
+
+INSERT INTO team_azure_model_auto_access (team_id, provider_id)
+SELECT tpp.team_id, tpp.provider_id
+FROM team_provider_permissions tpp
+JOIN teams t ON t.id = tpp.team_id
+JOIN providers p ON p.id = tpp.provider_id
+WHERE t.name = 'Logos' AND p.name = 'Docs Cloud (EU)'
+ON CONFLICT DO NOTHING;
+
 INSERT INTO policies (
     name, description, threshold_privacy,
     threshold_latency, threshold_accuracy, threshold_cost, threshold_quality,

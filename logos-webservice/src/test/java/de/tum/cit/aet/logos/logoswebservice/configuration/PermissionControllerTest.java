@@ -58,6 +58,51 @@ class PermissionControllerTest {
     @MockitoBean JwtDecoder jwtDecoder;
 
     @Test
+    void azureAutoAccessIsAdminOnlyAndRequiresAnEligibleGrantedAzureProvider() throws Exception {
+        String list = "/admin/teams/2001/azure-model-auto-access";
+        String preference = list + "/6001";
+        mvc.perform(get(list).with(TestJwt.adminUser())).andExpect(status().isForbidden());
+        mvc.perform(put(preference).with(TestJwt.adminUser())
+                .contentType("application/json").content("{\"enabled\":true}"))
+            .andExpect(status().isForbidden());
+        mvc.perform(put(preference).with(TestJwt.logosAdmin())
+                .contentType("application/json").content("{}"))
+            .andExpect(status().isBadRequest());
+        jdbc.update("DELETE FROM team_provider_permissions WHERE team_id = 2001 AND provider_id = 6001");
+        mvc.perform(put(preference).with(TestJwt.logosAdmin())
+                .contentType("application/json").content("{\"enabled\":true}"))
+            .andExpect(status().isNotFound());
+
+        mvc.perform(post("/admin/teams/2001/provider-permissions/6001").with(TestJwt.logosAdmin()))
+            .andExpect(status().isOk());
+        mvc.perform(put(preference).with(TestJwt.logosAdmin())
+                .contentType("application/json").content("{\"enabled\":true}"))
+            .andExpect(status().isBadRequest());
+        jdbc.update("UPDATE providers SET cloud_provider_type = 'azure' WHERE id = 6001");
+        mvc.perform(get(list).with(TestJwt.logosAdmin()))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.length()").value(0));
+        mvc.perform(put(preference).with(TestJwt.logosAdmin())
+                .contentType("application/json").content("{\"enabled\":true}"))
+            .andExpect(status().isNoContent());
+        mvc.perform(get(list).with(TestJwt.logosAdmin()))
+            .andExpect(status().isOk()).andExpect(jsonPath("$[0]").value(6001));
+        mvc.perform(put(preference).with(TestJwt.logosAdmin())
+                .contentType("application/json").content("{\"enabled\":false}"))
+            .andExpect(status().isNoContent());
+        mvc.perform(get(list).with(TestJwt.logosAdmin()))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.length()").value(0));
+        mvc.perform(put(preference).with(TestJwt.logosAdmin())
+                .contentType("application/json").content("{\"enabled\":true}"))
+            .andExpect(status().isNoContent());
+        mvc.perform(delete("/admin/teams/2001/provider-permissions/6001").with(TestJwt.logosAdmin()))
+            .andExpect(status().isOk());
+        mvc.perform(post("/admin/teams/2001/provider-permissions/6001").with(TestJwt.logosAdmin()))
+            .andExpect(status().isOk());
+        mvc.perform(get(list).with(TestJwt.logosAdmin()))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.length()").value(0));
+    }
+
+    @Test
     void editingVisiblePermissionsPreservesStoredGrantsOutsideTeamPrivacy() throws Exception {
         jdbc.update("""
             INSERT INTO providers (id, name, provider_type, privacy_level, auth_name, auth_format)

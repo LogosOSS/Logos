@@ -19,12 +19,7 @@ describe('key permission rows', () => {
 
   beforeEach(() => {
     teamService = {
-      getAllProviders: vi.fn().mockResolvedValue([]),
-      getTeamProviderPermissions: vi.fn().mockResolvedValue([]),
-      getTeamModelPermissions: vi.fn().mockResolvedValue([]),
-      getProviderModels: vi.fn().mockResolvedValue([]),
-      getApiKeyProviderPermissions: vi.fn().mockResolvedValue([]),
-      getApiKeyModelPermissions: vi.fn().mockResolvedValue([]),
+      getKeyEffectiveModelDeployments: vi.fn().mockResolvedValue([]),
     };
     TestBed.configureTestingModule({
       providers: [
@@ -35,7 +30,7 @@ describe('key permission rows', () => {
     });
   });
 
-  it('expands an application key and loads the catalogue of its team', async () => {
+  it('expands an application key and loads the effective deployments for that key', async () => {
     const component = TestBed.runInInjectionContext(() => new AppKeysTabComponent());
     component.teamId = 7;
     const key = { id: 3, key_type: 'application' } as TeamApiKey;
@@ -45,7 +40,7 @@ describe('key permission rows', () => {
 
     component.onRowClick(rowClick(plainCell()), key);
     expect(component.keyPermissions.isExpanded(3)).toBe(true);
-    await vi.waitFor(() => expect(teamService['getTeamModelPermissions']).toHaveBeenCalledWith(7));
+    await vi.waitFor(() => expect(teamService['getKeyEffectiveModelDeployments']).toHaveBeenCalledWith(3));
   });
 
   it('expands the developer key of a member and ignores members without one', async () => {
@@ -61,8 +56,8 @@ describe('key permission rows', () => {
 
     component.onRowClick(rowClick(plainCell()), 21);
     expect(component.isExpanded(4)).toBe(true);
-    await vi.waitFor(() => expect(teamService['getTeamProviderPermissions']).toHaveBeenCalledWith(9));
-    await vi.waitFor(() => expect(component.keyPermissions.globalDataLoaded).toBe(true));
+    await vi.waitFor(() => expect(teamService['getKeyEffectiveModelDeployments']).toHaveBeenCalledWith(4));
+    await vi.waitFor(() => expect(component.isLoadingExpand(4)).toBe(false));
     expect(component.isLoadingExpand(4)).toBe(false);
     expect(component.getModelGroups(component.apiKeys[0])).toEqual([]);
   });

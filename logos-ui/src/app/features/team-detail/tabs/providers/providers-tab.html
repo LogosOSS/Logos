@@ -16,6 +16,10 @@
       }
     </div>
 
+    @if (autoAccessError()) {
+      <app-error-message [message]="autoAccessError()" />
+    }
+
     <app-data-table
       [columns]="['Provider', '']"
       gridCols="1fr 48px"
@@ -29,6 +33,18 @@
               <div class="provider-name">{{ p.name }}</div>
               @if (p.base_url) {
                 <div class="provider-url">{{ p.base_url }}</div>
+              }
+              @if (isAzure(p)) {
+                <label class="azure-auto-access">
+                  <input
+                    type="checkbox"
+                    [attr.aria-label]="'Auto-allow synced Azure models for ' + p.name"
+                    [checked]="azureAutoAccessIds().has(p.id)"
+                    [disabled]="!canEdit || updatingAutoAccess().has(p.id) || removing()"
+                    (change)="toggleAzureAutoAccess(p, $event)"
+                  />
+                  Auto-allow synced Azure models
+                </label>
               }
             </div>
             @if (canEdit) {

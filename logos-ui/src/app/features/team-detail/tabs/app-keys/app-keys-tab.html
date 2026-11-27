@@ -203,11 +203,13 @@
           @if (keyPermissions.isExpanded(key.id)) {
             <div class="expand-row" role="row">
               <div class="expand-inner" role="cell">
-                @if (keyPermissions.isLoadingExpand(key.id) || (!keyPermissions.globalDataLoaded && key.use_custom_permissions)) {
+                @if (keyPermissions.isLoadingExpand(key.id)) {
                   <div class="expand-loading">
                     <i class="pi pi-spin pi-spinner" aria-hidden="true"></i>
                     Loading…
                   </div>
+                } @else if (keyPermissions.hasExpandError(key.id)) {
+                  <span class="expand-empty">Could not load this key’s permissions. Reopen to try again.</span>
                 } @else {
                   <div class="expand-label">
                     {{ key.use_custom_permissions ? 'Custom Permissions' : 'Team Permissions' }}

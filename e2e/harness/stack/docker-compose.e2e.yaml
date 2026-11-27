@@ -194,7 +194,7 @@ services:
 
   traefik:
     profiles: [ui]
-    image: traefik:v3.7.19
+    image: traefik:v3.8.0
     command:
       - "--providers.docker=true"
       - "--providers.docker.exposedbydefault=false"

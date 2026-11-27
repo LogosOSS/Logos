@@ -4,7 +4,7 @@ import { firstValueFrom } from 'rxjs';
 import {
   AnalyzeAllResult,
   Team, AdminUser, TeamDetail, TeamMember, TeamApiKey,
-  ProviderItem, ProviderModelItem, TeamModelPermission, TeamLimitsPayload,
+  ProviderItem, ProviderModelItem, TeamModelPermission, TeamLimitsPayload, EffectiveModelDeployment,
   TeamProviderBudget,
   ApiKeyUpdatePayload, CreateApiKeyPayload, MyTeam, TeamRepository,
   TeamRepositoryPayload, TeamWorkflowsResponse, ReviewRecommendationPayload,
@@ -236,6 +236,15 @@ export class TeamManagementService {
     return firstValueFrom(this.http.put<void>(`/api/admin/teams/${teamId}/provider-permissions`, { provider_ids: providerIds }));
   }
 
+  getTeamAzureAutoAccess(teamId: number): Promise<number[]> {
+    return firstValueFrom(this.http.get<number[]>(`/api/admin/teams/${teamId}/azure-model-auto-access`));
+  }
+
+  setTeamAzureAutoAccess(teamId: number, providerId: number, enabled: boolean): Promise<void> {
+    const path = `/api/admin/teams/${teamId}/azure-model-auto-access/${providerId}`;
+    return firstValueFrom(this.http.put<void>(path, { enabled }));
+  }
+
   /** Atomic single-grant add (model access page) — no full-set replacement. */
   addTeamProviderPermission(teamId: number, providerId: number): Promise<void> {
     return firstValueFrom(this.http.post<void>(`/api/admin/teams/${teamId}/provider-permissions/${providerId}`, {}));
@@ -288,6 +297,12 @@ export class TeamManagementService {
     return firstValueFrom(
       this.http.get<PermissionCatalogProvider[]>(`/api/admin/api-keys/${keyId}/permission-catalog`),
     );
+  }
+
+  getKeyEffectiveModelDeployments(keyId: number): Promise<EffectiveModelDeployment[]> {
+    return firstValueFrom(this.http.get<EffectiveModelDeployment[]>(
+      `/api/admin/api-keys/${keyId}/effective-model-deployments`,
+    ));
   }
 
   getApiKeyProviderPermissions(keyId: number): Promise<number[]> {
