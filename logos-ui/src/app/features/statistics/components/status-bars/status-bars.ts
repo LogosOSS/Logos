@@ -32,7 +32,7 @@ export class StatusBars {
     ];
 
     const counts = this.counts();
-    if ((counts.unreported ?? 0) > 0) {
+    if ((counts['unreported'] ?? 0) > 0) {
       rowDefs.push({ label: 'Outcome not reported', key: 'unreported' });
     }
     const total = rowDefs.reduce((sum, def) => sum + (counts[def.key] ?? 0), 0);
