@@ -21,8 +21,6 @@ public class ProviderSpendPolicyService {
 
     public record Change(Boolean enabled, @JsonProperty("limit_usd") BigDecimal limitUsd) {}
 
-    private static final String UTC_MONTH = "date_trunc('month', CURRENT_TIMESTAMP AT TIME ZONE 'UTC')";
-
     private final NamedParameterJdbcTemplate jdbc;
     private final AuditLogService audit;
 
@@ -41,8 +39,8 @@ public class ProviderSpendPolicyService {
                    COALESCE(SUM(held_micro_cents), 0) / 100000000 AS reserved_usd,
                    COALESCE(BOOL_OR(bound_violation), false) AS bound_violation
               FROM provider_spend_months
-             WHERE provider_id = :provider AND month_start = (%s)::date
-            """.formatted(UTC_MONTH), Map.of("provider", providerId));
+             WHERE provider_id = :provider AND month_start = date_trunc('month', CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::date
+            """, Map.of("provider", providerId));
         result.putAll(totals);
         return result;
     }
@@ -73,8 +71,9 @@ public class ProviderSpendPolicyService {
         jdbc.queryForObject("SELECT id FROM providers WHERE id = :provider FOR UPDATE",
             Map.of("provider", providerId), Integer.class);
         Boolean nearRollover = jdbc.queryForObject("""
-            SELECT clock_timestamp() AT TIME ZONE 'UTC' + interval '1 minute' >= %s + interval '1 month'
-            """.formatted(UTC_MONTH), Map.of(), Boolean.class);
+            SELECT clock_timestamp() AT TIME ZONE 'UTC' + interval '1 minute'
+                >= date_trunc('month', CURRENT_TIMESTAMP AT TIME ZONE 'UTC') + interval '1 month'
+            """, Map.of(), Boolean.class);
         if (Boolean.TRUE.equals(nearRollover)) {
             throw new ResponseStatusException(HttpStatus.CONFLICT,
                 "Wait for UTC month rollover before scheduling a provider spend change");
@@ -82,10 +81,10 @@ public class ProviderSpendPolicyService {
         Map<String, Object> before = readPolicy(providerId, true);
         jdbc.update("""
             INSERT INTO provider_spend_policies (provider_id, effective_month, limit_micro_cents)
-            VALUES (:provider, (%s + interval '1 month')::date, :cap)
+            VALUES (:provider, (date_trunc('month', CURRENT_TIMESTAMP AT TIME ZONE 'UTC') + interval '1 month')::date, :cap)
             ON CONFLICT (provider_id, effective_month) DO UPDATE
             SET limit_micro_cents = EXCLUDED.limit_micro_cents
-            """.formatted(UTC_MONTH), new MapSqlParameterSource()
+            """, new MapSqlParameterSource()
                 .addValue("provider", providerId).addValue("cap", cap));
         Map<String, Object> after = readPolicy(providerId, true);
         audit.record("provider.monthly_spend_cap_scheduled", "provider", providerId, null, before, after);
@@ -93,14 +92,16 @@ public class ProviderSpendPolicyService {
     }
 
     private Map<String, Object> readPolicy(int providerId, boolean scheduled) {
-        String condition = scheduled ? "effective_month = (%s + interval '1 month')::date"
-            : "effective_month <= (%s)::date";
         return jdbc.query("""
             SELECT effective_month, limit_micro_cents
               FROM provider_spend_policies
-             WHERE provider_id = :provider AND %s
+             WHERE provider_id = :provider
+               AND CASE WHEN :scheduled THEN effective_month =
+                   (date_trunc('month', CURRENT_TIMESTAMP AT TIME ZONE 'UTC') + interval '1 month')::date
+                   ELSE effective_month <= date_trunc('month', CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::date
+                   END
              ORDER BY effective_month DESC LIMIT 1
-            """.formatted(condition.formatted(UTC_MONTH)), Map.of("provider", providerId), rs -> {
+            """, Map.of("provider", providerId, "scheduled", scheduled), rs -> {
                 if (!rs.next()) {
                     return null;
                 }

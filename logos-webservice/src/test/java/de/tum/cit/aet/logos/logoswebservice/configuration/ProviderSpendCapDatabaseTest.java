@@ -1,9 +1,16 @@
 package de.tum.cit.aet.logos.logoswebservice.configuration;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 
+import java.math.BigDecimal;
 import java.sql.DriverManager;
+import java.time.LocalDate;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.Executors;
@@ -15,7 +22,14 @@ import liquibase.database.jvm.JdbcConnection;
 import liquibase.resource.ClassLoaderResourceAccessor;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
+import org.springframework.web.server.ResponseStatusException;
+
+import de.tum.cit.aet.logos.logoswebservice.audit.AuditLogService;
+import de.tum.cit.aet.logos.logoswebservice.configuration.controller.ProviderSpendPolicyController;
+import de.tum.cit.aet.logos.logoswebservice.configuration.service.ProviderSpendPolicyService;
+import de.tum.cit.aet.logos.logoswebservice.configuration.service.ProviderSpendPolicyService.Change;
 import org.testcontainers.containers.PostgreSQLContainer;
 
 /** Real PostgreSQL row locks are the shared contract between the two relays. */
@@ -115,6 +129,54 @@ class ProviderSpendCapDatabaseTest {
             SELECT BOOL_OR(bound_violation) FROM provider_spend_months WHERE provider_id = ?
             """, Boolean.class, provider)).isTrue();
         assertThat(reserve(jdbc, UUID.randomUUID(), provider, model, PAYLOAD)).isEqualTo("exhausted");
+
+        checkAdminPolicy(jdbc, provider);
+    }
+
+    private static void checkAdminPolicy(JdbcTemplate jdbc, int provider) {
+        var audit = mock(AuditLogService.class);
+        var service = new ProviderSpendPolicyService(new NamedParameterJdbcTemplate(jdbc), audit);
+        var controller = new ProviderSpendPolicyController(service);
+        var currentMonth = jdbc.queryForObject("""
+            SELECT date_trunc('month', CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::date
+            """, LocalDate.class);
+        Map<String, Object> current = Map.of(
+            "enabled", true, "effective_month", currentMonth.toString(), "limit_usd", new BigDecimal("0.01500000"));
+        assertThat(controller.get(provider)).containsEntry("current", current)
+            .containsEntry("scheduled", null).containsEntry("bound_violation", true);
+
+        assertThatThrownBy(() -> controller.get(-1)).isInstanceOf(ResponseStatusException.class)
+            .hasMessageContaining("404");
+        for (Change invalid : List.of(new Change(null, null), new Change(true, null),
+                new Change(true, new BigDecimal("-1")), new Change(true, new BigDecimal("0.000000001")),
+                new Change(false, BigDecimal.ONE))) {
+            assertThatThrownBy(() -> controller.schedule(provider, invalid))
+                .isInstanceOf(ResponseStatusException.class).hasMessageContaining("400");
+        }
+
+        boolean nearRollover = Boolean.TRUE.equals(jdbc.queryForObject("""
+            SELECT clock_timestamp() AT TIME ZONE 'UTC' + interval '1 minute'
+                >= date_trunc('month', CURRENT_TIMESTAMP AT TIME ZONE 'UTC') + interval '1 month'
+            """, Boolean.class));
+        if (nearRollover) {
+            assertThatThrownBy(() -> controller.schedule(provider, new Change(true, BigDecimal.ONE)))
+                .isInstanceOf(ResponseStatusException.class).hasMessageContaining("409");
+            return;
+        }
+
+        Map<String, Object> next = Map.of(
+            "enabled", true, "effective_month", currentMonth.plusMonths(1).toString(),
+            "limit_usd", new BigDecimal("123.00000001"));
+        assertThat(controller.schedule(provider, new Change(true, new BigDecimal("123.00000001"))))
+            .containsEntry("current", current).containsEntry("scheduled", next);
+        Map<String, Object> disabled = new LinkedHashMap<>();
+        disabled.put("enabled", false);
+        disabled.put("effective_month", currentMonth.plusMonths(1).toString());
+        disabled.put("limit_usd", null);
+        assertThat(controller.schedule(provider, new Change(false, null)))
+            .containsEntry("current", current).containsEntry("scheduled", disabled);
+        verify(audit).record("provider.monthly_spend_cap_scheduled", "provider", provider, null, null, next);
+        verify(audit).record("provider.monthly_spend_cap_scheduled", "provider", provider, null, next, disabled);
     }
 
     private static String reserve(JdbcTemplate jdbc, UUID attempt, int provider, int model, String body) {

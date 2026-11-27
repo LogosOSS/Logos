@@ -16,6 +16,7 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -44,6 +45,7 @@ class GatewayImageGenerationToolTest {
 
     private HttpServer upstream;
     private final AtomicReference<String> seenImageHeader = new AtomicReference<>();
+    private final AtomicReference<String> seenBody = new AtomicReference<>();
     private final AtomicReference<Boolean> upstreamCalled = new AtomicReference<>(false);
 
     private final GatewayAuthService authService = mock(GatewayAuthService.class);
@@ -60,7 +62,7 @@ class GatewayImageGenerationToolTest {
             upstreamCalled.set(true);
             seenImageHeader.set(exchange.getRequestHeaders().getFirst(
                 GatewayImageGenerationTool.AZURE_IMAGE_DEPLOYMENT_HEADER));
-            exchange.getRequestBody().readAllBytes();
+            seenBody.set(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
             byte[] out = "{\"id\":\"resp_1\",\"output\":[]}".getBytes(StandardCharsets.UTF_8);
             exchange.getResponseHeaders().add("Content-Type", "application/json");
             exchange.sendResponseHeaders(200, out.length);
@@ -132,6 +134,37 @@ class GatewayImageGenerationToolTest {
         assertThat(upstreamCalled.get()).isFalse();
         verify(cloudAccounting, never()).admitAndReserve(any(), any(), any(), any(), any(), any());
         verify(orchestratorProxy, never()).proxy(any(), any(), any());
+    }
+
+    @Test
+    void forwardsTheValidatedBodyAndSettlesTheSameProviderReservation() throws IOException {
+        GatewayDeployment deployment = openai(1, "test-model");
+        UUID attempt = UUID.randomUUID();
+        when(authService.deploymentsForModel(any(), eq(deployment.modelName()))).thenReturn(List.of(deployment));
+        when(spendCap.reserve(eq(deployment), eq("/v1/responses"), any(), any())).thenReturn(attempt);
+
+        assertThat(post("""
+            {"model": "test-model", "input": "hi", "max_output_tokens": 32}
+            """).getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(seenBody.get()).isEqualTo("{\"model\":\"test-model\",\"input\":\"hi\",\"max_output_tokens\":32}");
+        verify(spendCap).settle(eq(attempt), any(GatewayForwardResult.class));
+        verify(spendCap, never()).releaseUndispatched(attempt);
+    }
+
+    @Test
+    void releasesTheProviderReservationWhenKeyAdmissionRejectsBeforeDispatch() {
+        GatewayDeployment deployment = openai(1, "test-model");
+        UUID attempt = UUID.randomUUID();
+        when(authService.deploymentsForModel(any(), eq(deployment.modelName()))).thenReturn(List.of(deployment));
+        when(spendCap.reserve(eq(deployment), eq("/v1/responses"), any(), any())).thenReturn(attempt);
+        when(cloudAccounting.admitAndReserve(any(), any(), any(), any(), any(), any()))
+            .thenThrow(new ResponseStatusException(HttpStatus.PAYMENT_REQUIRED, "Key budget reached"));
+
+        assertThatThrownBy(() -> post("{\"model\":\"test-model\",\"input\":\"hi\"}"))
+            .isInstanceOf(ResponseStatusException.class).hasMessageContaining("Key budget reached");
+        assertThat(upstreamCalled.get()).isFalse();
+        verify(spendCap).releaseUndispatched(attempt);
+        verify(spendCap, never()).settle(eq(attempt), any());
     }
 
     @Test
