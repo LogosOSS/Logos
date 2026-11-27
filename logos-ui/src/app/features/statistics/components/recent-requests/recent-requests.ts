@@ -148,16 +148,11 @@ export class RecentRequests implements OnChanges, OnDestroy {
   @Input() liveRequests: RequestItem[] = [];
 
   /**
-   * How many requests the selected range holds, from the statistics totals.
-   * Same range, resolved per aggregate push, so it can trail the live rows by a
-   * few — hence the floor in `totalCount()`. Only used while page 1 is showing
-   * live rows; a fetched page brings its own count.
-   *
-   * `null` for a state-filtered live feed while its first pushed bucket total
-   * is still in flight: the page then has no figure for that set, and the
-   * header shows "—" rather than a number describing a different set.
+   * Server count for the live feed's current selection, including matching
+   * benchmark rows. A fetched page brings its own count. While the first
+   * count is in flight the header shows "—".
    */
-  @Input() totalInRange: number | null = 0;
+  @Input() totalInRange: number | null = null;
 
   /** The selected range as ISO strings — what the pages are cut out of. */
   @Input() range: { startIso: string; endIso: string } | null = null;
@@ -209,7 +204,7 @@ export class RecentRequests implements OnChanges, OnDestroy {
   // @Input() is not a tracked producer, so reading it inside computed() would
   // cache the very first value (an empty list) forever.
   private readonly _liveRequests = signal<RequestItem[]>([]);
-  private readonly _totalInRange = signal<number | null>(0);
+  private readonly _totalInRange = signal<number | null>(null);
   private readonly _filterUserId = signal<number | null>(null);
   private readonly _filterTeamId = signal<number | null>(null);
   private readonly _filterProviderId = signal<number | null>(null);
@@ -282,20 +277,11 @@ export class RecentRequests implements OnChanges, OnDestroy {
     this.onLivePage() ? this._liveRequests() : this._pageRows(),
   );
 
-  readonly totalCount = computed<number | null>(() => {
-    const known = this.onLivePage() ? this._totalInRange() : (this._pageTotal() ?? 0);
-    // A filtered live feed waiting for its first pushed total has no figure
-    // for the set it shows; the header renders that as "—".
-    if (known === null) return null;
-    // Never promise fewer rows than are on screen: on the live page the
-    // aggregate push the total comes from can be a beat behind the feed.
-    return Math.max(known, this.firstRowNumber() + this.displayItems().length - 1);
-  });
+  readonly totalCount = computed(() => this.onLivePage() ? this._totalInRange() : this._pageTotal());
 
   /**
-   * The total as the header prints it. A filtered feed waiting for its first
-   * pushed bucket total has no figure for the set it shows, so the line reads
-   * "of —" there rather than a number describing a different set.
+   * The server's total for this feed selection, or "—" until the first count
+   * arrives. KPI totals are not a substitute for the feed count.
    */
   readonly totalInRangeLabel = computed(() => {
     const total = this.totalCount();
@@ -315,11 +301,10 @@ export class RecentRequests implements OnChanges, OnDestroy {
 
   readonly hasNext = computed(() => {
     if (this.loading()) return false;
-    // A full live page may have more behind it — same rule the server applies to
-    // a fetched page, which reports it outright.
-    return this.onLivePage()
-      ? this._liveRequests().length >= PAGE_SIZE
-      : this._pageHasMore();
+    if (!this.onLivePage()) return this._pageHasMore();
+    const shown = this._liveRequests().length;
+    const total = this._totalInRange();
+    return shown >= PAGE_SIZE && (total === null || total > shown);
   });
 
   ngOnChanges(changes: SimpleChanges): void {
@@ -489,7 +474,7 @@ export class RecentRequests implements OnChanges, OnDestroy {
   private chaseFrame(): void {
     const targets = new Map<string, { p: number; c: number }>();
     for (const it of this.displayItems()) {
-      if (!it.streaming) continue;
+      if (!this.isStreamingOf(it)) continue;
       targets.set(it.request_id, { p: it.prompt_tokens ?? 0, c: it.completion_tokens ?? 0 });
     }
 
@@ -549,12 +534,23 @@ export class RecentRequests implements OnChanges, OnDestroy {
     return providerLabel(item);
   }
 
+  failureOf(item: RequestItem): 'error' | 'timeout' | null {
+    if (deriveStage(item) !== 'complete' || item.lifecycle_state === 'finished') return null;
+    if (item.status === 'timeout') return 'timeout';
+    return item.lifecycle_state === 'error' || item.status === 'error' ? 'error' : null;
+  }
+
+  isStreamingOf(item: RequestItem): boolean {
+    return item.streaming === true && deriveStage(item) === 'executing';
+  }
+
   borderColorOf(item: RequestItem): string {
-    return getRequestBorderColor(deriveStage(item), item.status);
+    const status = this.failureOf(item) ?? (item.status === 'success' ? 'success' : 'pending');
+    return getRequestBorderColor(deriveStage(item), status);
   }
 
   bgTintOf(item: RequestItem): string {
-    const color = getRequestBorderColor(deriveStage(item), item.status);
+    const color = this.borderColorOf(item);
     // wrap with low-opacity version for tinted background
     return color.replace('))', ') / 0.07)');
   }
@@ -622,7 +618,7 @@ export class RecentRequests implements OnChanges, OnDestroy {
   private shownTokensOf(item: RequestItem): { p: number; c: number } {
     const shown = this._shownTokens();
     const target = { p: item.prompt_tokens ?? 0, c: item.completion_tokens ?? 0 };
-    if (item.streaming && shown[item.request_id]) return shown[item.request_id];
+    if (this.isStreamingOf(item) && shown[item.request_id]) return shown[item.request_id];
     return target;
   }
 
@@ -644,7 +640,7 @@ export class RecentRequests implements OnChanges, OnDestroy {
    * as a live measurement.
    */
   rateLabelOf(item: RequestItem): string | null {
-    if (!item.streaming) return null;
+    if (!this.isStreamingOf(item)) return null;
     const rate = item.tokens_per_second;
     if (typeof rate !== 'number' || !Number.isFinite(rate) || rate <= 0) return null;
     return `${rate < 10 ? rate.toFixed(1) : Math.round(rate)} tok/s`;
@@ -652,8 +648,8 @@ export class RecentRequests implements OnChanges, OnDestroy {
 
   totalTimeLabelOf(item: RequestItem): string {
     const stage = deriveStage(item);
-    if (stage === 'complete' && item.total_seconds != null) {
-      return this.settledTimeLabel(item.total_seconds);
+    if (stage === 'complete') {
+      return item.total_seconds != null ? this.settledTimeLabel(item.total_seconds) : '—';
     }
     if (item.enqueue_ts) {
       return formatElapsed((this.now() - new Date(item.enqueue_ts).getTime()) / 1000);
@@ -662,8 +658,8 @@ export class RecentRequests implements OnChanges, OnDestroy {
   }
 
   elapsedOf(item: RequestItem): string {
-    if (!item.scheduled_ts) return '0.0s';
-    return formatElapsed((this.now() - new Date(item.scheduled_ts).getTime()) / 1000);
+    const start = item.scheduled_ts ?? item.provider_call_ts;
+    return start ? formatElapsed((this.now() - new Date(start).getTime()) / 1000) : '—';
   }
 
   settledTimeLabel(seconds: number): string {

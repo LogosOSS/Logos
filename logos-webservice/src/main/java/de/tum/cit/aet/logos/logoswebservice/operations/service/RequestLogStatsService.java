@@ -9,6 +9,8 @@ import java.util.List;
 import java.util.Map;
 
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
+import org.springframework.transaction.annotation.Transactional;
 
 import de.tum.cit.aet.logos.logoswebservice.operations.repository.RequestLatencyProjection;
 import de.tum.cit.aet.logos.logoswebservice.operations.repository.LogEntryRepository;
@@ -20,6 +22,7 @@ import de.tum.cit.aet.logos.logoswebservice.operations.repository.StatusCountPro
 import de.tum.cit.aet.logos.logoswebservice.operations.repository.TimeSeriesProjection;
 
 @Service
+@Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
 public class RequestLogStatsService {
 
     private static final int[] NICE_BUCKETS = {60, 300, 900, 1800, 3600, 10800, 21600, 43200, 86400};
@@ -75,6 +78,13 @@ public class RequestLogStatsService {
                                                   Integer userId, Integer teamId,
                                                   Integer providerId, Integer apiKeyId, boolean errorsOnly,
                                                   List<Integer> modelIds) {
+        return getRequestLogStats(startDate, endDate, targetBuckets, userId, teamId, providerId, apiKeyId,
+            errorsOnly, modelIds, null, List.of());
+    }
+
+    public Map<String, Object> getRequestLogStats(String startDate, String endDate, int targetBuckets,
+            Integer userId, Integer teamId, Integer providerId, Integer apiKeyId, boolean errorsOnly,
+            List<Integer> modelIds, String status, List<Integer> providerIds) {
         ZonedDateTime now = ZonedDateTime.now(ZoneOffset.UTC);
         ZonedDateTime endDt = endDate != null ? ZonedDateTime.parse(endDate).withZoneSameInstant(ZoneOffset.UTC) : now;
         ZonedDateTime startDt = startDate != null
@@ -96,11 +106,11 @@ public class RequestLogStatsService {
         // from log_entry directly, which is what useRollup = false selects.
         boolean useRollup = bucketSeconds >= SECONDS_PER_HOUR;
 
-        Map<String, Object> totals = queryTotals(startTs, endTs, userId, teamId, providerId, apiKeyId, errorsOnly, modelIds);
-        Map<String, Integer> statusCounts = queryStatusCounts(startTs, endTs, userId, teamId, providerId, apiKeyId, errorsOnly, modelIds);
-        List<Map<String, Object>> modelBreakdown = queryModelBreakdown(startTs, endTs, userId, teamId, providerId, apiKeyId, errorsOnly, modelIds);
-        List<Map<String, Object>> timeSeries = queryTimeSeries(startTs, endTs, bucketSeconds, useRollup, userId, teamId, providerId, apiKeyId, errorsOnly, modelIds);
-        List<Map<String, Object>> modelTimeSeries = queryModelTimeSeries(startTs, endTs, bucketSeconds, useRollup, userId, teamId, providerId, apiKeyId, errorsOnly, modelIds);
+        Map<String, Object> totals = queryTotals(startTs, endTs, userId, teamId, providerId, apiKeyId, errorsOnly, modelIds, status, providerIds);
+        Map<String, Integer> statusCounts = queryStatusCounts(startTs, endTs, userId, teamId, providerId, apiKeyId, errorsOnly, modelIds, status, providerIds);
+        List<Map<String, Object>> modelBreakdown = queryModelBreakdown(startTs, endTs, userId, teamId, providerId, apiKeyId, errorsOnly, modelIds, status, providerIds);
+        List<Map<String, Object>> timeSeries = queryTimeSeries(startTs, endTs, bucketSeconds, useRollup, userId, teamId, providerId, apiKeyId, errorsOnly, modelIds, status, providerIds);
+        List<Map<String, Object>> modelTimeSeries = queryModelTimeSeries(startTs, endTs, bucketSeconds, useRollup, userId, teamId, providerId, apiKeyId, errorsOnly, modelIds, status, providerIds);
 
         Map<String, Object> stats = new LinkedHashMap<>();
         stats.put("totals", totals);
@@ -136,6 +146,13 @@ public class RequestLogStatsService {
                                                       Integer userId, Integer teamId, Integer providerId,
                                                       Integer apiKeyId, boolean errorsOnly,
                                                       List<Integer> modelIds) {
+        return getRequestLatencyStats(startDate, endDate, userId, teamId, providerId, apiKeyId,
+            errorsOnly, modelIds, null, List.of());
+    }
+
+    public Map<String, Object> getRequestLatencyStats(String startDate, String endDate,
+            Integer userId, Integer teamId, Integer providerId, Integer apiKeyId, boolean errorsOnly,
+            List<Integer> modelIds, String status, List<Integer> providerIds) {
         ZonedDateTime now = ZonedDateTime.now(ZoneOffset.UTC);
         ZonedDateTime endDt = endDate != null ? ZonedDateTime.parse(endDate).withZoneSameInstant(ZoneOffset.UTC) : now;
         ZonedDateTime startDt = startDate != null
@@ -149,7 +166,8 @@ public class RequestLogStatsService {
         List<Map<String, Object>> rows = new ArrayList<>();
         for (RequestLatencyProjection p : logEntryRepository.findRequestLatency(
                 Timestamp.from(startDt.toInstant()), Timestamp.from(endDt.toInstant()),
-                userId, teamId, providerId, apiKeyId, ids.isEmpty(), queryIds(ids), errorsOnly)) {
+                userId, teamId, providerId, apiKeyId, ids.isEmpty(), queryIds(ids), errorsOnly, status,
+                providerIds.isEmpty(), queryIds(providerIds))) {
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("modelId", p.getModelId());
             m.put("modelName", p.getModelName());
@@ -247,9 +265,9 @@ public class RequestLogStatsService {
 
     private Map<String, Object> queryTotals(Timestamp start, Timestamp end, Integer userId, Integer teamId,
                                             Integer providerId, Integer apiKeyId, boolean errorsOnly,
-                                            List<Integer> modelIds) {
+                                            List<Integer> modelIds, String lifecycleStatus, List<Integer> providerIds) {
         RequestLogTotalsProjection p = logEntryRepository.findTotals(
-            start, end, userId, teamId, providerId, apiKeyId, modelIds.isEmpty(), queryIds(modelIds), errorsOnly);
+            start, end, userId, teamId, providerId, apiKeyId, modelIds.isEmpty(), queryIds(modelIds), errorsOnly, lifecycleStatus, providerIds.isEmpty(), queryIds(providerIds));
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("requests", p.getRequests());
         m.put("cloudRequests", p.getCloudRequests());
@@ -265,10 +283,10 @@ public class RequestLogStatsService {
 
     private Map<String, Integer> queryStatusCounts(Timestamp start, Timestamp end, Integer userId, Integer teamId,
                                                    Integer providerId, Integer apiKeyId, boolean errorsOnly,
-                                                   List<Integer> modelIds) {
+                                                   List<Integer> modelIds, String lifecycleStatus, List<Integer> providerIds) {
         Map<String, Integer> counts = new LinkedHashMap<>();
         for (StatusCountProjection p : logEntryRepository.findStatusCounts(
-                start, end, userId, teamId, providerId, apiKeyId, modelIds.isEmpty(), queryIds(modelIds), errorsOnly)) {
+                start, end, userId, teamId, providerId, apiKeyId, modelIds.isEmpty(), queryIds(modelIds), errorsOnly, lifecycleStatus, providerIds.isEmpty(), queryIds(providerIds))) {
             String status = p.getStatus() == null ? "pending" : p.getStatus().toLowerCase();
             if ("unknown".equals(status)) status = "pending";
             counts.put(status, p.getCnt());
@@ -278,16 +296,16 @@ public class RequestLogStatsService {
 
     private List<Map<String, Object>> queryModelBreakdown(Timestamp start, Timestamp end, Integer userId, Integer teamId,
                                                           Integer providerId, Integer apiKeyId, boolean errorsOnly,
-                                                          List<Integer> modelIds) {
+                                                          List<Integer> modelIds, String lifecycleStatus, List<Integer> providerIds) {
         return logEntryRepository.findModelBreakdown(
-                start, end, userId, teamId, providerId, apiKeyId, modelIds.isEmpty(), queryIds(modelIds), errorsOnly).stream()
+                start, end, userId, teamId, providerId, apiKeyId, modelIds.isEmpty(), queryIds(modelIds), errorsOnly, lifecycleStatus, providerIds.isEmpty(), queryIds(providerIds)).stream()
             .map(p -> {
                 Map<String, Object> m = new LinkedHashMap<>();
-                // null modelId is a deleted model: its usage survives under the
-                // captured name, and the UI marks the entry as deleted.
+                // A named orphan survives model deletion; an unresolved
+                // request also has a null ID but is not a deleted model.
                 m.put("modelId", p.getModelId());
                 m.put("modelName", p.getModelName());
-                m.put("modelDeleted", p.getModelId() == null);
+                m.put("modelDeleted", Boolean.TRUE.equals(p.getModelDeleted()));
                 m.put("requestCount", p.getRequestCount());
                 m.put("avgQueueSeconds", p.getAvgQueueSeconds());
                 m.put("avgRunSeconds", p.getAvgRunSeconds());
@@ -302,9 +320,9 @@ public class RequestLogStatsService {
     private List<Map<String, Object>> queryTimeSeries(Timestamp start, Timestamp end, int bucketSeconds,
                                                       boolean useRollup, Integer userId, Integer teamId,
                                                       Integer providerId, Integer apiKeyId, boolean errorsOnly,
-                                                      List<Integer> modelIds) {
+                                                      List<Integer> modelIds, String lifecycleStatus, List<Integer> providerIds) {
         return logEntryRepository.findTimeSeries(start, end, bucketSeconds, useRollup, userId, teamId, providerId, apiKeyId,
-                modelIds.isEmpty(), queryIds(modelIds), errorsOnly).stream()
+                modelIds.isEmpty(), queryIds(modelIds), errorsOnly, lifecycleStatus, providerIds.isEmpty(), queryIds(providerIds)).stream()
             .filter(p -> p.getBucketTs() != null)
             .map(p -> {
                 Map<String, Object> m = new LinkedHashMap<>();
@@ -322,10 +340,10 @@ public class RequestLogStatsService {
     private List<Map<String, Object>> queryModelTimeSeries(Timestamp start, Timestamp end, int bucketSeconds,
                                                            boolean useRollup, Integer userId, Integer teamId,
                                                            Integer providerId, Integer apiKeyId, boolean errorsOnly,
-                                                           List<Integer> modelIds) {
+                                                           List<Integer> modelIds, String lifecycleStatus, List<Integer> providerIds) {
         List<Map<String, Object>> result = new ArrayList<>();
         for (ModelTimeSeriesProjection p : logEntryRepository.findModelTimeSeries(start, end, bucketSeconds, useRollup,
-                userId, teamId, providerId, apiKeyId, modelIds.isEmpty(), queryIds(modelIds), errorsOnly)) {
+                userId, teamId, providerId, apiKeyId, modelIds.isEmpty(), queryIds(modelIds), errorsOnly, lifecycleStatus, providerIds.isEmpty(), queryIds(providerIds))) {
             if (p.getBucketTs() == null) continue;
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("timestamp", (long) (double) p.getBucketTs() * 1000L);

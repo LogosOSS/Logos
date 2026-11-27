@@ -61,7 +61,7 @@ public class RequestLogController {
         // showing everything reads as broken, so the feed widens there, while
         // a value aimed straight at this admin-only endpoint must not
         // silently widen it to the whole platform.
-        String status = body.get("status") instanceof String s && !s.isBlank() ? s : null;
+        String status = RequestLogService.readRequestStatus(body);
         String cursorTs = body.get("cursor_ts") instanceof String s ? s : null;
         String cursorId = body.get("cursor_id") instanceof String s ? s : null;
         int limit = body.get("limit") instanceof Number n

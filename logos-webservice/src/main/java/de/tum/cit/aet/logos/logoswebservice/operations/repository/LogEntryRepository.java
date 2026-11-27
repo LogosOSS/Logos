@@ -31,6 +31,45 @@ import de.tum.cit.aet.logos.logoswebservice.operations.entity.LogEntry;
  */
 public interface LogEntryRepository extends JpaRepository<LogEntry, Integer> {
 
+    // Keep the rollup fast without showing stale lifecycle membership for closed
+    // hours. The update index finds recently touched rows; only those hours
+    // bypass the rollup, on top of the usual live edges. Ranges are disjoint and
+    // the arrival index remains usable for all three raw paths.
+    String STATS_DIRTY_AND_LIVE_CTES = """
+        dirty AS MATERIALIZED (
+            SELECT DISTINCT date_trunc('hour', le.timestamp_request) AS bucket_hour
+            FROM log_entry le
+            WHERE le.updated_at > (SELECT processed_through FROM log_entry_rollup_state)
+              AND le.timestamp_request >= (SELECT mv_lo FROM w)
+              AND le.timestamp_request < (SELECT mv_hi FROM w)
+            UNION
+            SELECT d.bucket_hour FROM log_entry_rollup_dirty_hours d
+            WHERE d.bucket_hour >= (SELECT mv_lo FROM w)
+              AND d.bucket_hour < (SELECT mv_hi FROM w)
+        ),
+        live_requests AS NOT MATERIALIZED (
+            SELECT le.*, logos_stats_is_internal_benchmark(le) AS stats_is_benchmark
+            FROM log_entry le WHERE le.timestamp_request >= :start AND le.timestamp_request < (SELECT mv_lo FROM w)
+                AND le.timestamp_request <= :end
+            UNION ALL
+            SELECT le.*, logos_stats_is_internal_benchmark(le) AS stats_is_benchmark
+            FROM log_entry le WHERE le.timestamp_request >= (SELECT mv_hi FROM w) AND le.timestamp_request <= :end
+                AND le.timestamp_request >= :start
+            UNION ALL
+            SELECT le.* FROM dirty d
+            CROSS JOIN LATERAL (
+                SELECT candidate.*, logos_stats_is_internal_benchmark(candidate) AS stats_is_benchmark
+                FROM log_entry candidate
+                WHERE candidate.timestamp_request >= d.bucket_hour
+                  AND candidate.timestamp_request < d.bucket_hour + interval '1 hour'
+                -- Keep the arrival index bound to each dirty hour rather than
+                -- starting with a scan of log_entry across the whole history.
+                OFFSET 0
+            ) le
+        ),
+        """;
+
+
     @Transactional(readOnly = true)
     @Query(value = """
         SELECT le.input_payload::text AS inputPayload,
@@ -293,7 +332,8 @@ public interface LogEntryRepository extends JpaRepository<LogEntry, Integer> {
                COUNT(*) AS requestCount
         FROM log_entry le
         LEFT JOIN teams t ON t.id = le.team_id
-        WHERE COALESCE(le.timestamp_forwarding, le.timestamp_request, le.timestamp_response) BETWEEN :start AND :end
+        WHERE le.timestamp_request BETWEEN :start AND :end
+          AND le.request_id IS NOT NULL AND NOT logos_stats_is_internal_benchmark(le)
           AND le.team_id IS NOT NULL
           AND (CAST(:providerId AS INTEGER) IS NULL OR le.provider_id = CAST(:providerId AS INTEGER))
           AND (CAST(:errorsOnly AS BOOLEAN) IS NOT TRUE OR le.result_status IN ('error', 'timeout'))
@@ -325,7 +365,8 @@ public interface LogEntryRepository extends JpaRepository<LogEntry, Integer> {
                COUNT(*) AS requestCount
         FROM log_entry le
         LEFT JOIN users u ON u.id = le.user_id
-        WHERE COALESCE(le.timestamp_forwarding, le.timestamp_request, le.timestamp_response) BETWEEN :start AND :end
+        WHERE le.timestamp_request BETWEEN :start AND :end
+          AND le.request_id IS NOT NULL AND NOT logos_stats_is_internal_benchmark(le)
           AND le.user_id IS NOT NULL
           AND (CAST(:teamId AS INTEGER) IS NULL OR le.team_id = CAST(:teamId AS INTEGER))
           AND (CAST(:providerId AS INTEGER) IS NULL OR le.provider_id = CAST(:providerId AS INTEGER))
@@ -355,7 +396,8 @@ public interface LogEntryRepository extends JpaRepository<LogEntry, Integer> {
                COUNT(*) AS requestCount
         FROM log_entry le
         LEFT JOIN providers p ON p.id = le.provider_id
-        WHERE COALESCE(le.timestamp_forwarding, le.timestamp_request, le.timestamp_response) BETWEEN :start AND :end
+        WHERE le.timestamp_request BETWEEN :start AND :end
+          AND le.request_id IS NOT NULL AND NOT logos_stats_is_internal_benchmark(le)
           AND le.provider_id IS NOT NULL
           AND (CAST(:teamId AS INTEGER) IS NULL OR le.team_id = CAST(:teamId AS INTEGER))
           AND (CAST(:userId AS INTEGER) IS NULL OR le.user_id = CAST(:userId AS INTEGER))
@@ -393,7 +435,8 @@ public interface LogEntryRepository extends JpaRepository<LogEntry, Integer> {
         FROM log_entry le
         JOIN api_keys k ON k.id = le.api_key_id
         LEFT JOIN teams t ON t.id = k.team_id
-        WHERE COALESCE(le.timestamp_forwarding, le.timestamp_request, le.timestamp_response) BETWEEN :start AND :end
+        WHERE le.timestamp_request BETWEEN :start AND :end
+          AND le.request_id IS NOT NULL AND NOT logos_stats_is_internal_benchmark(le)
           AND k.key_type::text <> 'developer'
           AND (CAST(:teamId AS INTEGER) IS NULL OR le.team_id = CAST(:teamId AS INTEGER))
           AND (CAST(:providerId AS INTEGER) IS NULL OR le.provider_id = CAST(:providerId AS INTEGER))
@@ -417,6 +460,7 @@ public interface LogEntryRepository extends JpaRepository<LogEntry, Integer> {
         LEFT JOIN models m ON m.id = le.model_id
         WHERE le.request_id IS NOT NULL
           AND le.timestamp_request BETWEEN :start AND :end
+          AND NOT logos_stats_is_internal_benchmark(le)
           AND le.model_id IS NOT NULL
           AND (CAST(:teamId AS INTEGER) IS NULL OR le.team_id = CAST(:teamId AS INTEGER))
           AND (CAST(:userId AS INTEGER) IS NULL OR le.user_id = CAST(:userId AS INTEGER))
@@ -478,6 +522,11 @@ public interface LogEntryRepository extends JpaRepository<LogEntry, Integer> {
                     THEN COALESCE(NULLIF(k.environment, '-'), NULLIF(le.environment, '-'))
                     ELSE NULLIF(le.environment, '-')
                END AS environment,
+               logos_stats_is_internal_benchmark(le) AS benchmark,
+               le.timestamp_provider_call AS timestampProviderCall,
+               COALESCE(p.privacy_level <> 'LOCAL', FALSE) AS cloud,
+               logos_stats_request_state(le.result_status, le.timestamp_response,
+                    le.timestamp_forwarding, le.timestamp_provider_call) AS lifecycleState,
                tk.prompt_tokens AS promptTokens,
                tk.estimated_prompt_tokens AS estimatedPromptTokens,
                tk.completion_tokens AS completionTokens,
@@ -502,10 +551,8 @@ public interface LogEntryRepository extends JpaRepository<LogEntry, Integer> {
         -- Logos has no pricing knowledge, so the UI still omits the cost line.
         LEFT JOIN log_entry_cost c ON c.log_entry_id = le.id
         WHERE le.request_id IS NOT NULL
-          -- Ranged on timestamp_request, not on the COALESCE the aggregate
-          -- queries use: it is NOT NULL, so the COALESCE could only ever pick
-          -- another column, and the cursor below has to compare against the very
-          -- column the rows are ordered by. Filter, order and cursor all
+          -- Arrival time is shared by the request aggregates, ordering and
+          -- cursor. Filter, order and cursor all
           -- agreeing on one column is what lets idx_log_entry_timestamp_request
           -- (012_log_entry_timestamp_index.xml) carry this query: it is scanned
           -- backwards for the DESC order, bounds both the range and the cursor,
@@ -523,24 +570,9 @@ public interface LogEntryRepository extends JpaRepository<LogEntry, Integer> {
           AND (:allModels = TRUE OR le.model_id IN (:modelIds))
           AND (:allProviders = TRUE OR le.provider_id IN (:providerIds))
           AND (CAST(:errorsOnly AS BOOLEAN) IS NOT TRUE OR le.result_status IN ('error', 'timeout'))
-          -- One of the four lifecycle buckets the feed can be narrowed to:
-          -- queued (not yet scheduled), running (scheduled, not answered),
-          -- error (answered with a failure), finished (answered otherwise).
-          -- A null status leaves the feed unfiltered.
-          AND (CAST(:status AS TEXT) IS NULL
-               OR (CAST(:status AS TEXT) = 'queued'
-                   AND le.timestamp_forwarding IS NULL
-                   AND le.timestamp_response IS NULL)
-               OR (CAST(:status AS TEXT) = 'running'
-                   AND le.timestamp_forwarding IS NOT NULL
-                   AND le.timestamp_response IS NULL)
-               OR (CAST(:status AS TEXT) = 'error'
-                   AND le.timestamp_response IS NOT NULL
-                   AND (le.result_status = 'error' OR le.result_status = 'timeout'))
-               OR (CAST(:status AS TEXT) = 'finished'
-                   AND le.timestamp_response IS NOT NULL
-                   AND le.result_status IS DISTINCT FROM 'error'
-                   AND le.result_status IS DISTINCT FROM 'timeout'))
+          -- Shared lifecycle buckets: queued, running, error and finished.
+          -- A null status leaves the scope unfiltered.
+          AND (CAST(:status AS TEXT) IS NULL OR logos_stats_request_state(le.result_status, le.timestamp_response, le.timestamp_forwarding, le.timestamp_provider_call) = CAST(:status AS TEXT))
           -- Keyset cursor: everything strictly older than the last row handed
           -- out. Unlike OFFSET this neither re-walks the skipped rows nor slides
           -- when new requests arrive at the top while the operator pages.
@@ -580,13 +612,10 @@ public interface LogEntryRepository extends JpaRepository<LogEntry, Integer> {
 
     /**
      * Whether anything the statistics aggregates summarise has moved, as a
-     * single aggregate over the same set {@link #findTotals} counts.
-     *
-     * The window predicate and the scope are deliberately identical to
-     * {@link #findTotals}: a movement signal that describes a different set
-     * than the aggregates would either refresh them for nothing or, worse,
-     * let them go stale. There is no status narrowing on purpose — the
-     * signal has to see every bucket, the ones a feed filter hides included.
+     * lightweight signal over recent ledger updates in the selected identity
+     * scope. Use the updated_at index rather than walking the whole range on
+     * each socket tick. Keep all lifecycle states here so a request leaving
+     * a selected state is still detectable.
      *
      * The last-event timestamp is the GREATEST of the three lifecycle
      * columns, not just {@code timestamp_request}: each of them is stamped
@@ -605,9 +634,10 @@ public interface LogEntryRepository extends JpaRepository<LogEntry, Integer> {
         SELECT COUNT(*) AS rowCount,
                GREATEST(MAX(le.timestamp_request),
                         MAX(le.timestamp_forwarding),
-                        MAX(le.timestamp_response)) AS lastEventTs
+                        MAX(le.timestamp_response), MAX(le.updated_at)) AS lastEventTs
         FROM log_entry le
-        WHERE COALESCE(le.timestamp_forwarding, le.timestamp_request, le.timestamp_response) BETWEEN :start AND :end
+        WHERE le.updated_at >= now() - interval '90 seconds'
+          AND le.request_id IS NOT NULL AND le.timestamp_request BETWEEN :start AND :end
           AND (CAST(:userId AS INTEGER) IS NULL OR le.user_id = CAST(:userId AS INTEGER))
           AND (CAST(:teamId AS INTEGER) IS NULL OR le.team_id = CAST(:teamId AS INTEGER))
           AND (CAST(:providerId AS INTEGER) IS NULL OR le.provider_id = CAST(:providerId AS INTEGER))
@@ -634,10 +664,25 @@ public interface LogEntryRepository extends JpaRepository<LogEntry, Integer> {
      */
     @Transactional(readOnly = true)
     @Query(value = """
-        SELECT COUNT(*)
-        FROM log_entry le
+        WITH w AS (SELECT * FROM logos_stats_rollup_window(:start, :end, CAST(:apiKeyId AS INTEGER) IS NULL)),
+        """ + STATS_DIRTY_AND_LIVE_CTES + """
+        parts AS (
+            SELECT s.requests
+            FROM log_entry_hourly_stats s
+            WHERE s.bucket_hour >= (SELECT mv_lo FROM w) AND s.bucket_hour < (SELECT mv_hi FROM w)
+              AND NOT EXISTS (SELECT 1 FROM dirty d WHERE d.bucket_hour = s.bucket_hour)
+              AND (CAST(:userId AS INTEGER) IS NULL OR s.user_id = CAST(:userId AS INTEGER))
+              AND (CAST(:teamId AS INTEGER) IS NULL OR s.team_id = CAST(:teamId AS INTEGER))
+              AND (CAST(:providerId AS INTEGER) IS NULL OR s.provider_id = CAST(:providerId AS INTEGER))
+              AND (:allModels = TRUE OR s.model_id IN (:modelIds))
+              AND (:allProviders = TRUE OR s.provider_id IN (:providerIds))
+              AND (CAST(:errorsOnly AS BOOLEAN) IS NOT TRUE OR s.result_status IN ('error', 'timeout'))
+              AND (CAST(:status AS TEXT) IS NULL OR s.lifecycle_state = CAST(:status AS TEXT))
+            UNION ALL
+            SELECT 1::bigint
+        FROM live_requests le
         WHERE le.request_id IS NOT NULL
-          AND le.timestamp_request BETWEEN :startTs AND :endTs
+          AND le.timestamp_request BETWEEN :start AND :end
           AND (CAST(:userId AS INTEGER) IS NULL OR le.user_id = CAST(:userId AS INTEGER))
           AND (CAST(:teamId AS INTEGER) IS NULL OR le.team_id = CAST(:teamId AS INTEGER))
           AND (CAST(:providerId AS INTEGER) IS NULL OR le.provider_id = CAST(:providerId AS INTEGER))
@@ -647,24 +692,13 @@ public interface LogEntryRepository extends JpaRepository<LogEntry, Integer> {
           AND (CAST(:errorsOnly AS BOOLEAN) IS NOT TRUE OR le.result_status IN ('error', 'timeout'))
           -- Identical to the predicate in {@link #findLatestRequests} (minus the
           -- cursor): the count and the rows must describe the same set.
-          AND (CAST(:status AS TEXT) IS NULL
-               OR (CAST(:status AS TEXT) = 'queued'
-                   AND le.timestamp_forwarding IS NULL
-                   AND le.timestamp_response IS NULL)
-               OR (CAST(:status AS TEXT) = 'running'
-                   AND le.timestamp_forwarding IS NOT NULL
-                   AND le.timestamp_response IS NULL)
-               OR (CAST(:status AS TEXT) = 'error'
-                   AND le.timestamp_response IS NOT NULL
-                   AND (le.result_status = 'error' OR le.result_status = 'timeout'))
-               OR (CAST(:status AS TEXT) = 'finished'
-                   AND le.timestamp_response IS NOT NULL
-                   AND le.result_status IS DISTINCT FROM 'error'
-                   AND le.result_status IS DISTINCT FROM 'timeout'))
+          AND (CAST(:status AS TEXT) IS NULL OR logos_stats_request_state(le.result_status, le.timestamp_response, le.timestamp_forwarding, le.timestamp_provider_call) = CAST(:status AS TEXT))
+        )
+        SELECT COALESCE(SUM(requests), 0)::bigint FROM parts
         """, nativeQuery = true)
     Long countRequestsInRange(
-        @Param("startTs") Timestamp startTs,
-        @Param("endTs") Timestamp endTs,
+        @Param("start") Timestamp start,
+        @Param("end") Timestamp end,
         @Param("userId") Integer userId,
         @Param("teamId") Integer teamId,
         @Param("providerId") Integer providerId,
@@ -1045,7 +1079,8 @@ public interface LogEntryRepository extends JpaRepository<LogEntry, Integer> {
      * These five queries all read the same shape: the hourly rollup
      * (log_entry_hourly_stats) for whole hours it already covers, plus log_entry
      * itself for the partial head hour and for everything newer than the rollup
-     * watermark, unioned before aggregation.
+     * watermark, unioned before aggregation. Both branches use identifiable
+     * request arrivals, and request metrics exclude internal benchmarks.
      *
      * logos_stats_rollup_window(:start, :end, :useRollup) returns the single
      * (mv_lo, mv_hi) split point all five share. Sharing it matters: if two of
@@ -1067,7 +1102,7 @@ public interface LogEntryRepository extends JpaRepository<LogEntry, Integer> {
      * LATERAL and cost join included, and only then filters down to the handful
      * the live tail actually wants. Measured on a production snapshot that is
      * 1837 ms against 52 ms, for the same answer. As a scalar subquery it is an
-     * InitPlan evaluated once, so idx_log_entry_effective_ts carries the tail.
+     * InitPlan evaluated once, so idx_log_entry_timestamp_request carries the tail.
      *
      * Averages come out of the rollup as sum over count, never as an average of
      * hourly averages, which would weight a quiet hour like a busy one.
@@ -1080,17 +1115,22 @@ public interface LogEntryRepository extends JpaRepository<LogEntry, Integer> {
     @Transactional(readOnly = true)
     @Query(value = """
         WITH w AS (SELECT * FROM logos_stats_rollup_window(:start, :end, CAST(:apiKeyId AS INTEGER) IS NULL)),
+        """ + STATS_DIRTY_AND_LIVE_CTES + """
         parts AS (
             SELECT s.requests, s.provider_id, s.was_cold_start,
                    s.queue_seconds_sum, s.queue_seconds_count,
                    s.run_seconds_sum, s.run_seconds_count,
                    s.total_tokens, s.cost_micro_cents
             FROM log_entry_hourly_stats s
-            WHERE s.bucket_hour >= (SELECT mv_lo FROM w) AND s.bucket_hour < (SELECT mv_hi FROM w)
+            WHERE NOT s.is_benchmark
+              AND s.bucket_hour >= (SELECT mv_lo FROM w) AND s.bucket_hour < (SELECT mv_hi FROM w)
+              AND NOT EXISTS (SELECT 1 FROM dirty d WHERE d.bucket_hour = s.bucket_hour)
+              AND (CAST(:status AS TEXT) IS NULL OR s.lifecycle_state = CAST(:status AS TEXT))
               AND (CAST(:userId AS INTEGER) IS NULL OR s.user_id = CAST(:userId AS INTEGER))
               AND (CAST(:teamId AS INTEGER) IS NULL OR s.team_id = CAST(:teamId AS INTEGER))
               AND (CAST(:providerId AS INTEGER) IS NULL OR s.provider_id = CAST(:providerId AS INTEGER))
               AND (:allModels = TRUE OR s.model_id IN (:modelIds))
+              AND (:allProviders = TRUE OR s.provider_id IN (:providerIds))
               AND (CAST(:errorsOnly AS BOOLEAN) IS NOT TRUE OR s.result_status IN ('error', 'timeout'))
             UNION ALL
             SELECT 1::bigint, le.provider_id, COALESCE(le.was_cold_start, FALSE),
@@ -1111,7 +1151,7 @@ public interface LogEntryRepository extends JpaRepository<LogEntry, Integer> {
                     AND COALESCE(le.timestamp_provider_response, le.timestamp_response) IS NOT NULL)::int::bigint,
                    COALESCE(tok.total_tokens, 0)::bigint,
                    COALESCE(lec.cost_micro_cents, 0)::bigint
-            FROM log_entry le
+            FROM live_requests le
             LEFT JOIN LATERAL (
                 SELECT SUM(ut.token_count) AS total_tokens
                 FROM usage_tokens ut
@@ -1119,14 +1159,15 @@ public interface LogEntryRepository extends JpaRepository<LogEntry, Integer> {
                 WHERE ut.log_entry_id = le.id AND tt.name = 'total_tokens'
             ) tok ON TRUE
             LEFT JOIN log_entry_cost lec ON lec.log_entry_id = le.id
-            WHERE COALESCE(le.timestamp_forwarding, le.timestamp_request, le.timestamp_response) BETWEEN :start AND :end
-              AND (COALESCE(le.timestamp_forwarding, le.timestamp_request, le.timestamp_response) <  (SELECT mv_lo FROM w)
-                OR COALESCE(le.timestamp_forwarding, le.timestamp_request, le.timestamp_response) >= (SELECT mv_hi FROM w))
+            WHERE le.request_id IS NOT NULL AND le.timestamp_request BETWEEN :start AND :end
+              AND NOT le.stats_is_benchmark
+              AND (CAST(:status AS TEXT) IS NULL OR logos_stats_request_state(le.result_status, le.timestamp_response, le.timestamp_forwarding, le.timestamp_provider_call) = CAST(:status AS TEXT))
               AND (CAST(:userId AS INTEGER) IS NULL OR le.user_id = CAST(:userId AS INTEGER))
               AND (CAST(:teamId AS INTEGER) IS NULL OR le.team_id = CAST(:teamId AS INTEGER))
               AND (CAST(:providerId AS INTEGER) IS NULL OR le.provider_id = CAST(:providerId AS INTEGER))
               AND (CAST(:apiKeyId AS INTEGER) IS NULL OR le.api_key_id = CAST(:apiKeyId AS INTEGER))
               AND (:allModels = TRUE OR le.model_id IN (:modelIds))
+              AND (:allProviders = TRUE OR le.provider_id IN (:providerIds))
               AND (CAST(:errorsOnly AS BOOLEAN) IS NOT TRUE OR le.result_status IN ('error', 'timeout'))
         )
         SELECT COALESCE(SUM(pt.requests), 0)::bigint AS requests,
@@ -1162,34 +1203,46 @@ public interface LogEntryRepository extends JpaRepository<LogEntry, Integer> {
         @Param("apiKeyId") Integer apiKeyId,
         @Param("allModels") boolean allModels,
         @Param("modelIds") List<Integer> modelIds,
-        @Param("errorsOnly") Boolean errorsOnly);
+        @Param("errorsOnly") Boolean errorsOnly,
+        @Param("status") String status,
+        @Param("allProviders") boolean allProviders,
+        @Param("providerIds") List<Integer> providerIds);
 
     @Transactional(readOnly = true)
     @Query(value = """
         WITH w AS (SELECT * FROM logos_stats_rollup_window(:start, :end, CAST(:apiKeyId AS INTEGER) IS NULL)),
+        """ + STATS_DIRTY_AND_LIVE_CTES + """
         parts AS (
-            SELECT s.result_status, s.requests
+            SELECT s.result_status, s.lifecycle_state, s.requests
             FROM log_entry_hourly_stats s
-            WHERE s.bucket_hour >= (SELECT mv_lo FROM w) AND s.bucket_hour < (SELECT mv_hi FROM w)
+            WHERE NOT s.is_benchmark
+              AND s.bucket_hour >= (SELECT mv_lo FROM w) AND s.bucket_hour < (SELECT mv_hi FROM w)
+              AND NOT EXISTS (SELECT 1 FROM dirty d WHERE d.bucket_hour = s.bucket_hour)
+              AND (CAST(:status AS TEXT) IS NULL OR s.lifecycle_state = CAST(:status AS TEXT))
               AND (CAST(:userId AS INTEGER) IS NULL OR s.user_id = CAST(:userId AS INTEGER))
               AND (CAST(:teamId AS INTEGER) IS NULL OR s.team_id = CAST(:teamId AS INTEGER))
               AND (CAST(:providerId AS INTEGER) IS NULL OR s.provider_id = CAST(:providerId AS INTEGER))
               AND (:allModels = TRUE OR s.model_id IN (:modelIds))
+              AND (:allProviders = TRUE OR s.provider_id IN (:providerIds))
               AND (CAST(:errorsOnly AS BOOLEAN) IS NOT TRUE OR s.result_status IN ('error', 'timeout'))
             UNION ALL
-            SELECT le.result_status, 1::bigint
-            FROM log_entry le
-            WHERE COALESCE(le.timestamp_forwarding, le.timestamp_request, le.timestamp_response) BETWEEN :start AND :end
-              AND (COALESCE(le.timestamp_forwarding, le.timestamp_request, le.timestamp_response) <  (SELECT mv_lo FROM w)
-                OR COALESCE(le.timestamp_forwarding, le.timestamp_request, le.timestamp_response) >= (SELECT mv_hi FROM w))
+            SELECT le.result_status, logos_stats_request_state(le.result_status, le.timestamp_response,
+                    le.timestamp_forwarding, le.timestamp_provider_call), 1::bigint
+            FROM live_requests le
+            WHERE le.request_id IS NOT NULL AND le.timestamp_request BETWEEN :start AND :end
+              AND NOT le.stats_is_benchmark
+              AND (CAST(:status AS TEXT) IS NULL OR logos_stats_request_state(le.result_status, le.timestamp_response, le.timestamp_forwarding, le.timestamp_provider_call) = CAST(:status AS TEXT))
               AND (CAST(:userId AS INTEGER) IS NULL OR le.user_id = CAST(:userId AS INTEGER))
               AND (CAST(:teamId AS INTEGER) IS NULL OR le.team_id = CAST(:teamId AS INTEGER))
               AND (CAST(:providerId AS INTEGER) IS NULL OR le.provider_id = CAST(:providerId AS INTEGER))
               AND (CAST(:apiKeyId AS INTEGER) IS NULL OR le.api_key_id = CAST(:apiKeyId AS INTEGER))
               AND (:allModels = TRUE OR le.model_id IN (:modelIds))
+              AND (:allProviders = TRUE OR le.provider_id IN (:providerIds))
               AND (CAST(:errorsOnly AS BOOLEAN) IS NOT TRUE OR le.result_status IN ('error', 'timeout'))
         )
-        SELECT COALESCE(pt.result_status::text, 'pending') AS status, SUM(pt.requests)::int AS cnt
+        SELECT COALESCE(pt.result_status::text,
+                        CASE WHEN pt.lifecycle_state = 'finished' THEN 'unreported' ELSE 'pending' END) AS status,
+               SUM(pt.requests)::int AS cnt
         FROM parts pt
         GROUP BY 1
         """, nativeQuery = true)
@@ -1202,7 +1255,10 @@ public interface LogEntryRepository extends JpaRepository<LogEntry, Integer> {
         @Param("apiKeyId") Integer apiKeyId,
         @Param("allModels") boolean allModels,
         @Param("modelIds") List<Integer> modelIds,
-        @Param("errorsOnly") Boolean errorsOnly);
+        @Param("errorsOnly") Boolean errorsOnly,
+        @Param("status") String status,
+        @Param("allProviders") boolean allProviders,
+        @Param("providerIds") List<Integer> providerIds);
 
     // Model breakdown — a TRUE per-model breakdown, aggregated across ALL providers.
     // A single model can be served by multiple providers; grouping by provider would
@@ -1211,23 +1267,24 @@ public interface LogEntryRepository extends JpaRepository<LogEntry, Integer> {
     @Transactional(readOnly = true)
     @Query(value = """
         WITH w AS (SELECT * FROM logos_stats_rollup_window(:start, :end, CAST(:apiKeyId AS INTEGER) IS NULL)),
+        """ + STATS_DIRTY_AND_LIVE_CTES + """
         parts AS (
             SELECT s.model_id, s.model_name, s.provider_id, s.was_cold_start, s.requests, s.error_count,
                    s.queue_seconds_sum, s.queue_seconds_count, s.run_seconds_sum, s.run_seconds_count
             FROM log_entry_hourly_stats s
-            WHERE s.bucket_hour >= (SELECT mv_lo FROM w) AND s.bucket_hour < (SELECT mv_hi FROM w)
-              -- Orphans (model deleted) carry the captured name instead; rows
-              -- with neither never resolved to a model and stay out, as before.
-              AND (s.model_id IS NOT NULL OR s.model_name IS NOT NULL)
+            WHERE NOT s.is_benchmark
+              AND s.bucket_hour >= (SELECT mv_lo FROM w) AND s.bucket_hour < (SELECT mv_hi FROM w)
+              AND NOT EXISTS (SELECT 1 FROM dirty d WHERE d.bucket_hour = s.bucket_hour)
+              AND (CAST(:status AS TEXT) IS NULL OR s.lifecycle_state = CAST(:status AS TEXT))
               AND (CAST(:userId AS INTEGER) IS NULL OR s.user_id = CAST(:userId AS INTEGER))
               AND (CAST(:teamId AS INTEGER) IS NULL OR s.team_id = CAST(:teamId AS INTEGER))
               AND (CAST(:providerId AS INTEGER) IS NULL OR s.provider_id = CAST(:providerId AS INTEGER))
               AND (:allModels = TRUE OR s.model_id IN (:modelIds))
+              AND (:allProviders = TRUE OR s.provider_id IN (:providerIds))
               AND (CAST(:errorsOnly AS BOOLEAN) IS NOT TRUE OR s.result_status IN ('error', 'timeout'))
             UNION ALL
-            SELECT le.model_id, le.model_name, le.provider_id, COALESCE(le.was_cold_start, FALSE), 1::bigint,
-                   (le.result_status IS DISTINCT FROM 'success'
-                    OR (le.error_message IS NOT NULL AND le.error_message <> ''))::int::bigint,
+            SELECT le.model_id, CASE WHEN le.model_id IS NULL THEN le.model_name END, le.provider_id, COALESCE(le.was_cold_start, FALSE), 1::bigint,
+                   (logos_stats_request_state(le.result_status, le.timestamp_response, le.timestamp_forwarding, le.timestamp_provider_call) = 'error')::int::bigint,
                    -- Same provider-call split as the rollup branch above.
                    CASE WHEN le.timestamp_request IS NOT NULL
                           AND COALESCE(le.timestamp_provider_call, le.timestamp_forwarding) IS NOT NULL
@@ -1241,22 +1298,21 @@ public interface LogEntryRepository extends JpaRepository<LogEntry, Integer> {
                                                 - COALESCE(le.timestamp_provider_call, le.timestamp_forwarding))) END,
                    (COALESCE(le.timestamp_provider_call, le.timestamp_forwarding) IS NOT NULL
                     AND COALESCE(le.timestamp_provider_response, le.timestamp_response) IS NOT NULL)::int::bigint
-            FROM log_entry le
-            WHERE COALESCE(le.timestamp_forwarding, le.timestamp_request, le.timestamp_response) BETWEEN :start AND :end
-              AND (COALESCE(le.timestamp_forwarding, le.timestamp_request, le.timestamp_response) <  (SELECT mv_lo FROM w)
-                OR COALESCE(le.timestamp_forwarding, le.timestamp_request, le.timestamp_response) >= (SELECT mv_hi FROM w))
-              -- Orphans (model deleted) carry the captured name instead; rows
-              -- with neither never resolved to a model and stay out, as before.
-              AND (le.model_id IS NOT NULL OR le.model_name IS NOT NULL)
+            FROM live_requests le
+            WHERE le.request_id IS NOT NULL AND le.timestamp_request BETWEEN :start AND :end
+              AND NOT le.stats_is_benchmark
+              AND (CAST(:status AS TEXT) IS NULL OR logos_stats_request_state(le.result_status, le.timestamp_response, le.timestamp_forwarding, le.timestamp_provider_call) = CAST(:status AS TEXT))
               AND (CAST(:userId AS INTEGER) IS NULL OR le.user_id = CAST(:userId AS INTEGER))
               AND (CAST(:teamId AS INTEGER) IS NULL OR le.team_id = CAST(:teamId AS INTEGER))
               AND (CAST(:providerId AS INTEGER) IS NULL OR le.provider_id = CAST(:providerId AS INTEGER))
               AND (CAST(:apiKeyId AS INTEGER) IS NULL OR le.api_key_id = CAST(:apiKeyId AS INTEGER))
               AND (:allModels = TRUE OR le.model_id IN (:modelIds))
+              AND (:allProviders = TRUE OR le.provider_id IN (:providerIds))
               AND (CAST(:errorsOnly AS BOOLEAN) IS NOT TRUE OR le.result_status IN ('error', 'timeout'))
         )
         SELECT pt.model_id AS modelId,
-               COALESCE(m.name, pt.model_name, 'Model ' || pt.model_id) AS modelName,
+               COALESCE(m.name, pt.model_name, 'Model ' || pt.model_id, 'Unresolved model') AS modelName,
+               (pt.model_id IS NULL AND pt.model_name IS NOT NULL) AS modelDeleted,
                SUM(pt.requests)::bigint AS requestCount,
                (SUM(pt.queue_seconds_sum) / NULLIF(SUM(pt.queue_seconds_count), 0))::double precision AS avgQueueSeconds,
                (SUM(pt.run_seconds_sum)   / NULLIF(SUM(pt.run_seconds_count), 0))::double precision   AS avgRunSeconds,
@@ -1281,7 +1337,10 @@ public interface LogEntryRepository extends JpaRepository<LogEntry, Integer> {
         @Param("apiKeyId") Integer apiKeyId,
         @Param("allModels") boolean allModels,
         @Param("modelIds") List<Integer> modelIds,
-        @Param("errorsOnly") Boolean errorsOnly);
+        @Param("errorsOnly") Boolean errorsOnly,
+        @Param("status") String status,
+        @Param("allProviders") boolean allProviders,
+        @Param("providerIds") List<Integer> providerIds);
 
     /**
      * How long finished requests waited and ran, per model, provider and
@@ -1312,8 +1371,7 @@ public interface LogEntryRepository extends JpaRepository<LogEntry, Integer> {
     @Query(value = """
         WITH finished AS (
             SELECT le.model_id, le.model_name, le.provider_id, le.reasoning_effort,
-                   (le.result_status IS DISTINCT FROM 'success'
-                    OR (le.error_message IS NOT NULL AND le.error_message <> '')) AS failed,
+                   (logos_stats_request_state(le.result_status, le.timestamp_response, le.timestamp_forwarding, le.timestamp_provider_call) = 'error') AS failed,
                    CASE WHEN le.timestamp_request IS NOT NULL
                           AND COALESCE(le.timestamp_provider_call, le.timestamp_forwarding) IS NOT NULL
                         THEN EXTRACT(EPOCH FROM (COALESCE(le.timestamp_provider_call, le.timestamp_forwarding)
@@ -1326,7 +1384,9 @@ public interface LogEntryRepository extends JpaRepository<LogEntry, Integer> {
                    CASE WHEN le.timestamp_request IS NOT NULL AND le.time_at_first_token IS NOT NULL
                         THEN EXTRACT(EPOCH FROM (le.time_at_first_token - le.timestamp_request)) * 1000 END AS ttft_ms
             FROM log_entry le
-            WHERE COALESCE(le.timestamp_forwarding, le.timestamp_request, le.timestamp_response) BETWEEN :start AND :end
+            WHERE le.request_id IS NOT NULL AND le.timestamp_request BETWEEN :start AND :end
+              AND NOT logos_stats_is_internal_benchmark(le)
+              AND (CAST(:status AS TEXT) IS NULL OR logos_stats_request_state(le.result_status, le.timestamp_response, le.timestamp_forwarding, le.timestamp_provider_call) = CAST(:status AS TEXT))
               AND le.timestamp_response IS NOT NULL
               AND (le.model_id IS NOT NULL OR le.model_name IS NOT NULL)
               AND (CAST(:userId AS INTEGER) IS NULL OR le.user_id = CAST(:userId AS INTEGER))
@@ -1334,6 +1394,7 @@ public interface LogEntryRepository extends JpaRepository<LogEntry, Integer> {
               AND (CAST(:providerId AS INTEGER) IS NULL OR le.provider_id = CAST(:providerId AS INTEGER))
               AND (CAST(:apiKeyId AS INTEGER) IS NULL OR le.api_key_id = CAST(:apiKeyId AS INTEGER))
               AND (:allModels = TRUE OR le.model_id IN (:modelIds))
+              AND (:allProviders = TRUE OR le.provider_id IN (:providerIds))
               AND (CAST(:errorsOnly AS BOOLEAN) IS NOT TRUE OR le.result_status IN ('error', 'timeout'))
         ),
         named AS (
@@ -1373,7 +1434,10 @@ public interface LogEntryRepository extends JpaRepository<LogEntry, Integer> {
         @Param("apiKeyId") Integer apiKeyId,
         @Param("allModels") boolean allModels,
         @Param("modelIds") List<Integer> modelIds,
-        @Param("errorsOnly") Boolean errorsOnly);
+        @Param("errorsOnly") Boolean errorsOnly,
+        @Param("status") String status,
+        @Param("allProviders") boolean allProviders,
+        @Param("providerIds") List<Integer> providerIds);
 
     /**
      * The request-volume series.
@@ -1385,18 +1449,25 @@ public interface LogEntryRepository extends JpaRepository<LogEntry, Integer> {
     @Transactional(readOnly = true)
     @Query(value = """
         WITH w AS (SELECT * FROM logos_stats_rollup_window(:start, :end, :useRollup AND CAST(:apiKeyId AS INTEGER) IS NULL)),
+        """ + STATS_DIRTY_AND_LIVE_CTES + """
         parts AS (
             SELECT to_timestamp(FLOOR(EXTRACT(EPOCH FROM s.bucket_hour) / :bucketSec) * :bucketSec) AS bucket_ts,
-                   s.provider_id, s.requests, s.run_seconds_sum, s.run_seconds_count
+                   s.provider_id, s.requests,
+                   s.run_seconds_sum,
+                   s.run_seconds_count
             FROM log_entry_hourly_stats s
-            WHERE s.bucket_hour >= (SELECT mv_lo FROM w) AND s.bucket_hour < (SELECT mv_hi FROM w)
+            WHERE NOT s.is_benchmark
+              AND s.bucket_hour >= (SELECT mv_lo FROM w) AND s.bucket_hour < (SELECT mv_hi FROM w)
+              AND NOT EXISTS (SELECT 1 FROM dirty d WHERE d.bucket_hour = s.bucket_hour)
+              AND (CAST(:status AS TEXT) IS NULL OR s.lifecycle_state = CAST(:status AS TEXT))
               AND (CAST(:userId AS INTEGER) IS NULL OR s.user_id = CAST(:userId AS INTEGER))
               AND (CAST(:teamId AS INTEGER) IS NULL OR s.team_id = CAST(:teamId AS INTEGER))
               AND (CAST(:providerId AS INTEGER) IS NULL OR s.provider_id = CAST(:providerId AS INTEGER))
               AND (:allModels = TRUE OR s.model_id IN (:modelIds))
+              AND (:allProviders = TRUE OR s.provider_id IN (:providerIds))
               AND (CAST(:errorsOnly AS BOOLEAN) IS NOT TRUE OR s.result_status IN ('error', 'timeout'))
             UNION ALL
-            SELECT to_timestamp(FLOOR(EXTRACT(EPOCH FROM COALESCE(le.timestamp_forwarding, le.timestamp_request, le.timestamp_response)) / :bucketSec) * :bucketSec),
+            SELECT to_timestamp(FLOOR(EXTRACT(EPOCH FROM le.timestamp_request) / :bucketSec) * :bucketSec),
                    le.provider_id, 1::bigint,
                    -- Same provider-call split as the rollup branch above.
                    CASE WHEN COALESCE(le.timestamp_provider_call, le.timestamp_forwarding) IS NOT NULL
@@ -1405,15 +1476,16 @@ public interface LogEntryRepository extends JpaRepository<LogEntry, Integer> {
                                                 - COALESCE(le.timestamp_provider_call, le.timestamp_forwarding))) END,
                    (COALESCE(le.timestamp_provider_call, le.timestamp_forwarding) IS NOT NULL
                     AND COALESCE(le.timestamp_provider_response, le.timestamp_response) IS NOT NULL)::int::bigint
-            FROM log_entry le
-            WHERE COALESCE(le.timestamp_forwarding, le.timestamp_request, le.timestamp_response) BETWEEN :start AND :end
-              AND (COALESCE(le.timestamp_forwarding, le.timestamp_request, le.timestamp_response) <  (SELECT mv_lo FROM w)
-                OR COALESCE(le.timestamp_forwarding, le.timestamp_request, le.timestamp_response) >= (SELECT mv_hi FROM w))
+            FROM live_requests le
+            WHERE le.request_id IS NOT NULL AND le.timestamp_request BETWEEN :start AND :end
+              AND NOT le.stats_is_benchmark
+              AND (CAST(:status AS TEXT) IS NULL OR logos_stats_request_state(le.result_status, le.timestamp_response, le.timestamp_forwarding, le.timestamp_provider_call) = CAST(:status AS TEXT))
               AND (CAST(:userId AS INTEGER) IS NULL OR le.user_id = CAST(:userId AS INTEGER))
               AND (CAST(:teamId AS INTEGER) IS NULL OR le.team_id = CAST(:teamId AS INTEGER))
               AND (CAST(:providerId AS INTEGER) IS NULL OR le.provider_id = CAST(:providerId AS INTEGER))
               AND (CAST(:apiKeyId AS INTEGER) IS NULL OR le.api_key_id = CAST(:apiKeyId AS INTEGER))
               AND (:allModels = TRUE OR le.model_id IN (:modelIds))
+              AND (:allProviders = TRUE OR le.provider_id IN (:providerIds))
               AND (CAST(:errorsOnly AS BOOLEAN) IS NOT TRUE OR le.result_status IN ('error', 'timeout'))
         ),
         bucket_series AS (
@@ -1453,44 +1525,47 @@ public interface LogEntryRepository extends JpaRepository<LogEntry, Integer> {
         @Param("apiKeyId") Integer apiKeyId,
         @Param("allModels") boolean allModels,
         @Param("modelIds") List<Integer> modelIds,
-        @Param("errorsOnly") Boolean errorsOnly);
+        @Param("errorsOnly") Boolean errorsOnly,
+        @Param("status") String status,
+        @Param("allProviders") boolean allProviders,
+        @Param("providerIds") List<Integer> providerIds);
 
     @Transactional(readOnly = true)
     @Query(value = """
         WITH w AS (SELECT * FROM logos_stats_rollup_window(:start, :end, :useRollup AND CAST(:apiKeyId AS INTEGER) IS NULL)),
+        """ + STATS_DIRTY_AND_LIVE_CTES + """
         parts AS (
             SELECT to_timestamp(FLOOR(EXTRACT(EPOCH FROM s.bucket_hour) / :bucketSec) * :bucketSec) AS bucket_ts,
                    s.model_id, s.model_name, s.requests
             FROM log_entry_hourly_stats s
-            WHERE s.bucket_hour >= (SELECT mv_lo FROM w) AND s.bucket_hour < (SELECT mv_hi FROM w)
-              -- Orphans (model deleted) carry the captured name instead; rows
-              -- with neither never resolved to a model and stay out, as before.
-              AND (s.model_id IS NOT NULL OR s.model_name IS NOT NULL)
+            WHERE NOT s.is_benchmark
+              AND s.bucket_hour >= (SELECT mv_lo FROM w) AND s.bucket_hour < (SELECT mv_hi FROM w)
+              AND NOT EXISTS (SELECT 1 FROM dirty d WHERE d.bucket_hour = s.bucket_hour)
+              AND (CAST(:status AS TEXT) IS NULL OR s.lifecycle_state = CAST(:status AS TEXT))
               AND (CAST(:userId AS INTEGER) IS NULL OR s.user_id = CAST(:userId AS INTEGER))
               AND (CAST(:teamId AS INTEGER) IS NULL OR s.team_id = CAST(:teamId AS INTEGER))
               AND (CAST(:providerId AS INTEGER) IS NULL OR s.provider_id = CAST(:providerId AS INTEGER))
               AND (:allModels = TRUE OR s.model_id IN (:modelIds))
+              AND (:allProviders = TRUE OR s.provider_id IN (:providerIds))
               AND (CAST(:errorsOnly AS BOOLEAN) IS NOT TRUE OR s.result_status IN ('error', 'timeout'))
             UNION ALL
-            SELECT to_timestamp(FLOOR(EXTRACT(EPOCH FROM COALESCE(le.timestamp_forwarding, le.timestamp_request, le.timestamp_response)) / :bucketSec) * :bucketSec),
-                   le.model_id, le.model_name, 1::bigint
-            FROM log_entry le
-            WHERE COALESCE(le.timestamp_forwarding, le.timestamp_request, le.timestamp_response) BETWEEN :start AND :end
-              AND (COALESCE(le.timestamp_forwarding, le.timestamp_request, le.timestamp_response) <  (SELECT mv_lo FROM w)
-                OR COALESCE(le.timestamp_forwarding, le.timestamp_request, le.timestamp_response) >= (SELECT mv_hi FROM w))
-              -- Orphans (model deleted) carry the captured name instead; rows
-              -- with neither never resolved to a model and stay out, as before.
-              AND (le.model_id IS NOT NULL OR le.model_name IS NOT NULL)
+            SELECT to_timestamp(FLOOR(EXTRACT(EPOCH FROM le.timestamp_request) / :bucketSec) * :bucketSec),
+                   le.model_id, CASE WHEN le.model_id IS NULL THEN le.model_name END, 1::bigint
+            FROM live_requests le
+            WHERE le.request_id IS NOT NULL AND le.timestamp_request BETWEEN :start AND :end
+              AND NOT le.stats_is_benchmark
+              AND (CAST(:status AS TEXT) IS NULL OR logos_stats_request_state(le.result_status, le.timestamp_response, le.timestamp_forwarding, le.timestamp_provider_call) = CAST(:status AS TEXT))
               AND (CAST(:userId AS INTEGER) IS NULL OR le.user_id = CAST(:userId AS INTEGER))
               AND (CAST(:teamId AS INTEGER) IS NULL OR le.team_id = CAST(:teamId AS INTEGER))
               AND (CAST(:providerId AS INTEGER) IS NULL OR le.provider_id = CAST(:providerId AS INTEGER))
               AND (CAST(:apiKeyId AS INTEGER) IS NULL OR le.api_key_id = CAST(:apiKeyId AS INTEGER))
               AND (:allModels = TRUE OR le.model_id IN (:modelIds))
+              AND (:allProviders = TRUE OR le.provider_id IN (:providerIds))
               AND (CAST(:errorsOnly AS BOOLEAN) IS NOT TRUE OR le.result_status IN ('error', 'timeout'))
         )
         SELECT EXTRACT(EPOCH FROM pt.bucket_ts)::double precision AS bucketTs,
                pt.model_id AS modelId,
-               COALESCE(m.name, pt.model_name, 'Model ' || pt.model_id) AS modelName,
+               COALESCE(m.name, pt.model_name, 'Model ' || pt.model_id, 'Unresolved model') AS modelName,
                SUM(pt.requests)::bigint AS count
         FROM parts pt
         LEFT JOIN models m ON m.id = pt.model_id
@@ -1508,7 +1583,10 @@ public interface LogEntryRepository extends JpaRepository<LogEntry, Integer> {
         @Param("apiKeyId") Integer apiKeyId,
         @Param("allModels") boolean allModels,
         @Param("modelIds") List<Integer> modelIds,
-        @Param("errorsOnly") Boolean errorsOnly);
+        @Param("errorsOnly") Boolean errorsOnly,
+        @Param("status") String status,
+        @Param("allProviders") boolean allProviders,
+        @Param("providerIds") List<Integer> providerIds);
 
     /**
      * The team's most repeated questions.

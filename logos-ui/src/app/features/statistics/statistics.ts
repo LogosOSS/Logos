@@ -355,18 +355,15 @@ export class Statistics implements OnInit, OnDestroy {
       teamId: this.filterTeamId(),
       providerId: this.filterProviderId(),
       apiKeyId: this.filterApiKeyId(),
-      // Outcomes are no longer a page-scope control — the feed's state filter
-      // covers error/finished buckets. Keep the wire field for the socket.
+      // The lifecycle selection travels with the model IDs through
+      // set_feed_filters. Keep this older wire field for compatibility.
       errorsOnly: false,
     };
   }
 
-  // ── Request feed filters ────────────────────────────────────────────────────
-  // One lifecycle bucket and a model set; empty shows everything. The model
-  // selection narrows the whole page — request list, KPI cards and charts —
-  // like the team, requester and provider filters do. The lifecycle bucket
-  // only makes sense for the list of individual requests, so it narrows that
-  // list alone while the cards and charts keep summarising the full scope.
+  // ── Request model and lifecycle filters ─────────────────────────────────────
+  // Both selections narrow the entire Requests tab. The websocket carries
+  // them together through its existing set_feed_filters message.
   readonly feedStatus = signal<string | null>(null);
   readonly feedModelIds = signal<string[]>([]);
   readonly feedFilterActive = computed(() =>
@@ -377,16 +374,12 @@ export class Statistics implements OnInit, OnDestroy {
   })));
 
   setFeedModelFilter(values: string[]): void {
-    // A model selection narrows the whole page, so every range-scoped panel is
-    // blanked until the server answers — the same treatment a scope change gets.
-    this.markRangeChanged();
     this.feedModelIds.set(values);
     this.applyFeedFilters();
   }
 
   private applyFeedFilters(): void {
-    this.liveFeedTotal.set(null);
-    this.requestsPending.set(true);
+    this.markRangeChanged();
     this.statsWs.setFeedFilters(this.feedStatus(), this.feedModelIds().map(Number), []);
   }
 
@@ -397,32 +390,15 @@ export class Statistics implements OnInit, OnDestroy {
 
   readonly selectedFeedStatusValue = computed(() => this.feedStatus() ?? '');
 
-  /**
-   * The feed's own total, reported by the live push while a state filter is on.
-   * The unfiltered page borrows the statistics aggregate instead, so this stays
-   * null then and `requestFeedTotal` falls back to that total.
-   */
+  /** The feed count includes matching benchmark rows; the KPI count does not. */
   readonly liveFeedTotal = signal<number | null>(null);
-
-  /** Total the feed header shows: the status-filtered count, else the KPI total. */
-  readonly requestFeedTotal = computed(() =>
-    this.feedFilterActive() ? this.liveFeedTotal() : this.totalRequests(),
-  );
+  readonly requestFeedTotal = this.liveFeedTotal.asReadonly();
 
   setFeedStatusFilter(value: string | null): void {
     const next = normalizeFeedStatus(value);
     if (next === this.feedStatus()) return;
-    // The total the last push reported describes the previous bucket — or,
-    // when clearing, there was none — so it is wrong for this selection and
-    // is dropped until the first push for it lands. Without this the header
-    // keeps advertising the old bucket's count, indefinitely if the socket
-    // is down.
-    this.liveFeedTotal.set(null);
     this.feedStatus.set(next);
-    // Only the feed changes, so only it is marked loading — the KPI cards and
-    // charts keep their current (unaffected) numbers.
-    this.requestsPending.set(true);
-    this.statsWs.setFeedFilters(next, this.feedModelIds().map(Number), []);
+    this.applyFeedFilters();
   }
 
   // ── Raw WS signals ────────────────────────────────────────────────────────────
@@ -847,20 +823,31 @@ export class Statistics implements OnInit, OnDestroy {
   readonly modelDeletedKeys = computed<Set<string>>(() => {
     const keys = new Set<string>();
     for (const m of this.stats()?.modelBreakdown ?? []) {
-      if (m.modelId == null) keys.add(modelSeriesKey(m.modelId, m.modelName));
+      // New responses mark unresolved models explicitly as not deleted.
+      if (m.modelDeleted ?? m.modelId == null) keys.add(modelSeriesKey(m.modelId, m.modelName));
     }
     return keys;
   });
 
   // ── Distribution pie data ─────────────────────────────────────────────────────
 
+  private readonly providerVolumeCounts = computed(() => ({
+    cloud: this.cloudLineData().reduce((acc, p) => acc + (p.value || 0), 0),
+    local: this.localLineData().reduce((acc, p) => acc + (p.value || 0), 0),
+  }));
+
   readonly providerPieData = computed(() => {
-    const cloudSum = this.cloudLineData().reduce((acc, p) => acc + (p.value || 0), 0);
-    const localSum = this.localLineData().reduce((acc, p) => acc + (p.value || 0), 0);
+    const { cloud, local } = this.providerVolumeCounts();
     return [
-      { value: cloudSum, color: CHART_ROLE.cloud, text: 'Cloud' },
-      { value: localSum, color: CHART_ROLE.local, text: 'Local' },
+      { value: cloud, color: CHART_ROLE.cloud, text: 'Cloud' },
+      { value: local, color: CHART_ROLE.local, text: 'Local' },
     ].filter((d) => d.value > 0);
+  });
+
+  // Derive the center percentage from the exact counts plotted as slices.
+  readonly cloudVolumePct = computed(() => {
+    const { cloud, local } = this.providerVolumeCounts();
+    return cloud + local > 0 ? Math.round((cloud / (cloud + local)) * 100) : 0;
   });
 
   readonly modelPieData = computed(() => {
@@ -873,7 +860,9 @@ export class Statistics implements OnInit, OnDestroy {
       .sort((a, b) => b.total - a.total);
 
     const deletedSuffix = (key: string) => (this.modelDeletedKeys().has(key) ? ' (deleted)' : '');
-    if (windowed.length === 0) {
+    // An explicitly empty series is authoritative: falling back to the
+    // breakdown would put benchmark-only traffic back into the distribution.
+    if (this.stats()?.modelTimeSeries == null) {
       return (this.stats()?.modelBreakdown ?? []).map((m) => {
         const key = modelSeriesKey(m.modelId, m.modelName);
         return {
@@ -1096,8 +1085,8 @@ export class Statistics implements OnInit, OnDestroy {
   }
 
   /**
-   * Reset every selector in the page-top filter row: the page scope and the
-   * feed-only selections. Each group is only re-sent when it was active — an
+   * Reset every selector in the page-top filter row. Each wire filter
+   * group is only re-sent when it was active — an
    * already-empty group has nothing to undo, and re-sending it would blank the
    * panels it feeds (the KPI cards in particular) for no reason.
    */
@@ -1114,8 +1103,6 @@ export class Statistics implements OnInit, OnDestroy {
       void this.loadScopeOptions();
     }
     if (feedActive) {
-      // Models are part of the page scope: clearing them re-answers the panels.
-      if (this.feedModelIds().length > 0) this.markRangeChanged();
       this.feedStatus.set(null);
       this.feedModelIds.set([]);
       this.applyFeedFilters();
@@ -1180,7 +1167,6 @@ export class Statistics implements OnInit, OnDestroy {
       const modelIds = new Set(this.feedModels().map((m) => String(m.id)));
       const keptModels = this.feedModelIds().filter((id) => modelIds.has(id));
       if (keptModels.length !== this.feedModelIds().length) {
-        this.markRangeChanged();
         this.feedModelIds.set(keptModels);
         this.applyFeedFilters();
       }
@@ -1351,14 +1337,9 @@ export class Statistics implements OnInit, OnDestroy {
       this.latestRequests.set(payload.requests);
       this.requestsPending.set(false);
     }
-    // A status-filtered feed carries its own total (the page's KPI total is
-    // only as narrow as the team/user scope, not the state bucket). The
-    // server sends it only when the row set it counts has moved, so a push
-    // without a total keeps the last one: the count cannot have changed in
-    // between. Unfiltered pushes have no total, and switching the filter
-    // clears this signal, so the borrowed aggregate is never shown for a
-    // set it does not describe.
-    if (this.feedFilterActive() && typeof payload.total === 'number') {
+    // A token-only push can omit the unchanged count. Keep the last feed
+    // total for this selection rather than substituting the benchmark-free KPI.
+    if (typeof payload.total === 'number') {
       this.liveFeedTotal.set(payload.total);
     }
   }

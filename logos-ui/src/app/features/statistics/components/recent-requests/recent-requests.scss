@@ -333,10 +333,26 @@
 .rr-badge--local,
 .rr-badge--queued,
 .rr-badge--running,
+.rr-badge--finished,
 .rr-badge--cold,
 .rr-badge--hot {
   background: rgb(var(--color-outline-200)  / var(--opacity-soft));
   color: rgb(var(--color-typography-300));
+}
+
+.rr-badge--error {
+  background: rgb(var(--color-error) / var(--opacity-soft));
+  color: rgb(var(--color-error));
+}
+
+.rr-badge--timeout {
+  background: rgb(var(--color-warning) / var(--opacity-soft));
+  color: rgb(var(--color-warning));
+}
+
+.rr-badge--benchmark {
+  background: rgb(var(--color-primary-400) / var(--opacity-soft));
+  color: rgb(var(--color-typography-100));
 }
 
 .rr-content-button {

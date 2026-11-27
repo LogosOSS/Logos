@@ -56,8 +56,7 @@
     <div class="stats-header__controls">
       <!-- Scope. Sits with the time range because it does the same kind of job:
            both narrow every request-derived panel on the page at once. Every
-           selector on the page lives in this row — the feed-only state filter
-           included, so nothing filters from inside a panel.
+           selector on the page lives in this row, including state.
            One Clear resets the whole row. -->
       <div class="stats-scope">
         <app-searchable-select
@@ -85,8 +84,6 @@
           ariaLabel="Filter by provider"
           (valueChange)="setProviderFilter($event)"
         />
-        <!-- Models narrow the whole page, like the three filters above. The
-             state filter after it narrows the recent-requests list alone. -->
         <app-multi-select
           class="stats-scope__select"
           label="Models"
@@ -245,7 +242,7 @@
       <!-- ── Recent requests ───────────────────────────────────────────────── -->
       <app-stats-chart-panel
         title="Recent requests"
-        subtitle="Latest activity from the request log."
+        subtitle="Includes matching internal benchmarks, which are not counted in the totals or charts."
       >
         <app-stats-recent-requests
           [liveRequests]="latestRequests()"
@@ -264,7 +261,7 @@
       <!-- ── Row 2: Request volume ────────────────────────────────────────── -->
       <app-stats-chart-panel
         title="Request volume"
-        subtitle="Per-bucket throughput across cloud and local providers."
+        subtitle="Cloud and local request volume, excluding internal benchmarks."
       >
         <span panelRight>
           <!-- The chart deliberately stays mounted across a range change (it owns
@@ -320,7 +317,7 @@
               <app-stats-vram-donut
                 [data]="providerPieData()"
                 centerTop="cloud"
-                [centerMiddle]="cloudPct() + '%'"
+                [centerMiddle]="cloudVolumePct() + '%'"
                 valueSuffix=" req"
                 [valueDecimals]="0"
               />

@@ -47,9 +47,9 @@ export type RequestLogStats = {
   };
   statusCounts: Record<string, number>;
   modelBreakdown: Array<{
-    /** null marks a deleted model: the usage survives under modelName. */
+    /** Null for a deleted or unresolved model. */
     modelId: number | null;
-    /** Set on deleted-model entries so the UI can show the trash marker. */
+    /** True only for deleted models. Older wire responses omitted this field. */
     modelDeleted?: boolean;
     modelName: string;
     requestCount: number;
@@ -69,7 +69,7 @@ export type RequestLogStats = {
   }>;
   modelTimeSeries?: Array<{
     timestamp: number; // Unix ts (ms)
-    modelId: number | null; // null for deleted models
+    modelId: number | null; // null for deleted or unresolved models
     modelName: string;
     count: number;
   }>;
@@ -313,6 +313,9 @@ export type VramProviderPayload = {
   last_heartbeat?: string | null;
 };
 
+/** Lifecycle shared by the Requests tab's filters and recent-request rows. */
+export type RequestLifecycleState = 'queued' | 'running' | 'error' | 'finished';
+
 // RequestItem from logos-ui-old/components/statistics/request-stack.tsx
 export interface RequestItem {
   request_id: string;
@@ -320,11 +323,14 @@ export interface RequestItem {
   provider_name: string;
   is_cloud: boolean | null;
   status: string; // 'success', 'error', 'timeout', 'pending'
+  /** Optional while older servers still send only timing and result fields. */
+  lifecycle_state?: RequestLifecycleState | null;
   timestamp: string | null;
   duration: number | null; // seconds (exec only)
   cold_start: boolean | null;
   enqueue_ts: string | null;
   scheduled_ts: string | null;
+  provider_call_ts?: string | null;
   request_complete_ts: string | null;
   queue_seconds: number | null;
   total_seconds: number | null; // enqueue to complete
@@ -342,6 +348,8 @@ export interface RequestItem {
    * developer keys (and application keys that never set one).
    */
   environment: string | null;
+  /** Set by the server for an authenticated internal benchmark request. */
+  benchmark?: boolean;
   prompt_tokens: number | null;
   completion_tokens: number | null;
   total_tokens: number | null;

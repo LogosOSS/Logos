@@ -111,7 +111,31 @@ If it says `text/plain`, the "image" is text — re-push via git as above. If `c
 
 ## 4. Embed in the PR description
 
-Add a `## Screenshots` section with the raw gist URLs (commit-pinned), labelled desktop/mobile.
+Add a `## Screenshots` section with the commit-pinned raw gist URLs, labelled desktop/mobile.
+If both full-page images are short enough to review inline, embed them directly.
+
+For long pages, put a compact desktop and mobile preview inline first. Crop copies of the screenshots around the
+changed area so the reader can see the change without scrolling through the whole page. Keep enough surrounding
+UI to identify the view, and describe the changed area in each preview's alt text. Do not crop or replace the
+original full-page captures. Put both originals in a native GitHub `<details>` block below the previews; optionally
+link to the original files so readers can open them at full size.
+
+```markdown
+## Screenshots
+
+![Desktop preview: statistics time range controls](DESKTOP_PREVIEW_URL)
+
+![Mobile preview: all six time ranges fit in two rows](MOBILE_PREVIEW_URL)
+
+<details>
+<summary>Full-page screenshots (desktop and mobile)</summary>
+
+![Full desktop Statistics page](DESKTOP_FULL_URL)
+
+![Full mobile Statistics page](MOBILE_FULL_URL)
+
+</details>
+```
 
 ## 5. Role-guide documentation shots (committed PNGs)
 
