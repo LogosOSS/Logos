@@ -301,7 +301,7 @@ Select the same column again to reverse the order. Missing values stay at the en
 
 Read **Currently deployed** below **Automatic benchmarks** in **Performance → Overview**.
 **Parameter changes** shows the values that differ from the round baseline for the active or latest saved trial.
-If no trial changes are available, then the summary shows the live batching limits.
+If no trial changes are available, then the summary shows the live batching limits and any reported prefix caching and speculative decoding settings.
 Expand **Configuration & selection details** for **Run selection**.
 Expand **Serving settings** to see the full worker configuration.
 The view identifies measurements with matching settings and the same measurement environment.
@@ -321,7 +321,7 @@ A fresh comparison must verify a historical candidate before automatic adoption.
 
 Configuration details and benchmark history start closed on desktop and mobile.
 **Analysis** opens with **Compare parameter values** expanded. Select the **Reference run**, **Parameter** and **Metric**.
-The chart shows one parameter at a time, with a dashed reference line and measured changes.
+The chart shows one parameter at a time, with a dashed reference line and measured changes. Select **Prefix caching** or **N-gram decoding** when those settings have comparable results.
 Only matching workloads and other captured settings enter the comparison.
 A single parameter value shows an explanation instead of an empty comparison chart.
 

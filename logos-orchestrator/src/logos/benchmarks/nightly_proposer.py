@@ -11,6 +11,7 @@ from starlette.responses import JSONResponse
 
 from logos.agent_credential import issue_agent_credential
 from logos.auth import AuthContext, authenticate_api_key, initialize_rate_limits
+from logos.benchmarks.configuration import NGRAM_CONFIG
 from logos.benchmarks.guidellm_runner import benchmark_model_lane, lane_is_serving
 from logos.benchmarks.reservations import benchmark_reservations
 from logos.dbutils.dbmanager import DBManager
@@ -43,10 +44,14 @@ def _parameters(raw: object) -> dict:
     dtype = raw.get("kv_cache_dtype")
     if isinstance(dtype, str) and dtype in DTYPE_CHOICES:
         result["kv_cache_dtype"] = dtype
+    if type(raw.get("enable_prefix_caching")) is bool:
+        result["enable_prefix_caching"] = raw["enable_prefix_caching"]
     spec = raw.get("speculative_config")
     if isinstance(spec, str):
         if not spec:
             result["speculative_config"] = "off"
+        elif spec == NGRAM_CONFIG:
+            result["speculative_config"] = json.loads(NGRAM_CONFIG)
         elif len(spec) <= 120:
             try:
                 decoded = json.loads(spec)

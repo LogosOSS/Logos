@@ -1,4 +1,4 @@
-import { benchmarkDatasetLabel } from './benchmark-configuration';
+import { benchmarkDatasetLabel, speculativeDecodingLabel } from './benchmark-configuration';
 import { ModelProviderBenchmark } from '../../shared/models/provider.model';
 import { comparisonValue } from './benchmark-comparison';
 import { batchingSignature, comparisonSettings } from './benchmark-isolation';
@@ -10,14 +10,25 @@ function completedAt(run: ModelProviderBenchmark): number {
 }
 
 /** Record history can span worker releases; adoption still requires a fresh comparison. */
-function timelineSignature(run: ModelProviderBenchmark): string | null {
-  return batchingSignature({ ...run, configuration: { ...run.configuration,
-    nightly: {}, metadata: {} } });
+function timelineSignature(run: ModelProviderBenchmark, includeNightlyVariants = false): string | null {
+  const configuration = { ...run.configuration, nightly: {}, metadata: {} };
+  if (includeNightlyVariants && run.configuration['serving']) {
+    const serving = { ...run.configuration['serving'] as Record<string, unknown> };
+    if (typeof serving['enable_prefix_caching'] === 'boolean') delete serving['enable_prefix_caching'];
+    if (['Off', 'N-gram · 3 draft tokens'].includes(speculativeDecodingLabel(serving['speculative_config']))) {
+      delete serving['speculative_config'];
+    }
+    return batchingSignature({ ...run, configuration: { ...configuration, serving } });
+  }
+  return batchingSignature({ ...run, configuration });
 }
 
 export function recordConfiguration(run: ModelProviderBenchmark): string {
   const settings = comparisonSettings(run);
-  return `Sequences ${settings['max_num_seqs'] ?? 'not recorded'} · batch tokens ${settings['max_num_batched_tokens'] ?? 'not recorded'}`;
+  const values = [`Sequences ${settings['max_num_seqs'] ?? 'not recorded'}`, `batch tokens ${settings['max_num_batched_tokens'] ?? 'not recorded'}`];
+  if (settings['enable_prefix_caching']) values.push(`prefix caching ${settings['enable_prefix_caching'].toLowerCase()}`);
+  if (settings['speculative_config']) values.push(`speculative decoding ${settings['speculative_config']}`);
+  return values.join(' · ');
 }
 
 /** Plot completed measurements in absolute units with each round's captured baseline. */
@@ -26,25 +37,31 @@ export function benchmarkProgress(runs: readonly ModelProviderBenchmark[]) {
   const groups = new Map<string, {
     runs: Map<number, ModelProviderBenchmark>;
     baselines: Map<number, ModelProviderBenchmark>;
+    measuredSettings: Set<string | null>;
   }>();
   for (const run of runs) {
     const nightly = run.configuration['nightly'] as { baseline_id?: number; reference_id?: number } | undefined;
     const baseline = byId.get(nightly?.baseline_id ?? nightly?.reference_id ?? -1);
-    const signature = timelineSignature(run);
-    if (!baseline || signature === null || signature !== timelineSignature(baseline)) continue;
+    const signature = timelineSignature(run, true);
+    if (!baseline || signature === null || signature !== timelineSignature(baseline, true)) continue;
     if (!Number.isFinite(completedAt(run)) || !Number.isFinite(completedAt(baseline))) continue;
     const before = comparisonValue(baseline, 'throughput'), after = comparisonValue(run, 'throughput');
     if (before === null || before <= 0 || after === null || after <= 0) continue;
-    const group = groups.get(signature) ?? { runs: new Map(), baselines: new Map() };
+    const group = groups.get(signature) ?? { runs: new Map(), baselines: new Map(), measuredSettings: new Set() };
     group.baselines.set(baseline.id, baseline);
     group.runs.set(baseline.id, baseline);
     group.runs.set(run.id, run);
+    group.measuredSettings.add(timelineSignature(run));
+    group.measuredSettings.add(timelineSignature(baseline));
     groups.set(signature, group);
   }
   for (const run of runs) {
     if (run.configuration['nightly']) continue;
-    const key = timelineSignature(run), rate = comparisonValue(run, 'throughput');
-    if (key !== null && rate !== null && rate > 0 && Number.isFinite(completedAt(run))) groups.get(key)?.runs.set(run.id, run);
+    const key = timelineSignature(run, true), rate = comparisonValue(run, 'throughput');
+    const group = key === null ? undefined : groups.get(key);
+    if (group?.measuredSettings.has(timelineSignature(run)) && rate !== null && rate > 0 && Number.isFinite(completedAt(run))) {
+      group.runs.set(run.id, run);
+    }
   }
   return [...groups.entries()].map(([key, group]) => {
     const ordered = [...group.runs.values()].sort((a, b) => completedAt(a) - completedAt(b) || a.id - b.id);

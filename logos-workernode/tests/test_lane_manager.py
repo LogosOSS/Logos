@@ -259,6 +259,7 @@ async def test_build_lane_status_includes_vllm_runtime_fields(
     assert status.backend_metrics["tensor_parallel_size"] == 2
     assert status.backend_metrics["pipeline_parallel_size"] == pipeline_size
     assert status.nightly_vllm_version == "0.34.0"
+    assert status.nightly_prefix_caching_checked is True
     assert status.reported_vram_mb == pytest.approx(1.0)
     assert status.pid_vram_mb == pytest.approx(7680.0)
     assert status.vram_source == "pid"
@@ -272,8 +273,8 @@ def test_nightly_tuning_conflicts_detect_global_and_lane_flags():
     )
     assert manager._nightly_blocked_vllm_fields(VllmConfig()) == ["kv_cache_dtype"]  # noqa: SLF001
     assert manager._nightly_blocked_vllm_fields(  # noqa: SLF001
-        VllmConfig(extra_args=["--speculative-config", "{}"])
-    ) == ["kv_cache_dtype", "speculative_config"]
+        VllmConfig(extra_args=["--speculative-config", "{}", "--no-enable-prefix-caching"])
+    ) == ["enable_prefix_caching", "kv_cache_dtype", "speculative_config"]
 
 
 @pytest.mark.asyncio

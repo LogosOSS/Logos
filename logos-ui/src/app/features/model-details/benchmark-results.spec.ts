@@ -333,6 +333,19 @@ describe('Nightly progress', () => {
     expect(points[1].baselineId).toBeUndefined();
   });
 
+  it('plots prefix caching and N-gram trials against the round baseline', () => {
+    const baseline = measured(1, 40, 1, 21), prefix = measured(2, 38, 1, 22), ngram = measured(3, 44, 1, 23);
+    const preset = '{"method":"ngram","num_speculative_tokens":3,"prompt_lookup_min":2,"prompt_lookup_max":5}';
+    for (const [run, enabled, speculative] of [[baseline, true, ''], [prefix, false, ''], [ngram, true, preset]] as const) {
+      run.configuration['serving'] = { ...(baseline.configuration['serving'] as object),
+        enable_prefix_caching: enabled, speculative_config: speculative };
+    }
+    expect(benchmarkProgress([baseline, prefix, ngram])[0].points.map(point => point.gain))
+      .toEqual([0, expect.closeTo(-5), expect.closeTo(10)]);
+    expect(recordConfiguration(prefix)).toContain('prefix caching disabled');
+    expect(recordConfiguration(ngram)).toContain('N-gram · 3 draft tokens');
+  });
+
   it('separates workloads and rejects changes to input generation within a comparison', () => {
     const changed = measured(7, 99, 1, 22);
     (changed.configuration['scenario'] as { spec: { seed: { value: number } } }).spec.seed.value = 99;

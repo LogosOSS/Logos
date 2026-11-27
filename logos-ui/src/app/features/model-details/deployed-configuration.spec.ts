@@ -55,6 +55,13 @@ describe('Deployment status on Overview', () => {
     expect(fixture.componentInstance.measurement()?.id).toBe(1);
     expect(content.querySelector('section[aria-label="Last confirmed adoption"]')).toBeNull();
 
+    fixture.componentInstance.state.update(state => ({ ...state!, deployment: {
+      ...deployment, configuration: { ...deployment.configuration, enable_prefix_caching: false, speculative_config: '' },
+    } }));
+    fixture.detectChanges();
+    expect(limits()).toEqual(['Max sequences 4', 'Max batched tokens 2048', 'Prefix caching Disabled', 'Speculative decoding Off']);
+    fixture.componentInstance.state.update(state => ({ ...state!, deployment }));
+
     fixture.componentRef.setInput('runs', [run(1), run(2)]);
     fixture.detectChanges();
     expect(fixture.componentInstance.measurement()?.id).toBe(2);
@@ -113,8 +120,9 @@ describe('Deployment status on Overview', () => {
     const fixture = TestBed.createComponent(DeployedConfiguration);
     const baseline = run(1), variant = run(2), other = { ...run(3), model_provider_id: 2 };
     variant.configuration['nightly'] = { baseline_id: 1,
-      parameters: { max_num_seqs: 2, max_num_batched_tokens: 2048 },
-      original: { max_num_seqs: 4, max_num_batched_tokens: 2048 } };
+      parameters: { max_num_seqs: 2, max_num_batched_tokens: 2048, enable_prefix_caching: false,
+        speculative_config: '{"method":"ngram","num_speculative_tokens":3,"prompt_lookup_min":2,"prompt_lookup_max":5}' },
+      original: { max_num_seqs: 4, max_num_batched_tokens: 2048, enable_prefix_caching: true, speculative_config: '' } };
     other.configuration['nightly'] = { ...variant.configuration['nightly'] as object };
     fixture.componentRef.setInput('pairId', 1);
     fixture.componentRef.setInput('providerName', 'Worker');
@@ -134,17 +142,23 @@ describe('Deployment status on Overview', () => {
 
     const component = fixture.componentInstance;
     component.state.update(state => ({ ...state!, active_trial: { baseline_id: 1,
-      changes: [{ parameter: 'max_num_seqs', before: 4, after: 2 }] } }));
+      changes: [{ parameter: 'max_num_seqs', before: 4, after: 2 },
+        { parameter: 'enable_prefix_caching', before: true, after: false },
+        { parameter: 'speculative_config', before: 'Off', after: 'N-gram · 3 draft tokens' }] } }));
     fixture.detectChanges();
     expect(summary().textContent).toContain('Testing against baseline #1');
     expect(summary().querySelector('dt')?.textContent).toBe('Sequences');
     expect(summary().querySelector('dd')?.textContent).toMatch(/4\s+→.*2/);
+    expect(summary().textContent).toMatch(/Enabled\s+→.*Disabled/);
+    expect(summary().textContent).toMatch(/Off\s+→.*N-gram · 3 draft tokens/);
 
     component.state.update(state => ({ ...state!, active_trial: null }));
     fixture.detectChanges();
     expect(summary().textContent).toContain('Baseline #1');
     expect(summary().querySelector('a')?.getAttribute('href')).toContain('benchmark=2');
-    expect(summary().querySelectorAll('dt')).toHaveLength(1);
+    expect(Array.from(summary().querySelectorAll('dt'), item => item.textContent))
+      .toEqual(['Sequences', 'Prefix caching', 'Speculative decoding']);
+    expect(summary().textContent).toContain('N-gram · 3 draft tokens');
     expect(content.querySelector('.key-parameters')).toBeNull();
     const serving = content.querySelector<HTMLDetailsElement>('.serving-settings')!;
     expect(serving.open).toBe(false);

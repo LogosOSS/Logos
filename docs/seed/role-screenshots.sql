@@ -965,6 +965,28 @@ WHERE v.configuration->'metadata'->>'purpose' = 'docs-role-screenshots'
 UPDATE model_provider_benchmarks SET configuration = jsonb_set(configuration, '{nightly,baseline_id}', to_jsonb(id))
 WHERE configuration->'metadata'->>'purpose' = 'docs-role-screenshots' AND NOT configuration->'nightly' ? 'parameters';
 
+-- Two further single-parameter trials illustrate the categorical comparison charts.
+INSERT INTO model_provider_benchmarks(model_provider_id, configuration, dataset, sample_size, metrics, recorded_at)
+SELECT b.model_provider_id, b.configuration || jsonb_build_object(
+  'serving', b.configuration->'serving' || '{"enable_prefix_caching":true,"speculative_config":""}'::jsonb || trial.parameters,
+  'nightly', jsonb_build_object('baseline_id', b.id,
+    'original', b.configuration->'serving' || '{"enable_prefix_caching":true,"speculative_config":""}'::jsonb,
+    'parameters', trial.parameters),
+  'measurement', jsonb_build_object('started_at', b.recorded_at + trial.offset_time - interval '3 minutes',
+    'ended_at', b.recorded_at + trial.offset_time)),
+  b.dataset, b.sample_size, jsonb_set(b.metrics - 'aggregate_output_tokens_per_second',
+    '{output_tokens_per_second,successful,mean}', to_jsonb(trial.rate)),
+  b.recorded_at + trial.offset_time
+FROM model_provider_benchmarks b
+CROSS JOIN (VALUES
+  ('{"enable_prefix_caching":false}'::jsonb, interval '10 minutes', 40),
+  (jsonb_build_object('speculative_config',
+    '{"method":"ngram","num_speculative_tokens":3,"prompt_lookup_min":2,"prompt_lookup_max":5}'::text),
+    interval '14 minutes', 45)
+) AS trial(parameters, offset_time, rate)
+WHERE b.configuration->'metadata'->>'purpose' = 'docs-role-screenshots'
+  AND NOT b.configuration->'nightly' ? 'parameters' AND b.recorded_at::date = CURRENT_DATE;
+
 -- ---------------------------------------------------------------------------
 -- Node models and node settings of the documentation worker (Providers page).
 -- Illustrative measurements, not GPU results. The provider rows are wiped and

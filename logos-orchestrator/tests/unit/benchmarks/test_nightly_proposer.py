@@ -8,6 +8,7 @@ from starlette.responses import JSONResponse
 
 import logos as gateway
 from logos.benchmarks import nightly_proposer as proposer
+from logos.benchmarks.configuration import NGRAM_CONFIG
 
 OPTIONS = [{"max_num_seqs": 4}, {"max_num_seqs": 8}]
 ROUTE_AND_EXECUTE = gateway.route_and_execute
@@ -67,7 +68,15 @@ def inference(monkeypatch):
 async def test_uses_only_an_unreserved_separate_local_worker_and_aggregate_data(inference):
     index = await proposer.propose(
         excluded_worker_id=1,
-        candidates=[*OPTIONS[:1], {**OPTIONS[1], "extra_args": ["private-value"]}],
+        candidates=[
+            *OPTIONS[:1],
+            {
+                **OPTIONS[1],
+                "extra_args": ["private-value"],
+                "enable_prefix_caching": False,
+                "speculative_config": NGRAM_CONFIG,
+            },
+        ],
         observations=[
             {
                 "parameters": {"max_num_seqs": 6, "raw": "private-value"},
@@ -104,7 +113,14 @@ async def test_uses_only_an_unreserved_separate_local_worker_and_aggregate_data(
     content = json.loads(payload["messages"][1]["content"])
     assert content["gpu_limits"] == {"gpu_count": 2, "gpu_memory_bytes": 50_000}
     assert content["baseline_parameters"] == {"max_num_seqs": 6}
-    assert content["candidates"][1] == {"candidate_id": 1, "parameters": {"max_num_seqs": 8}}
+    assert content["candidates"][1] == {
+        "candidate_id": 1,
+        "parameters": {
+            "max_num_seqs": 8,
+            "enable_prefix_caching": False,
+            "speculative_config": json.loads(NGRAM_CONFIG),
+        },
+    }
     assert content["observations"] == [
         {"parameters": {"max_num_seqs": 6}, "baseline": True, "throughput": 40, "p95_latency_ms": 31.0}
     ]

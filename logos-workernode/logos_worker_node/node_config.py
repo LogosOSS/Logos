@@ -23,6 +23,7 @@ SYNC_NODE_CONFIG_ACTION = "sync_node_config"
 VALIDATE_NODE_CONFIG_ACTION = "validate_node_config"
 # Settings of the calibration plan that are neither engine nor profile keys.
 PLAN_ONLY_KEYS = frozenset({"model_kind"})
+LEGACY_NIGHTLY_CAPABILITIES = ("nightly_prefix_caching", "nightly_ngram")
 
 
 def _mapping(value: Any) -> dict[str, Any]:
@@ -91,7 +92,11 @@ def plans_from_entries(entries: list[dict[str, Any]], global_args: list[str]) ->
     """Calibration plans: capability first, then overrides for what is unset."""
     plans: list[dict[str, Any]] = []
     for entry in entries:
-        plan: dict[str, Any] = {"model": entry["model_name"], **entry["capability"]}
+        # Older node configurations may still carry Nightly flags outside the serving plan.
+        plan = {"model": entry["model_name"]}
+        plan.update(
+            {key: value for key, value in entry["capability"].items() if key not in LEGACY_NIGHTLY_CAPABILITIES}
+        )
         # All overrides count: the plan must describe the lane that is served.
         for key, value in entry["overrides"].items():
             if key != "model" and not key.startswith("_"):
