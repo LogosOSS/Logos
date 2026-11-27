@@ -327,6 +327,31 @@ describe('Agents', () => {
     expect(root.querySelector('.workspace-storage input')).toBeNull();
   });
 
+  it('keeps session selection and workspace removal wired through the storage panel', async () => {
+    const workspace = {
+      id: 1,
+      name: 'fixture',
+      volume_name: 'fixture-storage',
+      base_branch: 'main',
+      created_by: 'tester',
+      created_at: '2026-09-02T10:00:00Z',
+      active_sessions: 1,
+    };
+    const busy = makeSession({ workspace_id: 1, status: 'running' });
+    agentService.workspaces = [workspace, { ...workspace, id: 2, name: 'empty-workspace', active_sessions: 0 }];
+    agentService.sessions = [busy];
+    const select = vi.spyOn(component, 'select').mockResolvedValue();
+    const remove = vi.spyOn(component, 'deleteWorkspace').mockResolvedValue();
+    await component.refresh();
+    fixture.detectChanges();
+
+    const panel = fixture.nativeElement.querySelector('app-agent-workspaces') as HTMLElement;
+    panel.querySelector<HTMLButtonElement>('button.workspace__busy')?.click();
+    panel.querySelector<HTMLButtonElement>('button[aria-label="Delete workspace empty-workspace"]')?.click();
+    expect(select).toHaveBeenCalledExactlyOnceWith(busy);
+    expect(remove).toHaveBeenCalledExactlyOnceWith(agentService.workspaces[1]);
+  });
+
   it('does not make the agent page unavailable if disk telemetry fails', async () => {
     vi.spyOn(agentService, 'getWorkspaceStorage').mockRejectedValue(new Error('telemetry unavailable'));
     fixture.detectChanges();

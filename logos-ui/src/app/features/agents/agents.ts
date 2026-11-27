@@ -31,6 +31,8 @@ import {
 import { SelectComponent, AppSelectOption } from '../../shared/components/select/select';
 import { ErrorMessageComponent } from '../../shared/components/error-message/error-message';
 import { SessionMessagesComponent } from './session-messages';
+import { AgentWorkspaces } from './agent-workspaces';
+import { taskPreview } from './agent-task';
 
 /** How often the list and the open session are refreshed while work is live. */
 const POLL_MS = 4000;
@@ -78,7 +80,10 @@ export function scaleSlotCounts(parts: number[], limit: number): number[] {
 @Component({
   selector: 'app-agents',
   standalone: true,
-  imports: [CommonModule, FormsModule, SelectComponent, ErrorMessageComponent, RouterLink, SessionMessagesComponent],
+  imports: [
+    CommonModule, FormsModule, SelectComponent, ErrorMessageComponent, RouterLink,
+    SessionMessagesComponent, AgentWorkspaces,
+  ],
   templateUrl: './agents.html',
   changeDetection: ChangeDetectionStrategy.Eager,
   styleUrl: './agents.scss',
@@ -94,6 +99,7 @@ export class Agents implements OnInit {
   /** The template binds a numeric workspace id to the select's string value. */
   readonly String = String;
   readonly isActive = isActive;
+  readonly taskPreview = taskPreview;
   private lastSessionRequest = signal(0);
   private refreshSequence = 0;
   private appliedSequence = 0;
@@ -105,21 +111,6 @@ export class Agents implements OnInit {
     const value = bytes / 1024 ** 2;
     return value > 0 && value < 0.1 ? '<0.1 MiB' : this.mib.format(value) + ' MiB';
   }
-
-  formatDisk(bytes: number): string {
-    if (bytes >= 1024 ** 4) return this.mib.format(bytes / 1024 ** 4) + ' TiB';
-    if (bytes >= 1024 ** 3) return this.mib.format(bytes / 1024 ** 3) + ' GiB';
-    if (bytes >= 1024 ** 2) return this.mib.format(bytes / 1024 ** 2) + ' MiB';
-    if (bytes >= 1024) return this.mib.format(bytes / 1024) + ' KiB';
-    return this.mib.format(bytes) + ' B';
-  }
-
-  filesystemAvailability = computed(() => {
-    const fs = this.workspaceStorage()?.artifact_filesystem;
-    if (!fs || fs.total_bytes <= 0) return null;
-    const freePercent = Math.min(100, Math.max(0, (100 * fs.available_bytes) / fs.total_bytes));
-    return { ...fs, freePercent, level: freePercent < 5 ? 'critical' : freePercent < 15 ? 'low' : 'ok' };
-  });
 
   liveRam(session: AgentSession): number | null {
     // Expire the last response if polling stalls while the page stays open.
@@ -325,17 +316,13 @@ export class Agents implements OnInit {
    * ceiling a count of workspaces — so the list can say which one rather
    * than only that it is taken.
    */
-  private readonly occupants = computed(() => {
+  readonly occupants = computed(() => {
     const byWorkspace = new Map<number, AgentSession>();
     for (const session of this.activeSessions()) {
       if (!byWorkspace.has(session.workspace_id)) byWorkspace.set(session.workspace_id, session);
     }
     return byWorkspace;
   });
-
-  occupantOf(workspace: AgentWorkspace): AgentSession | undefined {
-    return this.occupants().get(workspace.id);
-  }
 
   // ── lifecycle ────────────────────────────────────────────────────────────
   async ngOnInit(): Promise<void> {
@@ -1100,11 +1087,6 @@ export class Agents implements OnInit {
     if (seconds < 60) return `${seconds}s`;
     if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
     return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
-  }
-
-  taskPreview(task: string): string {
-    const firstLine = task.split('\n')[0].trim();
-    return firstLine.length > 110 ? `${firstLine.slice(0, 110)}…` : firstLine;
   }
 
   private messageOf(err: unknown, fallback: string): string {
