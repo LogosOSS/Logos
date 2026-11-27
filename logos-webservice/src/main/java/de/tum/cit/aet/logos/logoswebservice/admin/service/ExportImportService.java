@@ -29,7 +29,7 @@ public class ExportImportService {
         "node_model_config", "node_config_state", "node_settings",
         "models",
         "model_provider", "team_model_permissions", "api_key_model_permissions",
-        "team_provider_permissions", "api_key_provider_permissions", "policies",
+        "team_provider_permissions", "team_azure_model_auto_access", "api_key_provider_permissions", "policies",
         "team_provider_budgets",
         "ai_workflow_analyses", "ai_workflows", "ai_llm_call_recommendations",
         "log_entry", "token_types", "usage_tokens", "token_prices", "jobs"
@@ -38,7 +38,7 @@ public class ExportImportService {
 
     /** Tables added after exports already existed; an export without one restores it empty. */
     private static final Set<String> OPTIONAL_TABLES = Set.of(
-        "team_provider_budgets", "node_model_config", "node_config_state", "node_settings");
+        "team_provider_budgets", "team_azure_model_auto_access", "node_model_config", "node_config_state", "node_settings");
 
     private static final List<String> SEQUENCE_TABLES = List.of(
         "users", "teams", "team_repositories", "api_keys", "providers", "node_model_config", "models",

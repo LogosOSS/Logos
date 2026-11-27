@@ -55,4 +55,22 @@ public interface TeamProviderPermissionRepository
         WHERE team_id = :teamId AND provider_id = :providerId
         """, nativeQuery = true)
     void revoke(@Param("teamId") int teamId, @Param("providerId") int providerId);
+    @Query(value = """
+        SELECT provider_id FROM team_azure_model_auto_access WHERE team_id = :teamId ORDER BY provider_id
+        """, nativeQuery = true)
+    List<Integer> findAzureAutoAccess(@Param("teamId") int teamId);
+
+    @Modifying
+    @Query(value = """
+        INSERT INTO team_azure_model_auto_access (team_id, provider_id)
+        VALUES (:teamId, :providerId)
+        ON CONFLICT DO NOTHING
+        """, nativeQuery = true)
+    int enableAzureAutoAccess(@Param("teamId") int teamId, @Param("providerId") int providerId);
+
+    @Modifying
+    @Query(value = """
+        DELETE FROM team_azure_model_auto_access WHERE team_id = :teamId AND provider_id = :providerId
+        """, nativeQuery = true)
+    int disableAzureAutoAccess(@Param("teamId") int teamId, @Param("providerId") int providerId);
 }

@@ -70,6 +70,17 @@
   max-width: 480px;
 }
 
+.azure-auto-access {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  margin-top: 6px;
+  font-size: var(--font-size-sm);
+  color: rgb(var(--color-typography-0));
+
+  input { flex-shrink: 0; }
+}
+
 .confirm-msg {
   font-size: var(--font-size-md);
   color: rgb(var(--color-typography-300));

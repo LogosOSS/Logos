@@ -101,6 +101,75 @@ def test_compatible_clear_provider_counts_but_unauthorized_provider_does_not():
     assert {pid for pid, _, _ in both.sample_id} == {"2"}
 
 
+def test_benchmark_waiters_do_not_hold_an_available_peer():
+    payload = state(engine(3, 2), available=0, active=5)
+    model(payload).update(
+        active_by_api_key={"-53": 5},
+        benchmark_reserved=True,
+        benchmark_active=5,
+        queue_depth=4,
+        benchmark_queue_depth=4,
+    )
+    payload["logosnode"]["providers"]["2"] = provider(state(engine(1), available=2))
+    # Both deployments carry the same model-wide backlog.
+    model(payload, "2").update(queue_depth=4, benchmark_queue_depth=4)
+    lane = LANE | {("2", "1")}
+
+    measured = capacity.parse_scheduler_state(payload, lane=lane, own_api_key_id=7, discount_own=False)
+
+    assert measured.queue_total == 0
+    assert (measured.busy_slots, measured.available_slots) == (6, 2)
+    assert capacity.start_decision(measured, running=0, paused=0)[0]
+    assert not capacity.pause_decision(measured)[0]
+    assert capacity.resume_decision(measured)[0]
+
+    # A real user queued for the same model, distinct from the four benchmark requests.
+    for pid in ("1", "2"):
+        model(payload, pid)["queue_depth"] = 5
+    queued = capacity.parse_scheduler_state(payload, lane=lane)
+    assert queued.queue_total == 1
+    assert capacity.start_decision(queued, running=0, paused=0) == (False, "users are queueing (1 waiting)")
+    assert capacity.pause_decision(queued)[0]
+    assert not capacity.resume_decision(queued)[0]
+
+
+@pytest.mark.parametrize(
+    "active,benchmarks,reserved,expected",
+    [(5, 5, True, 0), (5, 4, True, 1), (6, 6, True, 2), (4, 4, True, 2), (5, 5, False, 2)],
+)
+def test_only_provable_engine_benchmark_waiters_are_discounted(active, benchmarks, reserved, expected):
+    payload = state(engine(3, 2), available=0, active=active)
+    model(payload).update(benchmark_reserved=reserved, benchmark_active=benchmarks)
+    reading = parse(payload)
+    assert reading.queue_total == expected
+    assert not capacity.start_decision(reading, running=0, paused=0)[0]
+    assert capacity.pause_decision(reading)[0] is bool(expected)
+
+
+def test_benchmark_reservation_does_not_offer_headroom_or_hide_another_providers_waiters():
+    payload = state(engine(2), available=2)
+    model(payload).update(benchmark_reserved=True, benchmark_active=2)
+    reserved = parse(payload)
+    assert reserved.ok and reserved.available_slots == 0
+    assert reserved.busy_slots == 2
+    assert not capacity.start_decision(reserved, running=0, paused=0)[0]
+    assert not capacity.resume_decision(reserved)[0]
+
+    payload["logosnode"]["providers"]["2"] = provider(state(engine(3, 1), available=0, active=4))
+    waiting = capacity.parse_scheduler_state(payload, lane=LANE | {("2", "1")})
+    assert waiting.queue_total == 1
+    assert capacity.pause_decision(waiting)[0]
+
+
+def test_unavailable_worker_does_not_create_headroom_from_benchmark_attribution():
+    payload = state(engine(3, 2), available=0, active=5, age=400)
+    model(payload).update(benchmark_reserved=True, benchmark_active=5, queue_depth=4, benchmark_queue_depth=4)
+    reading = parse(payload)
+    assert not reading.ok
+    assert not capacity.start_decision(reading, running=0, paused=0)[0]
+    assert capacity.pause_decision(reading)[0]
+
+
 def test_saturated_peer_updates_cannot_replenish_clear_peers_sample_budget():
     payload = state(engine(8, 1), available=0)
     payload["logosnode"]["providers"]["2"] = provider(state(engine(0), available=1))

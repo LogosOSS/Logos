@@ -1195,8 +1195,8 @@ class LogosNodeDataProvider:
             models = {}
             for model_id, model_name in self._model_id_to_name.items():
                 max_capacity, capacity_source = self.get_parallel_capacity(model_id)
-                queue_state = self.queue_manager.get_state(model_id, self.provider_id)
-                queued_by_key = self.queue_manager.get_queued_by_api_key(model_id)
+                queue_depth, queued_by_key = self.queue_manager.get_queue_ownership(model_id)
+                active_by_key = self._model_active_by_key.get(model_id, {})
                 recent_signals = self._get_recent_model_scheduler_signals(model_id)
                 models[model_id] = {
                     "model_name": model_name,
@@ -1207,9 +1207,7 @@ class LogosNodeDataProvider:
                     # it — the runner discounts its own key's share rather than
                     # guessing it from a session count.
                     "active_by_api_key": {
-                        str(api_key_id): count
-                        for api_key_id, count in sorted(self._model_active_by_key.get(model_id, {}).items())
-                        if count
+                        str(api_key_id): count for api_key_id, count in sorted(active_by_key.items()) if count
                     },
                     # Same split for the orchestrator backlog: in-flight and
                     # waiting are different populations, and a runner that
@@ -1217,10 +1215,15 @@ class LogosNodeDataProvider:
                     "queued_by_api_key": {
                         str(api_key_id): count for api_key_id, count in sorted(queued_by_key.items()) if count
                     },
+                    # The authenticated internal benchmark route uses the
+                    # negative job ID as its synthetic key. Normal user key
+                    # IDs are positive, even if they use the same model.
+                    "benchmark_active": sum(count for key_id, count in active_by_key.items() if key_id < 0),
+                    "benchmark_queue_depth": sum(count for key_id, count in queued_by_key.items() if key_id < 0),
                     "max_capacity": max_capacity,
                     "capacity_source": capacity_source,
                     "lane_parallel": self.get_lane_parallel(model_id),
-                    "queue_depth": queue_state.total,
+                    "queue_depth": queue_depth,
                     # A worker without a live session is offline, whatever
                     # the last refresh left in `_loaded_models`.
                     "loaded": online and model_name in self._loaded_models,

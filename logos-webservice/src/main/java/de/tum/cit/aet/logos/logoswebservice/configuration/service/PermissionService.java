@@ -12,18 +12,24 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import de.tum.cit.aet.logos.logoswebservice.audit.AuditLogService;
 import de.tum.cit.aet.logos.logoswebservice.audit.PermissionAuditContext;
 import de.tum.cit.aet.logos.logoswebservice.common.ForbiddenException;
+import de.tum.cit.aet.logos.logoswebservice.common.NotFoundException;
 import de.tum.cit.aet.logos.logoswebservice.configuration.entity.ApiKeyModelPermission;
 import de.tum.cit.aet.logos.logoswebservice.configuration.entity.ApiKeyProviderPermission;
+import de.tum.cit.aet.logos.logoswebservice.configuration.entity.CloudProviderType;
+import de.tum.cit.aet.logos.logoswebservice.configuration.entity.ProviderType;
 import de.tum.cit.aet.logos.logoswebservice.configuration.entity.TeamModelPermission;
 import de.tum.cit.aet.logos.logoswebservice.configuration.entity.TeamProviderPermission;
+import de.tum.cit.aet.logos.logoswebservice.configuration.entity.TeamProviderPermissionId;
 import de.tum.cit.aet.logos.logoswebservice.configuration.repository.ApiKeyModelPermissionRepository;
 import de.tum.cit.aet.logos.logoswebservice.configuration.repository.ApiKeyProviderPermissionRepository;
 import de.tum.cit.aet.logos.logoswebservice.configuration.repository.PermissionCatalogProjection;
 import de.tum.cit.aet.logos.logoswebservice.configuration.repository.ProviderRepository;
 import de.tum.cit.aet.logos.logoswebservice.configuration.repository.TeamModelPermissionRepository;
 import de.tum.cit.aet.logos.logoswebservice.configuration.repository.TeamProviderPermissionRepository;
+import de.tum.cit.aet.logos.logoswebservice.identity.repository.ApiKeyRepository;
 
 @Service
 public class PermissionService {
@@ -37,7 +43,7 @@ public class PermissionService {
 
     /**
      * Advisory-lock key serializing one team's provider-permission mutations.
-     * All mutation paths (full-set PUT, atomic add, atomic remove) acquire
+     * All mutation paths (full-set PUT, atomic add/remove, Azure opt-in) acquire
      * {@code pg_advisory_xact_lock} with this key first, so under READ
      * COMMITTED a concurrent mutation cannot commit between another
      * mutation's targeted row write and its model-grant cascade.
@@ -68,14 +74,19 @@ public class PermissionService {
     private final TeamProviderPermissionRepository teamProviderRepo;
     private final ProviderRepository providerRepo;
     private final PermissionAuditContext audit;
+    private final AuditLogService settingsAudit;
+    private final ApiKeyRepository apiKeyRepository;
 
     public PermissionService(ApiKeyModelPermissionRepository apiKeyModelRepo,
                              ApiKeyProviderPermissionRepository apiKeyProviderRepo,
                              TeamModelPermissionRepository teamModelRepo,
                              TeamProviderPermissionRepository teamProviderRepo,
                              ProviderRepository providerRepo,
-                             PermissionAuditContext audit) {
+                             PermissionAuditContext audit, AuditLogService settingsAudit,
+                             ApiKeyRepository apiKeyRepository) {
         this.audit = audit;
+        this.settingsAudit = settingsAudit;
+        this.apiKeyRepository = apiKeyRepository;
         this.apiKeyModelRepo = apiKeyModelRepo;
         this.apiKeyProviderRepo = apiKeyProviderRepo;
         this.teamModelRepo = teamModelRepo;
@@ -224,6 +235,44 @@ public class PermissionService {
         teamProviderRepo.lockTeamProviderPermissions(teamProviderPermsLockKey(teamId));
         audit.withCause("direct", () -> teamProviderRepo.revoke(teamId, providerId));
         audit.withCause("cascade", () -> teamModelRepo.deleteCascadeForTeam(teamId));
+    }
+
+    public List<EffectiveModelDeployment> getEffectiveModelDeployments(int keyId) {
+        return apiKeyRepository.findEffectiveModelDeployments(keyId).stream()
+            .map(row -> new EffectiveModelDeployment(row.getModelId(), row.getModelName(),
+                row.getProviderId(), row.getProviderName(), row.getProviderType()))
+            .toList();
+    }
+
+    public record EffectiveModelDeployment(
+        int modelId, String modelName, int providerId, String providerName, String providerType) {}
+
+    public List<Integer> getTeamAzureAutoAccess(int teamId) {
+        Set<Integer> allowed = eligibleIds(teamId, false);
+        return teamProviderRepo.findAzureAutoAccess(teamId).stream().filter(allowed::contains).toList();
+    }
+
+    @Transactional
+    public void setTeamAzureAutoAccess(int teamId, int providerId, boolean enabled) {
+        teamProviderRepo.lockTeamProviderPermissions(teamProviderPermsLockKey(teamId));
+        if (!teamProviderRepo.existsById(new TeamProviderPermissionId(teamId, providerId))) {
+            throw new NotFoundException("The team does not have a grant for this provider.");
+        }
+        if (enabled) {
+            checkScope(teamId, false, List.of(providerId));
+            var provider = providerRepo.findById(providerId)
+                .orElseThrow(() -> new NotFoundException("Provider not found."));
+            if (provider.getProviderType() != ProviderType.cloud || provider.getCloudProviderType() != CloudProviderType.azure) {
+                throw new IllegalArgumentException("Automatic model access is available only for Azure providers.");
+            }
+        }
+        int changed = enabled
+            ? teamProviderRepo.enableAzureAutoAccess(teamId, providerId)
+            : teamProviderRepo.disableAzureAutoAccess(teamId, providerId);
+        if (changed > 0) {
+            settingsAudit.record("team.azure_model_auto_access_changed", "provider", providerId, teamId,
+                Map.of("auto_azure_models", !enabled), Map.of("auto_azure_models", enabled));
+        }
     }
 
     private static <T, ID> void replaceGrants(JpaRepository<T, ID> repository, List<T> current,

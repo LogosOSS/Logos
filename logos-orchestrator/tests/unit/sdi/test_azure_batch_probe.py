@@ -244,7 +244,7 @@ class _SyncDB:
     def get_batch_model_support(self, provider_id):
         return self.support
 
-    def sync_azure_deployments(self, provider_id, planned):
+    def sync_azure_deployments(self, provider_id, planned, *, provider_base_url):
         self.upserts.append(planned)
         return {"changed": True, "new_models": []}
 
