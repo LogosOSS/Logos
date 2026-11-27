@@ -181,11 +181,11 @@ They do not contain response text.
 
 Dev can retain its manually selected, fixed 10-request pilot workload.
 Leave `LOGOS_NIGHTLY_REQUEST_USERNAME` empty on Dev.
+To select the pilot workload after a change of the corpus, run `docker exec logos-orchestrator python -m logos.benchmarks.dev_nightly_pilot` on the Dev core host.
 
 For Prod, set `LOGOS_NIGHTLY_REQUEST_USERNAME` to the exact username of the intended source user.
 Use the username from the Prod user record. Do not use a display name or a user ID from Dev.
-For workflow deployments, add this variable to the **Prod** GitHub environment.
-The deploy workflow copies it to the service configuration.
+Set this variable in the `.env` file of the Prod core host.
 The setting applies to all enabled nightly schedules in that deployment.
 The orchestrator reads its own configured database. It does not connect Dev to Prod.
 Deploy migration 069, the orchestrator and the user interface together.

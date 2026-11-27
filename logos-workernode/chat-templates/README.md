@@ -31,8 +31,8 @@ than quietly falling back to the model's built-in template — a silent
 fallback would change generation behaviour with no visible signal.
 
 On production hosts this directory is operator-managed (Ansible / manual
-`scp`); the deploy workflow only ships `docker-compose.yml` and `.env`, so
-adding a template does **not** require a redeploy — only a lane restart.
+`scp`); a deployment does not touch this directory, so adding a template does
+**not** require a redeploy — only a lane restart.
 
 For local development, `LOGOS_CHAT_TEMPLATE_DIR` overrides the directory when
 running the worker outside Docker.

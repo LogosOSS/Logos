@@ -3,10 +3,10 @@
 Logos publishes prebuilt images to public GitHub Container Registry (GHCR) at `ghcr.io/logososs`.
 The tag `latest` follows `main`. Releases use version tags.
 A deployment consists of a compose file and a `.env` file on each node.
-All deployment workflows use GHCR. No registry login is required.
+No registry login is required.
 See the [installation guide](admin/installation.md) for a self-hosted installation.
 To update, run `docker compose pull` and `docker compose up -d`.
-The deploy workflows copy the compose file and `.env` to each selected node.
+Logos can also deploy itself (see [Deployments from Logos](#deployments-from-logos)).
 A worker node needs no inbound port (see the [architecture overview](developer/architecture)).
 
 A deployment consists of:
@@ -21,9 +21,6 @@ A deployment consists of:
   [agent runner reference](https://github.com/LogosOSS/Logos/blob/main/logos-agent/README.md)).
   It is opt-in. To enable it, set `COMPOSE_PROFILES=agent`.
 
-If a change requires no worker update, then set **deploy-workers** to `false` in **Logos - Deploy to Dev**.
-This option updates the central Dev server and leaves the GPU worker unchanged. The default updates both.
-
 ## Deployment credentials
 
 Store each host's credentials in its `.env` file.
@@ -32,6 +29,7 @@ A core host with a deployer also needs `LOGOS_DEPLOYER_KEY`.
 Worker hosts need only `LOGOS_API_KEY` in `.env`.
 The worker obtains its Hugging Face token from the orchestrator when it starts.
 Restrict access to the file with `chmod 600 .env`.
+If a value contains `$`, write `$$` in its place, or put the value in single quotes. Compose otherwise reads `$` as the start of a variable and cuts the value.
 
 ### Data service passwords
 
@@ -82,8 +80,6 @@ The production and local development Compose files pass this variable to the orc
 Check host environment variables and additional Compose files for overrides before a policy change.
 The benchmark topology retains its explicit `E2E_RESIDENCY_POLICY` default of `demand`.
 The simulation workflow selects each policy explicitly.
-Deploy workflows copy GitHub configuration variables into `.env`.
-For these workflows, set `LOGOS_RESIDENCY_POLICY` in the matching GitHub environment to retain an explicit selection across deployments.
 
 The orchestrator reads the policy at startup. It does not reload the policy during operation.
 To return to Demand with production Compose:
@@ -135,8 +131,6 @@ PostgreSQL, Redis, nginx, and GPU worker images retain their existing startup us
 | `logos-node-manager` | worker deployment control plane |
 
 `REGISTRY` defaults to `ghcr.io/logososs`, and `IMAGE_TAG` defaults to `latest`.
-Deployment workflows write this registry and the selected tag into each node's `.env`.
-They ignore legacy registry variables. Remove unused `LOGOS_HARBOR_*` variables and secrets from GitHub environments after the migration.
 
 All images use these tags in GHCR:
 
@@ -206,17 +200,9 @@ container with a new image. It then checks the new container. If the new
 container does not become healthy, the node manager starts the previous version
 again.
 
-A worker uses the node manager if its entry in the matrix of the deploy workflow
-has `node-manager: true`. For such a worker, the workflow does these steps:
-
-1. The workflow writes `COMPOSE_PROFILES=node-manager` to the `.env` file of the
-   worker.
-2. The workflow pulls and starts the `logos-node-manager` service.
-3. The workflow sends a deploy request to the node manager and waits for the
-   result.
-
-The node manager does the work on the host. If the connection of the workflow
-ends, the deployment continues.
+A worker uses the node manager if its `.env` file has
+`COMPOSE_PROFILES=node-manager`. The node manager takes its orders from Logos
+(see [Deployments from Logos](#deployments-from-logos)) or from the command line.
 
 The result of a deployment is one of these values:
 
@@ -236,13 +222,10 @@ ends, the node manager removes the image that is two versions old. It also
 removes the image of a release that does not run. If the rollback fails, the node
 manager removes no image.
 
-When the new node manager answers, the workflow removes every image of the
-node manager that no container uses. It finds them by the label
-`io.logos.component=node-manager`, so images that piled up earlier go too.
-If the new node manager does not start, the old image stays on the host.
+To remove every image of the node manager that no container uses, run
+`docker image prune -a --filter label=io.logos.component=node-manager`.
 Images from before the label existed have no label. Remove them once with
-`docker rmi`. A host without the workflow keeps its old node manager images
-and needs the same command.
+`docker rmi`.
 
 The node manager writes the record of each deployment to the directory
 `node-manager/` in the worker directory. The image `logos-node-manager` is in GHCR,
@@ -251,7 +234,7 @@ as are the other images.
 CAUTION: On a host with the node manager, do not run `docker compose up` for the
 worker service. Use the node manager instead.
 
-To use the node manager on a host without the deploy workflow, do these steps:
+To use the node manager on a host, do these steps:
 
 1. Add `COMPOSE_PROFILES=node-manager` to the `.env` file of the worker.
 2. To pull a version tag or a pull request build, set `IMAGE_TAG` in the `.env`
@@ -276,8 +259,8 @@ To see the latest deployment, run `docker exec logos-node-manager node-manager s
 ### Let the Node Manager Get the Compose File
 
 The node manager can take the compose file of a deployment out of the image of
-the tag. Without this, a person or a workflow copies the compose file to each
-host. A new version can then run with old settings.
+the tag. Without this, a person copies the compose file to each host. A new
+version can then run with old settings.
 
 You set this in the `.env` file of the host. The node manager reads that file at
 the start of each deployment, so it needs no restart. The same line works on a
@@ -381,21 +364,11 @@ the node manager first asks the orchestrator to cordon the worker. A cordoned
 worker gets no new requests. The requests that run on it finish. Then the node
 manager replaces the container.
 
-A worker drains if its entry in the matrix of the deploy workflow has
-`drain: true`, in addition to `node-manager: true`. For such a worker, the
-workflow does these steps:
+A worker drains if its `.env` file has `NODE_MANAGER_DRAIN_ENABLED=true`, in
+addition to `COMPOSE_PROFILES=node-manager`.
 
-1. The workflow writes `NODE_MANAGER_DRAIN_ENABLED=true` to the `.env` file of
-   the worker.
-2. The workflow sends a deploy request to the node manager.
-3. The workflow waits until the image is on the host. Then the job ends.
-
-The drain, the replacement and the checks continue on the host. The job is green
-when the image is on the host. It does not show how the deployment ends.
-
-CAUTION: Give `drain: true` to every worker of the workflow, or put the workers
-without it first. A worker without the drain replaces its container at once,
-also if another worker still drains.
+CAUTION: Set `NODE_MANAGER_DRAIN_ENABLED=true` on every worker. A worker without
+the drain replaces its container at once, also if another worker still drains.
 
 The orchestrator lets only one worker at a time out of service. The node manager
 of a second worker waits for its turn. It waits for up to 2 hours. The worker
@@ -418,12 +391,9 @@ worker. If this does not happen in 5 minutes, the node manager starts the
 previous version again. If the node manager cannot ask the orchestrator, it
 replaces the container without the drain and writes a note in the record.
 
-To see how a deployment ended, use one of these methods:
-
-- Look at the step `Show how the previous deployment ended` in the next run of
-  the workflow. It prints the events of the last deployment on each worker.
-- Run `docker exec logos-node-manager node-manager status --logs` on the host.
-  The command also prints the log of a failed container.
+To see how a deployment ended, open the page **Deployments**. Or run
+`docker exec logos-node-manager node-manager status --logs` on the host. The
+command also prints the log of a failed container.
 
 These limits apply to the drain:
 
@@ -478,25 +448,28 @@ the Logos on Dev.
 Do these steps once for each environment. Start with Test and Dev. The core host
 and a worker host need different steps, because a worker needs no key of its own.
 
-1. On Dev and Test, set the variable `LOGOS_DEPLOYMENTS_PROTECTED` to `false` in
-   the GitHub environment of the core host. Do not set it on Prod. A protected
-   Logos asks for a confirmation in a dialog. It accepts only `latest` and
-   release versions such as `1.0.2`. Every Logos is protected unless you set
-   the variable.
+1. On Dev and Test, set `LOGOS_DEPLOYMENTS_PROTECTED=false` in the `.env` file of
+   the core host. Do not set it on Prod. A protected Logos asks for a
+   confirmation in a dialog. It accepts only `latest` and release versions such
+   as `1.0.2`. Every Logos is protected unless you set the variable.
 2. Make sure that the core of the environment runs a version of Logos that has the
-   page **Deployments**. If it does not, deploy it with the deploy workflow of the
-   environment, for example **Logos - Deploy to Dev**. The page shows no deployer
-   yet.
+   page **Deployments**. If it does not, update the core by hand (see
+   [Updating](#updating)). The page shows no deployer yet.
 3. On the page, click **Add a core deployer**. Enter the name of the core host.
    Copy the key. Logos shows the key once.
-4. In the GitHub environment of the core host, set the secret `LOGOS_DEPLOYER_KEY`
-   to the key.
-5. Give the key to the core host. Run the deploy workflow of the environment
-   again. It installs the deployer on a core host that has the key. It starts the
-   deployer as the compose project `logos-deployer`.
-6. For each worker host, run the deploy workflow of the environment. A worker
-   already has the node manager. The workflow replaces it with a new one, and then
-   deploys the worker.
+4. In the `.env` file of the core host, set `LOGOS_DEPLOYER_KEY` to the key.
+5. Install the deployer on the core host. Copy the file
+   `logos-node-manager/docker-compose.core.yml` to the directory of the `.env`
+   file, as `docker-compose.deployer.yml`. Then run this command in the
+   directory:
+
+   ```bash
+   docker compose -p logos-deployer -f docker-compose.deployer.yml --env-file .env up -d
+   ```
+
+6. On each worker host, run `docker compose pull logos-node-manager` and
+   `docker compose up -d logos-node-manager` in the worker directory. Set
+   `IMAGE_TAG` to a version that has the page **Deployments**.
 
 A worker needs no deployer key. Its node manager uses the address `LOGOS_URL` and
 the worker key `LOGOS_API_KEY` of the `.env` file of the worker. The worker uses
@@ -508,12 +481,18 @@ that the `.env` file of the worker has `LOGOS_URL` and `LOGOS_API_KEY`.
 A host obeys the Logos of its own environment only. Use the key that this Logos
 made for the core host. Do not give a host a key of another environment.
 
+These variables of the `.env` file control the deployments of a host:
+
 | Variable | Where | Meaning |
 |---|---|---|
 | `LOGOS_DEPLOYMENTS_PROTECTED` | Core | `true` (default) or `false`. A protected Logos shows a warning, asks you to confirm in a dialog, and accepts only `latest` and release versions such as `1.0.2`. Set it to `false` on Dev and Test. |
 | `LOGOS_DEPLOYMENTS_SILENCE_LIMIT` | Core | How long a started step can stay silent before Logos ends it. Default: `30m`. |
 | `LOGOS_DEPLOYER_KEY` | Core host | The key that the Logos of the environment made for the core deployer. |
 | `LOGOS_API_KEY` | Worker host | The worker key. The node manager of the worker uses it to ask the Logos of the environment for orders. A worker needs no `LOGOS_DEPLOYER_KEY`. |
+| `COMPOSE_PROFILES` | Worker host | `node-manager` starts the node manager (see [Update a Worker Node with the Node Manager](#update-a-worker-node-with-the-node-manager)). |
+| `NODE_MANAGER_DRAIN_ENABLED` | Worker host | `true` drains the worker before each update (see [Drain a Worker Node During an Update](#drain-a-worker-node-during-an-update)). |
+| `NODE_MANAGER_COMPOSE_FROM_TAG` | Core and worker host | `true` takes the compose file from the image of the tag (see [Let the Node Manager Get the Compose File](#let-the-node-manager-get-the-compose-file)). |
+| `NODE_MANAGER_SELF_UPDATE` | Core and worker host | `true` updates the node manager after each deployment (see [Let the Node Manager Update Itself](#let-the-node-manager-update-itself)). |
 
 ### Change the settings of a host
 
@@ -522,41 +501,12 @@ the `.env` file of the host. To change a setting, change the `.env` file on the
 host. A new `.env` file takes effect at the next deployment of the host. Compose
 then replaces the services whose settings changed.
 
-CAUTION: Each run of a deploy workflow replaces the `.env` file on the host with
-a new one. The new file has the variables of the GitHub environment of the host
-and the secrets that the host needs (see
-[Deployment credentials](#deployment-credentials)). Anything else that you added
-to the file by hand is gone. Set the same value in the GitHub environment, or add
-it again after the run.
-
 A new compose file can need a variable that the `.env` file does not have. If the
 compose file comes from the image of the tag (see
 [Let the Node Manager Get the Compose File](#let-the-node-manager-get-the-compose-file))
 and the variable is required, the deployment fails before it changes anything.
 The error names the variable. Add the variable to the `.env` file, and deploy
 again.
-
-### Deploy from GitHub
-
-The workflows **Logos - Deploy to Test**, **Logos - Deploy to Dev** and **Logos -
-Deploy to Prod** stay. Use them if Logos cannot deploy itself, for example if the
-new web service does not start. These workflows do not use the page
-**Deployments**.
-
-A workflow of a core host also installs or updates the deployer. It does this
-only if the secret `LOGOS_DEPLOYER_KEY` is set in the GitHub environment of the
-host. The deployer is a compose project of its own, so a
-deployment of the core does not replace it. The workflow installs the deployer
-last. A problem with the deployer does not stop the deployment.
-
-* The deployer gets the image tag that you deploy. To keep the deployer on
-  another tag, set the variable `NODE_MANAGER_IMAGE_TAG` in the GitHub
-  environment of the host.
-* If the deployer still runs a deployment, the workflow does not replace it. A
-  deployer that restarts continues its old order. That order can replace the
-  services that the workflow started. The workflow shows a warning. Wait until
-  the deployment ends, then run the workflow again.
-* A host without the secret `LOGOS_DEPLOYER_KEY` is not changed.
 
 ### Start a deployment
 
@@ -595,6 +545,13 @@ host can be off. A report can be lost. Two rules end such a deployment:
 
 An ended step can still change: a host that Logos ended as timed out can report
 its real result later. The page then shows the real result.
+
+### If Logos does not start
+
+The deployers get their orders from Logos. If the web service does not start,
+deploy by hand. On the core host, change `IMAGE_TAG` in the `.env` file and run
+the commands in [Updating](#updating). On a worker host, use the command in
+[Update a Worker Node with the Node Manager](#update-a-worker-node-with-the-node-manager).
 
 ### Keys of the deployers
 
@@ -874,8 +831,8 @@ Public `/v1`, `/openai`, and `/jobs` traffic goes to **logos-webservice**. The
 service has no fixed `container_name`, so Compose can run more than one
 replica. Traefik load-balances the replicas under `logos-webservice-svc`.
 
-On every deploy, the deploy workflows (`logos_deploy-{dev,test,prod}.yml`) scale
-to this count automatically. The default is **1** when `.env` does not set
+On every deployment, the core deployer scales to this count automatically. The
+default is **1** when `.env` does not set
 `LOGOS_WEBSERVICE_REPLICAS`. More replicas hide crashes and routine deploys from
 the inference gateway. Cloud RPM and TPM stay shared across replicas through
 Redis (see the options below). Set the count in the `.env` of the core node:

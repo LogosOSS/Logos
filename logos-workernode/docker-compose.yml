@@ -112,9 +112,8 @@ services:
   # the new container, checks that it comes up, and starts the previous version
   # again if it does not. See logos-node-manager/README.md.
   #
-  # The service only exists on hosts that enable its profile. The deploy
-  # workflows write this line to .env for every worker with `node-manager: true`
-  # in its matrix entry:
+  # The service only exists on hosts that enable its profile. Add this line
+  # to the .env file of the worker:
   #   COMPOSE_PROFILES=node-manager
   # Where the node manager runs, it is the only thing that restarts the worker.
   #
@@ -168,8 +167,7 @@ services:
       # worker health check (10 min) by the check interval (30 s) plus the poll interval of the manager (5 s): a worker
       # that opens its port at the end of the start period is seen as healthy up to 35 s later. 660 s leaves margin.
       NODE_MANAGER_VERIFY_TIMEOUT_S: ${NODE_MANAGER_VERIFY_TIMEOUT_S:-660}
-      # Draining. The deploy workflows write NODE_MANAGER_DRAIN_ENABLED to .env for every worker with `node-manager: true`
-      # (`true` when its matrix entry also has `drain: true`). A drain cordons the node at the orchestrator, where the
+      # Draining. NODE_MANAGER_DRAIN_ENABLED=true in the .env file turns it on. A drain cordons the node at the orchestrator, where the
       # node is known by the key of the worker: the manager reuses LOGOS_URL and LOGOS_API_KEY, so it can cordon this
       # node and no other. Without both values the manager replaces the container without a drain.
       NODE_MANAGER_DRAIN_ENABLED: ${NODE_MANAGER_DRAIN_ENABLED:-false}
@@ -178,7 +176,7 @@ services:
       # The Logos that this host obeys. Orders come from it, and it is told how the deployments go. It is LOGOS_URL. The
       # worker is known to Logos by its worker key, LOGOS_API_KEY (the node key above), so it needs no deployer key. A
       # host obeys its own Logos only. Without LOGOS_URL or LOGOS_API_KEY, the host takes no orders from Logos. The
-      # deploy workflows and the command line still work.
+      # command line still works.
       NODE_MANAGER_LOGOS_URL: ${LOGOS_URL:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock

@@ -730,7 +730,7 @@ again.
 
 ![Dialog with the key of a new core deployer](/img/roles/logos-admin-deployer-key.png)
 
-Store the key as the secret `LOGOS_DEPLOYER_KEY` of the core host. If you lose a
+Store the key as `LOGOS_DEPLOYER_KEY` in the `.env` file of the core host. If you lose a
 key, click **New key** for the deployer. The old key stops at once. A worker
 needs no key. It appears in the list when its node manager asks Logos for
 orders.

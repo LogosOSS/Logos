@@ -77,7 +77,7 @@ LOGOS_API_KEY=<shared_key from step 2>
 ```
 
 That's it. The server resolves the provider identity from the API key.
-In production, these are set as GitHub environment secrets and written to `.env` automatically by the deploy workflow.
+In production, set these values in the `.env` file of the worker host.
 
 ## 4. Configure hardware (config.yml)
 

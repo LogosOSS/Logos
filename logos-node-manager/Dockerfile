@@ -18,8 +18,8 @@ WORKDIR /app
 # below). The .dockerignore of the root lets through exactly what is copied here.
 # The package has no runtime dependencies, so nothing is installed: it runs from
 # the source tree on PYTHONPATH (building a wheel would resolve the build
-# backend's own dependencies at build time). The `node-manager` command the
-# deploy workflows `docker exec` is a wrapper around `python -m`.
+# backend's own dependencies at build time). The `node-manager` command that
+# `docker exec` runs is a wrapper around `python -m`.
 COPY logos-node-manager/logos_node_manager ./logos_node_manager
 RUN printf '#!/bin/sh\nexec python -m logos_node_manager "$@"\n' > /usr/local/bin/node-manager \
   && chmod 0755 /usr/local/bin/node-manager
@@ -35,8 +35,8 @@ COPY logos-workernode/docker-compose.yml /compose/worker.yml
 COPY logos-node-manager/docker-compose.core.yml /compose/deployer.yml
 LABEL io.logos.compose-bundle="1"
 
-# Marks every image of the manager. The deploy workflows remove the unused ones by this label after an update: once a
-# newer image is pulled, an older one has no name left, so the label is the only thing that still identifies it.
+# Marks every image of the manager. The clean-up of unused ones uses this label: once a newer image is pulled, an older
+# one has no name left, so the label is the only thing that still identifies it.
 LABEL io.logos.component="node-manager"
 
 # Runs as root on purpose: the Docker socket of the host belongs to root, and the manager's only job is to use it.
