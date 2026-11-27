@@ -137,11 +137,12 @@ class AgentInferenceRelayTest {
                     byte[] leak = PROVIDER_KEY.getBytes(StandardCharsets.UTF_8);
                     exchange.sendResponseHeaders(307, leak.length);
                     exchange.getResponseBody().write(leak);
-                } else if ("quota".equals(mode) || "wrong-type".equals(mode)) {
+                } else if (mode.startsWith("error-") || "wrong-type".equals(mode)) {
                     byte[] message = PROVIDER_KEY.getBytes(StandardCharsets.UTF_8);
                     exchange.getResponseHeaders().set("Content-Type", "text/plain");
-                    exchange.getResponseHeaders().set("Retry-After", "5");
-                    exchange.sendResponseHeaders("quota".equals(mode) ? 429 : 200, message.length);
+                    exchange.getResponseHeaders().set("Retry-After", mode.endsWith("-unsafe") ? PROVIDER_KEY : "5");
+                    int code = mode.startsWith("error-") ? Integer.parseInt(mode.split("-")[1]) : 200;
+                    exchange.sendResponseHeaders(code, message.length);
                     exchange.getResponseBody().write(message);
                 } else if ("hold".equals(mode)) {
                     exchange.getResponseHeaders().set("Content-Type", "text/event-stream");
@@ -269,11 +270,16 @@ class AgentInferenceRelayTest {
             .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> AgentInferenceRelay.origin("https://example.test/?x=1"))
             .isInstanceOf(IllegalArgumentException.class);
+        for (String origin : List.of("https:///no-host", "https://example.test:0",
+                "https://example.test:65536", "https://example.test/#fragment")) {
+            assertThatThrownBy(() -> AgentInferenceRelay.origin(origin)).isInstanceOf(IllegalArgumentException.class);
+        }
+        assertThat(AgentInferenceRelay.origin("HTTPS://EXAMPLE.TEST:443/").toString()).isEqualTo("https://example.test");
     }
 
     @Test
     void suppressesUpstreamErrorDetailsAndRejectsUnexpectedSuccessContentType() throws Exception {
-        MODE.set("quota");
+        MODE.set("error-429");
         var result = mvc.perform(relayRequest(MESSAGES, JSON)).andExpect(request().asyncStarted()).andReturn();
         var response = mvc.perform(asyncDispatch(result)).andExpect(status().isTooManyRequests())
             .andExpect(header().string("Retry-After", "5")).andReturn().getResponse();
@@ -281,6 +287,46 @@ class AgentInferenceRelayTest {
         MODE.set("wrong-type");
         mvc.perform(relayRequest(MESSAGES, JSON)).andExpect(status().isBadGateway());
         assertThat(capacity.inFlight()).isZero();
+    }
+
+    @Test
+    void relaysSafeStatusClassesButNeverRemoteDiagnosticsOrUnsafeRetryMetadata() throws Exception {
+        for (int code : List.of(400, 413, 422, 429, 503, 529)) {
+            MODE.set("error-" + code + "-unsafe");
+            var result = mvc.perform(relayRequest(MESSAGES, JSON)).andExpect(request().asyncStarted()).andReturn();
+            var response = mvc.perform(asyncDispatch(result)).andExpect(status().is(code))
+                .andExpect(header().doesNotExist("Retry-After")).andReturn().getResponse();
+            assertThat(response.getContentAsString()).doesNotContain(PROVIDER_KEY);
+        }
+        assertThat(capacity.inFlight()).isZero();
+    }
+
+    @Test
+    void rejectsMissingAndInvalidRelayCredentialsBeforeAnUpstreamConnection() throws Exception {
+        mvc.perform(post(MESSAGES).contentType("application/json").content(JSON)).andExpect(status().isUnauthorized());
+        mvc.perform(post(MESSAGES).contentType("application/json").content(JSON)
+            .header("X-Logos-Agent-Relay-Secret", INTERNAL)).andExpect(status().isUnauthorized());
+        mvc.perform(post(MESSAGES).contentType("application/json").content(JSON)
+            .header("X-Logos-Agent-Relay-Secret", INTERNAL).header("Authorization", "Bearer " + GRANT))
+            .andExpect(status().isUnauthorized());
+        mvc.perform(post(MESSAGES).contentType("application/json").content(JSON)
+            .header("X-Logos-Agent-Relay-Secret", INTERNAL).header("Authorization", "Bearer " + GRANT)
+            .header("X-Logos-Client-Tag", "agent:192.0.2.999")).andExpect(status().isUnauthorized());
+        mvc.perform(relayRequest(MESSAGES, JSON).header("anthropic-beta", "not:allowed"))
+            .andExpect(status().isBadRequest());
+        mvc.perform(relayRequest(MESSAGES, "[]")).andExpect(status().isBadRequest());
+        mvc.perform(relayRequest(MESSAGES, "{\"model\":42}")).andExpect(status().isBadRequest());
+        assertThat(CALLS).hasValue(0);
+    }
+
+    @Test
+    void rejectsMissingAndMalformedOperatingKeysRatherThanForwardingThem() throws Exception {
+        db.update("UPDATE model_provider SET api_key=NULL");
+        for (String candidate : List.of("", "no spaces", "a".repeat(513))) {
+            db.update("UPDATE providers SET api_key=? WHERE id=3", candidate);
+            mvc.perform(relayRequest(MESSAGES, JSON)).andExpect(status().isServiceUnavailable());
+        }
+        assertThat(CALLS).hasValue(0);
     }
 
     @Test
@@ -391,6 +437,10 @@ class AgentInferenceRelayTest {
             try {
                 assertThat(gotChunk.await(3, TimeUnit.SECONDS)).isTrue();
                 assertThat(out.toString(StandardCharsets.UTF_8)).isEqualTo(EVENT);
+                assertThat(writing.isDone()).isFalse();
+                // The watcher also runs during normal sessions and must not interrupt
+                // a matching, live stream before policy actually changes.
+                relay.closeInactive();
                 assertThat(writing.isDone()).isFalse();
                 revoke.run();
                 relay.closeInactive();
