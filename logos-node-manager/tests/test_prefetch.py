@@ -15,7 +15,7 @@ NEWER = "sha256:" + "3" * 12 + "dddd"
 
 
 def test_the_name_of_a_moving_tag_stays_on_the_image_it_had(deployer, docker, store):
-    deployer.prefetch("latest")
+    assert deployer.prefetch("latest") is None, "the image is on the host"
 
     # A "docker compose up" by hand starts what it would have started before.
     assert docker.images[f"{REPO}:latest"] == OLD
@@ -41,6 +41,8 @@ def test_the_deployment_takes_over_the_downloaded_image(deployer, docker, store)
     assert docker.container_info.image_id == NEW
     assert docker.images[f"{REPO}:v2"] == NEW
     assert HELD not in docker.images
+    # The page of Logos shows the event, so the history says that the download had happened.
+    assert any(event["note"].endswith("; it was downloaded early") for event in record.events)
 
 
 def test_a_release_that_was_downloaded_early_is_still_removed_after_a_rollback(deployer, docker, store):
@@ -68,18 +70,20 @@ def test_an_image_that_the_tag_already_names_changes_nothing(deployer, docker):
     docker.registry[f"{REPO}:latest"] = OLD
     names = dict(docker.images)
 
-    deployer.prefetch("latest")
+    assert deployer.prefetch("latest") is None, "the image is on the host"
 
     assert docker.images == names
 
 
 def test_a_download_that_fails_changes_nothing(deployer, docker, caplog):
-    docker.pull_error = "unauthorized: authentication required"
+    docker.pull_error = "worker Pulling\nworker Error\nunauthorized: authentication required"
     names = dict(docker.images)
 
     with caplog.at_level(logging.WARNING):
-        deployer.prefetch("v2")
+        problem = deployer.prefetch("v2")
 
+    # The page of Logos gets the line that says why, without the progress before it.
+    assert problem == "unauthorized: authentication required"
     assert docker.images == names
     assert "unauthorized" in caplog.text
 

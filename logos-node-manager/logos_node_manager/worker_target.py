@@ -43,7 +43,7 @@ class WorkerTarget:
 
     # ------------------------------------------------------------------ Early download
 
-    def prefetch(self, tag: str) -> None:
+    def prefetch(self, tag: str) -> str | None:
         """Download the image of ``tag`` before its deployment is ordered, so that the deployment finds it on the host.
 
         Nothing that runs changes, and no name changes its meaning. A pull moves the name of the tag to the new image,
@@ -51,7 +51,8 @@ class WorkerTarget:
         goes away if there was none. The new image is kept as ``<image>:prefetched`` until a deployment takes it. There
         is at most one such image: the next early download replaces it.
 
-        Nothing is recorded. A failed pull is only logged: the deployment pulls again and reports what goes wrong.
+        Returns why the image could not be downloaded, or None when it is on the host. Nothing is recorded, and a failed
+        pull ends no deployment: the deployment pulls again and reports what goes wrong.
         """
         reference = self.docker.image_ref(tag)
         before = self.docker.image_id(reference)
@@ -59,11 +60,16 @@ class WorkerTarget:
         result = self.docker.pull(tag)
         if not result.ok:
             logger.warning("%s was not downloaded early: %s", reference, result.tail(4))
-            return
+            # The last line says why. The lines before it are the progress of Compose.
+            return result.tail(1)
         pulled = self.docker.image_id(reference)
-        if pulled is None or pulled == before:
+        if pulled is None:
+            problem = f"image {reference} is not on this host after the pull"
+            logger.warning("%s was not downloaded early: %s", reference, problem)
+            return problem
+        if pulled == before:
             logger.info("Nothing new to keep: %s names the same image as before", reference)
-            return
+            return None
         name, _ = split_image_ref(reference)
         kept = f"{name}:{PREFETCHED_TAG}"
         try:
@@ -78,9 +84,10 @@ class WorkerTarget:
             else:
                 self.docker.tag(before, reference)
         logger.info("%s is on this host, kept as %s (%s)", reference, kept, short_id(pulled))
+        return None
 
-    def _take_over_prefetched(self, reference: str, image_id: str) -> None:
-        """Take the name ``<image>:prefetched`` off the image that a deployment pulled.
+    def _take_over_prefetched(self, reference: str, image_id: str) -> bool:
+        """Take the name ``<image>:prefetched`` off the image that a deployment pulled. True if it was downloaded early.
 
         The image has the name of its tag now. With a second name it would stay on the host when the clean-up removes
         it. A problem here is only logged: it must not fail the deployment.
@@ -88,10 +95,13 @@ class WorkerTarget:
         name, _ = split_image_ref(reference)
         kept = f"{name}:{PREFETCHED_TAG}"
         try:
-            if self.docker.image_id(kept) == image_id:
-                self.docker.remove_image(kept)
+            if self.docker.image_id(kept) != image_id:
+                return False
+            self.docker.remove_image(kept)
         except DockerError:
             logger.warning("The name %s could not be removed", kept, exc_info=True)
+            return False
+        return True
 
     # ------------------------------------------------------------------ Steps
 
@@ -167,8 +177,10 @@ class WorkerTarget:
             return
         deployment.target_image_ref = reference
         deployment.target_image_id = image_id
-        self._take_over_prefetched(reference, image_id)
-        self.d.advance(deployment, Phase.DRAINING, f"pulled {reference} ({short_id(image_id)})")
+        note = f"pulled {reference} ({short_id(image_id)})"
+        if self._take_over_prefetched(reference, image_id):
+            note += "; it was downloaded early"
+        self.d.advance(deployment, Phase.DRAINING, note)
 
     def drain(self, deployment: Deployment) -> None:
         """Cordon the node at the orchestrator and wait until the requests that run on it are done.

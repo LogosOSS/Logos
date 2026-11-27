@@ -452,10 +452,11 @@ A deployment has two stages:
    node first. If the new container fails, the worker starts the previous
    version again.
 
-During stage 1, each worker already downloads the new image. The download does
-not change the worker that runs. Then stage 2 is shorter. The core and the node
-manager of the worker need a version that can do this. If one of them is older,
-the worker downloads the image in stage 2.
+During stage 1, each worker already downloads the new image. The page
+**Deployments** shows this download in the part **Pull** of the worker. The
+download does not change the worker that runs. Then stage 2 is shorter. The core
+and the node manager of the worker need a version that can do this. If one of
+them is older, the worker downloads the image in stage 2.
 
 If the core fails, the workers do not start. A core deployment has no automatic
 rollback. The new web service changes the database structure when it starts. The

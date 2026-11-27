@@ -557,6 +557,81 @@ class DeploymentFlowTest {
         assertThat(pollKnowing(keys[1], "", 0).hasNonNull("prefetch")).isFalse();
     }
 
+    /** A report that says only how an early download stands, as a node manager sends it. */
+    private void reportDownload(String key, String announced, String state, String message) throws Exception {
+        mvc.perform(post("/deployments/deployer/report")
+                .header("Authorization", "Bearer " + key)
+                .contentType("application/json")
+                .content(json.writeValueAsString(Map.of(
+                    "deployments", List.of(),
+                    "early_download", Map.of("id", announced, "state", state, "message", message)))))
+            .andExpect(status().isOk());
+    }
+
+    @Test
+    void aWaitingWorkerShowsHowItsEarlyDownloadStands() throws Exception {
+        String[] keys = coreAndWorker();
+        String planId = body(rawStart("pr-93").andExpect(status().isCreated())).get("id").asText();
+        jdbc.update("UPDATE deployment_plans SET last_activity_at = now() - interval '2 hours'");
+
+        reportDownload(keys[1], planId, "downloading", "");
+
+        JsonNode worker = step(plan(planId), "dev-worker");
+        assertThat(worker.get("status").asText()).isEqualTo("waiting");
+        assertThat(worker.get("details").get("early_download").get("state").asText()).isEqualTo("downloading");
+
+        reportDownload(keys[1], planId, "failed", "manifest unknown");
+
+        JsonNode download = step(plan(planId), "dev-worker").get("details").get("early_download");
+        assertThat(download.get("state").asText()).isEqualTo("failed");
+        assertThat(download.get("message").asText()).isEqualTo("manifest unknown");
+        // It is no sign of life: a plan that is silent stays silent.
+        assertThat(jdbc.queryForObject(
+            "SELECT count(*) FROM deployment_plans WHERE last_activity_at < now() - interval '1 hour'", Integer.class))
+            .isEqualTo(1);
+    }
+
+    @Test
+    void theEarlyDownloadStaysOnTheStepUntilTheDeploymentGoesOn() throws Exception {
+        String[] keys = coreAndWorker();
+        JsonNode plan = body(rawStart("pr-93").andExpect(status().isCreated()));
+        String planId = plan.get("id").asText();
+        String workerId = step(plan, "dev-worker").get("id").asText();
+        report(keys[0], snapshot(step(plan, "dev-core").get("id").asText(), "done", "succeeded", "now running pr-93"));
+
+        // The core ended while the download still ran: the worker takes its order and waits for the download.
+        reportDownload(keys[1], planId, "downloading", "");
+        report(keys[1], snapshot(workerId, "queued", null, ""));
+
+        assertThat(step(plan(planId), "dev-worker").get("details").get("early_download").get("state").asText())
+            .isEqualTo("downloading");
+
+        report(keys[1], snapshot(workerId, "pulling", null, ""));
+        // A step that runs says more itself, so a late word about the download changes nothing.
+        reportDownload(keys[1], planId, "downloaded", "");
+
+        assertThat(step(plan(planId), "dev-worker").get("details").has("early_download")).isFalse();
+    }
+
+    @Test
+    void anEarlyDownloadReportThatDoesNotFitChangesNothing() throws Exception {
+        String[] keys = coreAndWorker();
+        JsonNode plan = body(rawStart("pr-93").andExpect(status().isCreated()));
+        String planId = plan.get("id").asText();
+
+        reportDownload(keys[1], planId, "almost", "");
+        reportDownload(keys[1], "no-plan-id", "downloaded", "");
+        // The core speaks for its own step only.
+        reportDownload(keys[0], planId, "downloaded", "");
+
+        assertThat(step(plan(planId), "dev-worker").get("details")).isEmpty();
+
+        report(keys[0], snapshot(step(plan, "dev-core").get("id").asText(), "done", "failed", "port is taken"));
+        reportDownload(keys[1], planId, "downloaded", "");
+
+        assertThat(step(plan(planId), "dev-worker").get("details")).isEmpty();
+    }
+
     // ------------------------------------------------------------------ what a deployer may do
 
     @Test

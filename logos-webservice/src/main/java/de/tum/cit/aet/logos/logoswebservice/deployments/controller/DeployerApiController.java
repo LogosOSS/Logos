@@ -29,7 +29,8 @@ import de.tum.cit.aet.logos.logoswebservice.deployments.service.DeploymentReport
  * deployer is alive.
  *
  * <p>A worker waits for its order while the core is deployed. A deployer that says which announcement it knows is also
- * told what it can download in the meantime, and is answered at once when that is news to it.
+ * told what it can download in the meantime, and is answered at once when that is news to it. Its reports then say how
+ * that download stands.
  */
 @RestController
 @RequestMapping("/deployments/deployer")
@@ -83,6 +84,7 @@ public class DeployerApiController {
         Deployer deployer = authenticate(authorization);
         deployers.touch(deployer.getId(), body == null ? null : body.version());
         Set<String> acked = reports.apply(deployer, body);
+        reports.noteEarlyDownload(deployer, body == null ? null : body.earlyDownload());
         return new DeployerApi.ReportResponse(acked);
     }
 

@@ -58,8 +58,9 @@ class CoreTarget:
 
     # ------------------------------------------------------------------ Early download
 
-    def prefetch(self, tag: str) -> None:
+    def prefetch(self, tag: str) -> str | None:
         """Nothing to do: the core gets its order first, so there is no wait to use for a download."""
+        return None
 
     # ------------------------------------------------------------------ Steps
 

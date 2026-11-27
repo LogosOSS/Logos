@@ -12,8 +12,8 @@ Two threads run next to the deployments:
   sees that the host is alive. An answer to a worker can also announce a deployment that is not ordered yet, so that the
   daemon can download its images early.
 * The *reporter* sends the state of the deployments that came from Logos: the deployments in progress at a regular pace,
-  a finished one until Logos took it. A Logos that cannot be reached is asked again after a pause that grows. A report
-  that fails never changes how a deployment goes.
+  a finished one until Logos took it. It also says how an early download stands, for the page of Logos. A Logos that
+  cannot be reached is asked again after a pause that grows. A report that fails never changes how a deployment goes.
 
 Only the standard library is used: the manager has no runtime dependencies. The key of the deployer is sent in a header
 and never written to a log.
@@ -28,6 +28,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any, Callable
 
 from logos_node_manager import __version__
@@ -95,6 +96,14 @@ class Prefetch:
     id: str
     # Empty: the tag cannot be used on this host.
     tag: str
+
+
+class DownloadState(str, Enum):
+    """How an early download stands, as a report says it."""
+
+    DOWNLOADING = "downloading"
+    DOWNLOADED = "downloaded"
+    FAILED = "failed"
 
 
 def parse_prefetch(payload: Any) -> Prefetch | None:
@@ -166,9 +175,12 @@ class LogosClient:
         orders, rejections = parse_orders(answer)
         return orders, rejections, parse_prefetch(answer)
 
-    def report(self, deployments: list[dict[str, Any]]) -> set[str]:
-        """Send the state of some deployments. Returns the ids that Logos took."""
-        answer = self._post("/report", {"deployments": deployments}, timeout_s=self._margin_s + 10.0)
+    def report(self, deployments: list[dict[str, Any]], *, early_download: dict[str, str] | None = None) -> set[str]:
+        """Send the state of deployments and of an early download. Returns the ids of the deployments Logos took."""
+        body: dict[str, Any] = {"deployments": deployments}
+        if early_download is not None:
+            body["early_download"] = early_download
+        answer = self._post("/report", body, timeout_s=self._margin_s + 10.0)
         acked = answer.get("acked")
         return {str(item) for item in acked} if isinstance(acked, list) else set()
 
@@ -268,6 +280,8 @@ class LogosLink:
         # The id of what Logos announced last, and the announcement that the daemon has not taken yet.
         self._known_prefetch = ""
         self._prefetch: Prefetch | None = None
+        # How the early download stands, until a report has carried it to Logos.
+        self._download: dict[str, str] | None = None
         # Per deployment: what was sent last and when. Only the reporter reads and writes it.
         self._sent: dict[str, tuple[tuple, float]] = {}
         self._failures = 0
@@ -388,6 +402,16 @@ class LogosLink:
             taken, self._prefetch = self._prefetch, None
         return taken
 
+    def report_download(self, announced_id: str, state: DownloadState, message: str = "") -> None:
+        """Tell Logos how the early download of an announcement stands, with the next report.
+
+        Only the newest state is sent. It is sent until a report reaches Logos: during a core deployment Logos is away
+        for a while.
+        """
+        with self._lock:
+            self._download = {"id": announced_id, "state": state.value, "message": message[:_MAX_FIELD_CHARS]}
+        self._wake.set()
+
     def _complain(self, message: str) -> None:
         """Log a problem with Logos once, not at every try."""
         if self._complained != message:
@@ -412,6 +436,7 @@ class LogosLink:
             return
         with self._lock:
             pending_rejections = list(self._rejections)
+            download = self._download
         due: list[Deployment] = []
         for record in self._store.all():
             if not record.from_logos:
@@ -424,11 +449,11 @@ class LogosLink:
             sent = self._sent.get(record.id)
             if sent is None or sent[0] != _digest(record) or now - sent[1] >= self._settings.report_interval_s:
                 due.append(record)
-        if not due and not pending_rejections:
+        if not due and not pending_rejections and download is None:
             return
         payload = [snapshot(record) for record in due] + pending_rejections
         try:
-            acked = self._client.report(payload)
+            acked = self._client.report(payload, early_download=download)
         except LogosError as exc:
             self._failures += 1
             self._next_try = now + retry_delay(self._failures)
@@ -448,6 +473,9 @@ class LogosLink:
             for item in pending_rejections:
                 if item["id"] in acked and item in self._rejections:
                     self._rejections.remove(item)
+            # Logos got it. A state that arrived while the report was on its way goes with the next one.
+            if self._download is download:
+                self._download = None
 
     def _too_old(self, record: Deployment) -> bool:
         return Deployer.seconds_between(record.finished_at or utc_now(), utc_now()) > REPORT_MAX_AGE_S

@@ -50,7 +50,19 @@ public final class DeployerApi {
     public record PollResponse(List<Order> orders, Prefetch prefetch) {}
 
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public record ReportRequest(String kind, String version, List<ReportItem> deployments) {}
+    public record ReportRequest(
+        String kind,
+        String version,
+        List<ReportItem> deployments,
+        @JsonProperty("early_download") EarlyDownload earlyDownload
+    ) {}
+
+    /**
+     * How the early download of a {@link Prefetch} stands on a worker. The id is the one of the announcement. The state
+     * is {@code downloading}, {@code downloaded} or {@code failed}, and the message says why it failed.
+     */
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record EarlyDownload(String id, String state, String message) {}
 
     /** The state of one deployment on a host, or the refusal of an order ({@code rejected}). */
     @JsonIgnoreProperties(ignoreUnknown = true)

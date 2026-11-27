@@ -14,6 +14,7 @@ from logos_node_manager.config import Settings
 from logos_node_manager.docker_ops import read_env_value
 from logos_node_manager.logos_link import (
     RETRY_MAX_S,
+    DownloadState,
     LogosClient,
     LogosError,
     LogosLink,
@@ -263,6 +264,20 @@ def test_a_report_returns_the_ids_that_logos_took(logos):
     assert acked == {"a", "b"}
     assert logos.requests[0]["path"] == "/api/deployments/deployer/report"
     assert [item["id"] for item in logos.requests[0]["body"]["deployments"]] == ["a", "b", "c"]
+    assert "early_download" not in logos.requests[0]["body"]
+
+
+def test_a_report_carries_the_state_of_an_early_download(link_settings, store, clock, logos):
+    # The names of the fields are what the webservice reads.
+    client = LogosClient(logos.url, KEY, kind="worker", timeout_margin_s=5.0)
+    link = LogosLink(link_settings, store, threading.Event(), client, clock=clock)
+
+    link.report_download("plan-1", DownloadState.FAILED, "manifest unknown")
+    link.report_once()
+
+    body = logos.requests[0]["body"]
+    assert body["deployments"] == []
+    assert body["early_download"] == {"id": "plan-1", "state": "failed", "message": "manifest unknown"}
 
 
 @pytest.mark.parametrize("status, retryable", [(500, True), (503, True), (429, True), (401, False), (404, False)])
@@ -322,13 +337,16 @@ class FakeClient:
 
     def __init__(self) -> None:
         self.sent: list[list[dict]] = []
+        # The early download state of every report that went out, None if it had none.
+        self.downloads: list[dict | None] = []
         self.error: LogosError | None = None
         self.acks: set[str] | None = None
 
-    def report(self, deployments: list[dict]) -> set[str]:
+    def report(self, deployments: list[dict], *, early_download: dict | None = None) -> set[str]:
         if self.error:
             raise self.error
         self.sent.append(deployments)
+        self.downloads.append(early_download)
         return {item["id"] for item in deployments} if self.acks is None else self.acks
 
 
@@ -470,6 +488,37 @@ def test_logos_that_cannot_be_reached_is_asked_again_after_a_growing_pause(link,
     clock.sleep(6.0)
     link.report_once()
     assert len(client.sent) == 1
+
+
+def test_a_download_state_is_sent_until_a_report_reaches_logos(link, client, clock):
+    client.error = LogosError("Logos could not be reached")
+    link.report_download("plan-1", DownloadState.DOWNLOADED)
+    link.report_once()
+
+    client.error = None
+    clock.sleep(6.0)
+    link.report_once()
+    link.report_once()
+
+    # It went out with the first report that got through. Nothing is left to send after it.
+    assert client.downloads == [{"id": "plan-1", "state": "downloaded", "message": ""}]
+
+
+def test_a_download_state_that_arrives_during_a_report_goes_with_the_next_one(link, client):
+    send = client.report
+
+    def report_while_the_download_ends(deployments, *, early_download=None):
+        if not client.sent:
+            link.report_download("plan-1", DownloadState.DOWNLOADED)
+        return send(deployments, early_download=early_download)
+
+    client.report = report_while_the_download_ends
+    link.report_download("plan-1", DownloadState.DOWNLOADING)
+
+    link.report_once()
+    link.report_once()
+
+    assert [download["state"] for download in client.downloads] == ["downloading", "downloaded"]
 
 
 def test_an_old_ending_is_not_reported_any_more(link, client, store):

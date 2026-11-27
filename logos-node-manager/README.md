@@ -347,11 +347,15 @@ Without the address and the key, the host takes no orders from Logos.
   last announcement it got, empty before the first one. While the worker waits for a core, Logos answers with an
   announcement (`prefetch`: the id of the deployment and the tag), at once if it is new. It is no order. When no
   deployment is queued, the manager runs `docker compose pull` for the worker service, with the compose file that ran
-  last. Nothing is recorded or reported, and a download that fails is only logged, because the deployment pulls again.
-  A deployment that is ordered during the download starts when the download ends. The name of the tag goes back to the
-  image that it had before, so a `docker compose up` by hand starts what it would have started before. The new image is
-  kept as `<image>:prefetched` (see "Images on the host"). A manager that is stopped between the pull and this renaming
-  leaves the tag on the new image. A core host does not download early: its order comes first.
+  last. A deployment that is ordered during the download starts when the download ends. The name of the tag goes back to
+  the image that it had before, so a `docker compose up` by hand starts what it would have started before. The new image
+  is kept as `<image>:prefetched` (see "Images on the host"). The log of the deployment that takes this image says that
+  it was downloaded early. A manager that is stopped between the pull and this renaming leaves the tag on the new image.
+  A core host does not download early: its order comes first.
+* **State of an early download.** Nothing is recorded on the host. The manager sends `early_download` with its report:
+  the id of the announcement, the state (`downloading`, `downloaded` or `failed`) and, for a failed download, the reason.
+  Only the newest state is sent, until a report reaches Logos. Logos shows it on the step of the worker as long as that
+  step has nothing else to show. A download that fails ends no deployment, because the deployment pulls again.
 * **Reports.** One thread sends `POST /api/deployments/deployer/report`. A report carries the whole state of a
   deployment (phase, outcome, message, events, the end of a failure log), so a lost report is made up by the next one. A
   deployment in progress is reported when it changes and at least every `REPORT_INTERVAL_S` (20 s): Logos reads the

@@ -29,10 +29,17 @@ export interface DeploymentEvent {
   note: string;
 }
 
+/** How the image download stands that a worker does while it waits for the core. */
+export interface EarlyDownload {
+  state: 'downloading' | 'downloaded' | 'failed';
+  message?: string;
+}
+
 export interface StepDetails {
   drained_requests?: number;
   drain_seconds?: number;
   sole_replica_models?: string[];
+  early_download?: EarlyDownload;
 }
 
 export interface DeploymentStep {
@@ -168,7 +175,8 @@ const FAILURE_INDEX: Record<string, number> = {
   rollback_failed: 3,
 };
 
-type PhaseInput = Pick<DeploymentStep, 'status' | 'phase' | 'failure'>;
+type PhaseInput = Pick<DeploymentStep, 'status' | 'phase' | 'failure'> &
+  Partial<Pick<DeploymentStep, 'details'>>;
 
 /** The state of each segment of the phase bar for a step. */
 export function phaseStates(step: PhaseInput): PhaseState[] {
@@ -185,6 +193,17 @@ export function phaseStates(step: PhaseInput): PhaseState[] {
       return upTo(FAILURE_INDEX[step.failure ?? ''] ?? at(step.phase), 'failed');
     case 'rolled_back':
       return upTo(FAILURE_INDEX[step.failure ?? ''] ?? 3, 'failed');
+    case 'waiting':
+    case 'ordered':
+      // A worker can download its image before it starts. That fills the first segment early.
+      switch (step.details?.early_download?.state) {
+        case 'downloading':
+          return upTo(0, 'active');
+        case 'downloaded':
+          return upTo(0, 'done');
+        default:
+          return PHASE_NAMES.map(() => 'pending');
+      }
     default:
       return PHASE_NAMES.map(() => 'pending');
   }
@@ -212,7 +231,11 @@ export function stepStatusText(step: DeploymentStep, tag: string): string {
       const note = firstLine(step.events[step.events.length - 1]?.note);
       const drain = DRAIN_NOTE.exec(note);
       if (drain) return `Waiting for the node to drain:\n${drain[1]} request(s)`;
-      return note || STEP_STATUS_LABEL.running;
+      if (note) return note;
+      // A node that took its order, and has nothing to tell yet, may still download early.
+      return step.details?.early_download?.state === 'downloading'
+        ? `${STEP_STATUS_LABEL.running}, downloading the image`
+        : STEP_STATUS_LABEL.running;
     }
     case 'succeeded':
       return `Done, runs ${tag}`;
@@ -221,8 +244,27 @@ export function stepStatusText(step: DeploymentStep, tag: string): string {
     case 'failed':
     case 'rolled_back':
       return firstLine(step.message) || STEP_STATUS_LABEL[step.status];
+    case 'waiting':
+    case 'ordered':
+      return waitingText(step);
     default:
       return STEP_STATUS_LABEL[step.status];
+  }
+}
+
+/** What a node says while it waits, with how its early download stands. */
+function waitingText(step: DeploymentStep): string {
+  const label = STEP_STATUS_LABEL[step.status];
+  const download = step.details?.early_download;
+  switch (download?.state) {
+    case 'downloading':
+      return `${label}, downloading the image`;
+    case 'downloaded':
+      return `${label}, image downloaded`;
+    case 'failed':
+      return `${label}\nEarly download failed: ${firstLine(download.message) || 'no reason given'}`;
+    default:
+      return label;
   }
 }
 
