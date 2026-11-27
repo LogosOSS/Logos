@@ -5,7 +5,7 @@ import java.security.MessageDigest;
 import java.util.Map;
 import java.util.UUID;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -21,14 +21,16 @@ import org.springframework.web.server.ResponseStatusException;
 public class InternalProviderSpendController {
     private final ProviderSpendCapService cap;
     private final byte[] secret;
+    private final ObjectMapper mapper;
 
-    public InternalProviderSpendController(ProviderSpendCapService cap,
+    public InternalProviderSpendController(ProviderSpendCapService cap, ObjectMapper mapper,
             @Value("${logos.orchestrator.internal-secret:}") String secret) {
         this.cap = cap;
+        this.mapper = mapper;
         this.secret = secret.isBlank() ? new byte[0] : ("Bearer " + secret).getBytes(StandardCharsets.UTF_8);
     }
 
-    record Reserve(int providerId, Integer modelId, String upstreamUrl, JsonNode shape) {}
+    record Reserve(int providerId, Integer modelId, String upstreamUrl, Map<String, Object> shape) {}
     record Reservation(UUID attemptId) {}
     record Settle(UUID attemptId, Map<String, Long> usage, String tier, boolean undispatched) {}
 
@@ -39,7 +41,7 @@ public class InternalProviderSpendController {
         if (request.providerId() < 1 || request.modelId() != null && request.modelId() < 1) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid provider or model");
         }
-        return new Reservation(cap.reserve(request.providerId(), request.modelId(), request.upstreamUrl(), request.shape()));
+        return new Reservation(cap.reserve(request.providerId(), request.modelId(), request.upstreamUrl(), mapper.valueToTree(request.shape())));
     }
 
     @PostMapping("/settle")

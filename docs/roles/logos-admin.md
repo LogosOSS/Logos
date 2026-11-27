@@ -455,10 +455,29 @@ remaining allowance cannot cover a reservation, the request gets HTTP 402
 without reaching the provider.
 
 An active cap permits only plain-text requests to deployments with a verified cost bound.
-Each request needs an explicit output token limit. If there is no verified bound, Logos rejects the request with HTTP 422.
+Each request needs an explicit output token limit. If there is no verified bound, Logos rejects the request with HTTP 422. The editor reports when no deployment has a verified bound; scheduling a monetary limit does not create one.
 This rule also applies to new provider-native batches, file uploads and cloud benchmark jobs. The Logos-managed batch uses the same inference cap.
 Previously admitted provider-native work, requests sent outside Logos and
 vendor invoice adjustments are not included.
+
+#### Verify a deployment's cost bound
+
+Before enabling a positive cap, an administrator reviews the provider's documentation for the
+exact version of each deployment that should remain available. Logos supports plain-text OpenAI
+Chat Completions and Responses on `api.openai.com`, and Anthropic Messages on
+`api.anthropic.com`. A model alias, a proxy, a beta header, and a discovered model-wide context
+size are not evidence of a bound. Use the immutable dated model ID that the deployment actually
+sends to that provider. Document the provider-enforced maximum input tokens (an enforced context
+ceiling is conservative), maximum output tokens, and the output-limit field this exact endpoint
+and model honor. Do not enter average tokens or a locally chosen token limit.
+
+The Logos Admin API records this review at
+`PUT /logosdb/providers/{providerId}/monthly-spend-cap/reviewed-deployments/{modelId}`.
+Supply `upstream_url`, `revision`, `output_limit_field`, `max_input_tokens`, `max_output_tokens`, and
+`evidence_url`. The evidence URL must point to the vendor's official developer documentation.
+The deployment, official URL, and pinned model must match the provider configuration. Review
+changes are audited. Remove a review using DELETE on the same path with the `upstream_url`
+query parameter. Missing or out-of-date reviews do not authorize requests under an active cap.
 
 ### Add a Provider
 

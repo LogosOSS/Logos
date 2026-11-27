@@ -41,7 +41,7 @@
       </p>
     }
     @if (details.bound_violation && details.current?.enabled) {
-      <p class="warning" role="alert">An upstream charge exceeded its reservation. This provider cannot accept new billable requests through Logos this month.</p>
+      <p class="warning" role="alert">Upstream usage or charges exceeded the verified bound. This provider cannot accept new billable requests through Logos this month.</p>
     }
     @if (details.bounded_deployments === 0) {
       <p class="warning">No deployments have a verified cost bound. An active cap blocks billable requests until a bound is verified.</p>

@@ -2,6 +2,8 @@ package de.tum.cit.aet.logos.logoswebservice.configuration.service;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -16,6 +18,7 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 
 import de.tum.cit.aet.logos.logoswebservice.audit.AuditLogService;
 import de.tum.cit.aet.logos.logoswebservice.gateway.ProviderSpendLedger;
+import de.tum.cit.aet.logos.logoswebservice.gateway.ProviderSpendLedger.BoundReview;
 
 @Service
 public class ProviderSpendPolicyService {
@@ -33,79 +36,99 @@ public class ProviderSpendPolicyService {
     }
 
     public Map<String, Object> get(int providerId) {
-        requireCloudProvider(providerId);
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("current", readPolicy(providerId, false));
-        result.put("scheduled", readPolicy(providerId, true));
-        Map<String, Object> totals = jdbc.queryForMap("""
-            SELECT COALESCE(SUM(charged_micro_cents), 0) / 100000000 AS charged_usd,
-                   COALESCE(SUM(held_micro_cents), 0) / 100000000 AS reserved_usd,
-                   COALESCE(BOOL_OR(bound_violation), false) AS bound_violation
-              FROM provider_spend_months
-             WHERE provider_id = :provider AND month_start = date_trunc('month', CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::date
-            """, Map.of("provider", providerId));
-        result.putAll(totals);
-        result.put("bounded_deployments", ledger.coverage(providerId));
-        return result;
+        requireCloudProvider(providerId, false);
+        return snapshot(providerId, utcNow().toLocalDate().withDayOfMonth(1));
     }
 
     @Transactional(timeout = 5)
     public Map<String, Object> schedule(int providerId, Change change) {
-        requireCloudProvider(providerId);
+        Long cap = parseCap(change);
+        // Policy edits and admissions use the same provider lock; take the
+        // time only after the lock so a waiting edit cannot target the past.
+        requireCloudProvider(providerId, true);
+        OffsetDateTime now = utcNow();
+        LocalDate month = now.toLocalDate().withDayOfMonth(1);
+        LocalDate next = month.plusMonths(1);
+        if (!now.plusMinutes(1).isBefore(next.atStartOfDay().atOffset(ZoneOffset.UTC))) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                "Wait for UTC month rollover before scheduling a provider spend change");
+        }
+        Map<String, Object> before = readPolicy(providerId, next, true);
+        jdbc.update("""
+            INSERT INTO provider_spend_policies (provider_id, effective_month, limit_micro_cents)
+            VALUES (:provider, :month, :cap)
+            ON CONFLICT (provider_id, effective_month) DO UPDATE
+            SET limit_micro_cents = EXCLUDED.limit_micro_cents
+            """, new MapSqlParameterSource().addValue("provider", providerId).addValue("month", next).addValue("cap", cap));
+        Map<String, Object> after = readPolicy(providerId, next, true);
+        audit.record("provider.monthly_spend_cap_scheduled", "provider", providerId, null, before, after);
+        return snapshot(providerId, month);
+    }
+
+    @Transactional(timeout = 5)
+    public Map<String, Object> recordReviewedBound(int providerId, int modelId, BoundReview review) {
+        ledger.recordReviewedBound(providerId, modelId, review);
+        audit.record("provider.spend_cap_capability_reviewed", "provider", providerId, null, null,
+            Map.of("model_id", modelId, "revision", review.revision(), "upstream_url", review.upstreamUrl(),
+                "max_input_tokens", review.maxInputTokens(), "max_output_tokens", review.maxOutputTokens(),
+                "output_limit_field", review.outputLimitField(), "evidence", review.evidenceUrl()));
+        return get(providerId);
+    }
+
+    @Transactional(timeout = 5)
+    public Map<String, Object> removeReviewedBound(int providerId, int modelId, String upstreamUrl) {
+        ledger.removeReviewedBound(providerId, modelId, upstreamUrl);
+        audit.record("provider.spend_cap_capability_removed", "provider", providerId, null, null,
+            Map.of("model_id", modelId, "upstream_url", upstreamUrl));
+        return get(providerId);
+    }
+
+    private Long parseCap(Change change) {
         if (change.enabled() == null) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Specify enabled explicitly");
         }
-        Long cap = null;
         if (Boolean.TRUE.equals(change.enabled())) {
             if (change.limitUsd() == null || change.limitUsd().signum() < 0) {
-                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                    "Supply a nonnegative USD limit");
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Supply a nonnegative USD limit");
             }
             try {
-                cap = change.limitUsd().movePointRight(8).longValueExact();
+                return change.limitUsd().movePointRight(8).longValueExact();
             } catch (ArithmeticException e) {
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                     "USD limit is too large or has more than eight decimal places");
             }
-        } else if (change.limitUsd() != null) {
+        }
+        if (change.limitUsd() != null) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Omit the limit when disabling the cap");
         }
-        // Never retroactively mark prior uncapped usage as a tracked month.
-        // Serialize simultaneous admin changes to keep the audit prior value exact.
-        jdbc.queryForObject("SELECT id FROM providers WHERE id = :provider FOR UPDATE",
-            Map.of("provider", providerId), Integer.class);
-        Boolean nearRollover = jdbc.queryForObject("""
-            SELECT clock_timestamp() AT TIME ZONE 'UTC' + interval '1 minute'
-                >= date_trunc('month', CURRENT_TIMESTAMP AT TIME ZONE 'UTC') + interval '1 month'
-            """, Map.of(), Boolean.class);
-        if (Boolean.TRUE.equals(nearRollover)) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT,
-                "Wait for UTC month rollover before scheduling a provider spend change");
-        }
-        Map<String, Object> before = readPolicy(providerId, true);
-        jdbc.update("""
-            INSERT INTO provider_spend_policies (provider_id, effective_month, limit_micro_cents)
-            VALUES (:provider, (date_trunc('month', CURRENT_TIMESTAMP AT TIME ZONE 'UTC') + interval '1 month')::date, :cap)
-            ON CONFLICT (provider_id, effective_month) DO UPDATE
-            SET limit_micro_cents = EXCLUDED.limit_micro_cents
-            """, new MapSqlParameterSource()
-                .addValue("provider", providerId).addValue("cap", cap));
-        Map<String, Object> after = readPolicy(providerId, true);
-        audit.record("provider.monthly_spend_cap_scheduled", "provider", providerId, null, before, after);
-        return get(providerId);
+        return null;
     }
 
-    private Map<String, Object> readPolicy(int providerId, boolean scheduled) {
+    private Map<String, Object> snapshot(int provider, LocalDate month) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("current", readPolicy(provider, month, false));
+        result.put("scheduled", readPolicy(provider, month.plusMonths(1), true));
+        jdbc.query("""
+            SELECT charged_micro_cents, held_micro_cents, bound_violation
+              FROM provider_spend_months WHERE provider_id = :provider AND month_start = :month
+            """, Map.of("provider", provider, "month", month), rs -> {
+                boolean present = rs.next();
+                result.put("charged_usd", present ? rs.getBigDecimal("charged_micro_cents").movePointLeft(8) : BigDecimal.ZERO);
+                result.put("reserved_usd", present ? rs.getBigDecimal("held_micro_cents").movePointLeft(8) : BigDecimal.ZERO);
+                result.put("bound_violation", present && rs.getBoolean("bound_violation"));
+                return result;
+            });
+        result.put("bounded_deployments", ledger.coverage(provider));
+        return result;
+    }
+
+    private Map<String, Object> readPolicy(int provider, LocalDate month, boolean exact) {
+        String condition = exact ? "effective_month = :month" : "effective_month <= :month";
         return jdbc.query("""
-            SELECT effective_month, limit_micro_cents
-              FROM provider_spend_policies
-             WHERE provider_id = :provider
-               AND CASE WHEN :scheduled THEN effective_month =
-                   (date_trunc('month', CURRENT_TIMESTAMP AT TIME ZONE 'UTC') + interval '1 month')::date
-                   ELSE effective_month <= date_trunc('month', CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::date
-                   END
+            SELECT effective_month, limit_micro_cents FROM provider_spend_policies
+             WHERE provider_id = :provider AND %s
              ORDER BY effective_month DESC LIMIT 1
-            """, Map.of("provider", providerId, "scheduled", scheduled), rs -> {
+            """.formatted(condition), Map.of("provider", provider, "month", month), rs -> {
                 if (!rs.next()) {
                     return null;
                 }
@@ -118,11 +141,16 @@ public class ProviderSpendPolicyService {
             });
     }
 
-    private void requireCloudProvider(int providerId) {
-        boolean exists = Boolean.TRUE.equals(jdbc.queryForObject("""
-            SELECT EXISTS (SELECT 1 FROM providers WHERE id = :provider AND provider_type = 'cloud')
-            """, Map.of("provider", providerId), Boolean.class));
-        if (!exists) {
+    private OffsetDateTime utcNow() {
+        return jdbc.queryForObject("SELECT clock_timestamp()", Map.of(), OffsetDateTime.class)
+            .withOffsetSameInstant(ZoneOffset.UTC);
+    }
+
+    private void requireCloudProvider(int providerId, boolean lock) {
+        String query = "SELECT id FROM providers WHERE id = :provider AND provider_type = 'cloud'";
+        Boolean exists = jdbc.query(lock ? query + " FOR UPDATE" : query, Map.of("provider", providerId),
+            rs -> { return rs.next(); });
+        if (!Boolean.TRUE.equals(exists)) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Cloud provider not found");
         }
     }

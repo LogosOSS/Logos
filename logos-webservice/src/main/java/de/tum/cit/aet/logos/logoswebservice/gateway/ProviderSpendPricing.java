@@ -62,11 +62,19 @@ class ProviderSpendPricing {
             .add(BigDecimal.valueOf(request)).movePointLeft(3).setScale(0, RoundingMode.CEILING);
     }
 
-    static Long charge(List<Rate> rates, Map<String, Long> usage, String serviceTier, boolean anthropic) {
+    record Usage(long input, long output, Map<String, Long> byQuantity) {}
+
+    static boolean hasUnboundedCharges(Map<String, Long> usage) {
+        return usage != null && !usage.containsKey("usage_estimated")
+            && usage.entrySet().stream().anyMatch(pair -> !USAGE.contains(pair.getKey())
+                && pair.getValue() != null && pair.getValue() > 0);
+    }
+
+    static Usage quantities(Map<String, Long> usage, boolean anthropic) {
         if (usage == null || !usage.containsKey("prompt_tokens") || !usage.containsKey("completion_tokens")
                 || usage.containsKey("usage_estimated")
-                || usage.entrySet().stream().anyMatch(pair -> pair.getValue() == null || pair.getValue() < 0
-                    || (pair.getValue() > 0 && !USAGE.contains(pair.getKey())))) {
+                || hasUnboundedCharges(usage)
+                || usage.values().stream().anyMatch(value -> value == null || value < 0)) {
             return null;
         }
         try {
@@ -86,23 +94,35 @@ class ProviderSpendPricing {
                 return null;
             }
             long context = Math.addExact(uncached, Math.addExact(cached, Math.addExact(write, write1)));
-            String tier = serviceTier == null ? "default" : serviceTier;
-            Map<String, Long> quantities = Map.of(INPUT, uncached, READ, cached, WRITE, write,
-                WRITE_1H, write1, OUTPUT, text, REASONING, reasoning, REQUEST, 1L);
+            return new Usage(context, completion, Map.of(INPUT, uncached, READ, cached, WRITE, write,
+                WRITE_1H, write1, OUTPUT, text, REASONING, reasoning, REQUEST, 1L));
+        } catch (ArithmeticException e) {
+            return null;
+        }
+    }
+
+    static Long charge(List<Rate> rates, Usage usage, String serviceTier) {
+        if (usage == null) {
+            return null;
+        }
+        String tier = serviceTier == null ? "default" : serviceTier;
+        try {
             BigDecimal total = BigDecimal.ZERO;
-            for (var entry : quantities.entrySet()) {
+            boolean priced = false;
+            for (var entry : usage.byQuantity().entrySet()) {
                 if (entry.getValue() == 0) {
                     continue;
                 }
-                Long rate = resolve(rates, context, tier, entry.getKey());
+                Long rate = resolve(rates, usage.input(), tier, entry.getKey());
                 if (rate == null && !REQUEST.equals(entry.getKey())) {
                     return null;
                 }
                 if (rate != null) {
+                    priced = true;
                     total = total.add(product(entry.getValue(), rate));
                 }
             }
-            if (total.signum() == 0 && prompt == 0 && completion == 0) {
+            if (!priced) {
                 return null; // Match the normal ledger's no priced quantity result.
             }
             return total.movePointLeft(3).setScale(0, RoundingMode.HALF_UP).longValueExact();

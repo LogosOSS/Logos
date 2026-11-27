@@ -90,7 +90,7 @@ describe('ProviderSpendCap', () => {
 
   it('keeps the editor after a failed write and schedules removal without a limit', async () => {
     await load({ ...status, bound_violation: true });
-    expect(host.querySelector('[role="alert"]')?.textContent).toContain('exceeded its reservation');
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('exceeded the verified bound');
     button('Edit spend cap').click();
     fixture.detectChanges();
     host.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click();

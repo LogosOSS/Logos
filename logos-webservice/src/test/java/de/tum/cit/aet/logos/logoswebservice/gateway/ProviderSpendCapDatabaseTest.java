@@ -93,10 +93,27 @@ class ProviderSpendCapDatabaseTest {
         ledger.recordReviewedBound(provider, model, new ProviderSpendLedger.BoundReview(messages, MODEL, "max_tokens",
             1000000, 64000, "https://platform.claude.com/docs/en/models/haiku-4-5/overview"));
         assertThat(ledger.coverage(provider)).isEqualTo(1);
+        assertThat(ledger.reserve(UUID.randomUUID(), provider, model, messages, mapper.readTree(PAYLOAD
+            .replace(MODEL, "synthetic-latest")))).isEqualTo(ProviderSpendLedger.Decision.UNBOUNDED);
+        assertThat(ledger.reserve(UUID.randomUUID(), provider, model, messages, mapper.readTree(PAYLOAD
+            .replace(":100", ":64001")))).isEqualTo(ProviderSpendLedger.Decision.UNBOUNDED);
+        var tools = (com.fasterxml.jackson.databind.node.ObjectNode) request.deepCopy();
+        tools.set("tools", mapper.createArrayNode());
+        assertThat(ledger.reserve(UUID.randomUUID(), provider, model, messages, tools))
+            .isEqualTo(ProviderSpendLedger.Decision.UNBOUNDED);
+        jdbc.update("UPDATE providers SET auth_name = 'anthropic-beta' WHERE id = ?", provider);
+        assertThat(ledger.coverage(provider)).isZero();
+        assertThat(ledger.reserve(UUID.randomUUID(), provider, model, messages, request))
+            .isEqualTo(ProviderSpendLedger.Decision.UNBOUNDED);
+        jdbc.update("UPDATE providers SET auth_name = 'x-api-key' WHERE id = ?", provider);
+        // Independent application replicas, same store.
+        var other = new ProviderSpendLedger(named, new DataSourceTransactionManager(dataSource), new ProviderSpendPricing(named));
+        java.util.concurrent.atomic.AtomicInteger replicas = new java.util.concurrent.atomic.AtomicInteger();
 
         List<UUID> attempts = java.util.stream.IntStream.range(0, 12).mapToObj(i -> UUID.randomUUID()).toList();
         List<Callable<ProviderSpendLedger.Decision>> admit = attempts.stream()
-            .<Callable<ProviderSpendLedger.Decision>>map(attempt -> () -> ledger.reserve(attempt, provider, model, messages, request)).toList();
+            .<Callable<ProviderSpendLedger.Decision>>map(attempt -> () -> (replicas.getAndIncrement() % 2 == 0 ? ledger : other)
+                .reserve(attempt, provider, model, messages, request)).toList();
         List<ProviderSpendLedger.Decision> results;
         try (var exec = Executors.newFixedThreadPool(12)) {
             var futures = exec.invokeAll(admit);
@@ -130,9 +147,9 @@ class ProviderSpendCapDatabaseTest {
             """, provider);
         jdbc.update("""
             INSERT INTO provider_spend_attempts
-                (attempt_id, provider_id, month_start, model_id, priced_at, reserved_micro_cents, anthropic_usage)
+                (attempt_id, provider_id, month_start, model_id, priced_at, reserved_micro_cents, anthropic_usage, max_input_tokens, max_output_tokens)
             VALUES (?, ?, date_trunc('month', current_timestamp AT TIME ZONE 'UTC') - interval '1 month',
-                ?, current_timestamp, 1000, true)
+                ?, current_timestamp, 1000, true, 1000000, 100)
             """, previous, provider, model);
         assertThat(ledger.settle(previous, Map.of("prompt_tokens", 20L, "completion_tokens", 30L), null, false)).isTrue();
         assertThat(jdbc.queryForList("""
@@ -147,13 +164,25 @@ class ProviderSpendCapDatabaseTest {
             """, Boolean.class, provider)).isTrue();
         assertThat(ledger.reserve(UUID.randomUUID(), provider, model, messages, request)).isEqualTo(exhausted);
 
+        jdbc.update("""
+            UPDATE provider_spend_months SET bound_violation = false, charged_micro_cents = 0
+             WHERE provider_id = ? AND month_start = date_trunc('month', current_timestamp AT TIME ZONE 'UTC')::date
+            """, provider);
+        UUID extraBilled = UUID.randomUUID();
+        assertThat(ledger.reserve(extraBilled, provider, model, messages, request)).isEqualTo(reserved);
+        assertThat(ledger.settle(extraBilled, Map.of("prompt_tokens", 10L, "completion_tokens", 4L,
+            "billed_search_queries", 1L), null, false)).isFalse();
+        assertThat(jdbc.queryForObject("SELECT charged_micro_cents FROM provider_spend_attempts WHERE attempt_id = ?",
+            Long.class, extraBilled)).isNull();
+        assertThat(ledger.reserve(UUID.randomUUID(), provider, model, messages, request)).isEqualTo(exhausted);
+
         checkAdminPolicy(jdbc, provider, ledger);
     }
 
     private static void checkAdminPolicy(JdbcTemplate jdbc, int provider, ProviderSpendLedger ledger) {
         var audit = mock(AuditLogService.class);
         var service = new ProviderSpendPolicyService(new NamedParameterJdbcTemplate(jdbc), audit, ledger);
-        var controller = new ProviderSpendPolicyController(service, ledger, audit);
+        var controller = new ProviderSpendPolicyController(service);
         var currentMonth = jdbc.queryForObject("""
             SELECT date_trunc('month', CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::date
             """, LocalDate.class);

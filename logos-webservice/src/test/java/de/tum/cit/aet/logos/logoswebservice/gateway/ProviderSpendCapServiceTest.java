@@ -113,9 +113,9 @@ class ProviderSpendCapServiceTest {
     void internalGateRequiresExactSecretAndReturnsOnlyAttemptId() {
         UUID attempt = UUID.randomUUID();
         ProviderSpendCapService cap = mock(ProviderSpendCapService.class);
-        var controller = new InternalProviderSpendController(cap, "synthetic-secret");
+        var controller = new InternalProviderSpendController(cap, mapper, "synthetic-secret");
         var request = new InternalProviderSpendController.Reserve(12, 13, "https://api.openai.com/v1/responses",
-            mapper.createObjectNode());
+            Map.of());
         for (String bearer : new String[] {null, "synthetic-secret", "Bearer wrong"}) {
             assertThatThrownBy(() -> controller.reserve(bearer, request))
                 .isInstanceOfSatisfying(ResponseStatusException.class,

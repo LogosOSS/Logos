@@ -276,11 +276,13 @@ SELECT p.id, (date_trunc('month', CURRENT_TIMESTAMP AT TIME ZONE 'UTC') + v.mont
 FROM providers p
 CROSS JOIN (VALUES (interval '0 month', 40000000000::bigint), (interval '1 month', 50000000000::bigint))
     AS v(month_offset, limit_micro_cents)
-WHERE p.name = 'Docs Cloud (EU)' AND p.base_url = 'https://example.invalid/openai';
+WHERE p.name = 'Docs Cloud (EU)' AND p.base_url = 'https://example.invalid/openai'
+ON CONFLICT (provider_id, effective_month) DO NOTHING;
 
 INSERT INTO provider_spend_months (provider_id, month_start, charged_micro_cents, held_micro_cents)
 SELECT id, date_trunc('month', CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::date, 8725000000, 1050000000
-FROM providers WHERE name = 'Docs Cloud (EU)' AND base_url = 'https://example.invalid/openai';
+FROM providers WHERE name = 'Docs Cloud (EU)' AND base_url = 'https://example.invalid/openai'
+ON CONFLICT (provider_id, month_start) DO NOTHING;
 
 -- Documentation-only worker identity for nightly-worker.mjs. This worker
 -- reports example telemetry but rejects inference and control commands.

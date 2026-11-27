@@ -15,7 +15,7 @@ def response(status, json=None):
 async def test_reserve_fails_closed(monkeypatch, status):
     async def call(operation, body):
         assert operation == "reserve"
-        assert body["providerId"] == 22
+        assert body["provider_id"] == 22
         return response(status)
 
     monkeypatch.setattr(provider_spend, "_call", call)
@@ -31,9 +31,9 @@ async def test_reserve_sends_only_request_shape(monkeypatch):
     async def call(operation, body):
         assert operation == "reserve"
         assert body == {
-            "providerId": 22,
-            "modelId": 33,
-            "upstreamUrl": url,
+            "provider_id": 22,
+            "model_id": 33,
+            "upstream_url": url,
             "shape": {
                 "model": "synthetic-20261001",
                 "messages": [{"role": "", "content": [{"type": "text", "text": ""}]}],
@@ -43,7 +43,7 @@ async def test_reserve_sends_only_request_shape(monkeypatch):
                 "unsupported": None,
             },
         }
-        return response(200, {"attemptId": str(attempt)})
+        return response(200, {"attempt_id": str(attempt)})
 
     monkeypatch.setattr(provider_spend, "_call", call)
     payload = {
@@ -57,7 +57,7 @@ async def test_reserve_sends_only_request_shape(monkeypatch):
     assert await provider_spend.reserve(22, 33, url=url, payload=payload) == attempt
 
 
-@pytest.mark.parametrize("invalid", [{}, {"attemptId": "invalid"}, [], None])
+@pytest.mark.parametrize("invalid", [{}, {"attempt_id": "invalid"}, [], None])
 async def test_unconfirmed_hold_is_not_admitted(monkeypatch, invalid):
     async def call(operation, body):
         return response(200, invalid)
@@ -90,6 +90,6 @@ async def test_release_requires_no_dispatch_and_settle_requires_real_report(monk
     await provider_spend.settle(attempt, reported, "flex")
     await provider_spend.release_undispatched(attempt)
     assert seen == [
-        ("settle", {"attemptId": str(attempt), "usage": reported, "tier": "flex", "undispatched": False}),
-        ("settle", {"attemptId": str(attempt), "undispatched": True}),
+        ("settle", {"attempt_id": str(attempt), "usage": reported, "tier": "flex", "undispatched": False}),
+        ("settle", {"attempt_id": str(attempt), "undispatched": True}),
     ]

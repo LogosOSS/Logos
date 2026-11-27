@@ -22,9 +22,9 @@ public class ProviderSpendLedger {
     public enum Decision { UNCAPPED, RESERVED, EXHAUSTED, UNBOUNDED, DUPLICATE }
     public record BoundReview(String upstreamUrl, String revision, String outputLimitField,
                               int maxInputTokens, int maxOutputTokens, String evidenceUrl) {}
-    private record Deployment(int id, String revision, String baseUrl, String endpoint, String cloudType) {}
+    private record Deployment(int id, String revision, String baseUrl, String endpoint, String cloudType, String authName) {}
     private record Attempt(int provider, int model, LocalDate month, OffsetDateTime pricedAt, long held, boolean closed,
-                           boolean anthropic) {}
+                           boolean anthropic, int maxInput, int maxOutput) {}
 
     private final NamedParameterJdbcTemplate jdbc;
     private final TransactionTemplate transaction;
@@ -78,7 +78,8 @@ public class ProviderSpendLedger {
             var params = new MapSqlParameterSource().addValue("provider", provider).addValue("month", month)
                 .addValue("model", model).addValue("attempt", attemptId).addValue("pricedAt", now)
                 .addValue("held", required.longValueExact()).addValue("limit", limit)
-                .addValue("anthropic", "messages".equals(kind));
+                .addValue("anthropic", "messages".equals(kind))
+                .addValue("input", bound.maxInputTokens()).addValue("output", output);
             jdbc.update("""
                 INSERT INTO provider_spend_months (provider_id, month_start)
                 VALUES (:provider, :month) ON CONFLICT DO NOTHING
@@ -96,8 +97,8 @@ public class ProviderSpendLedger {
             }
             jdbc.update("""
                 INSERT INTO provider_spend_attempts (attempt_id, provider_id, month_start, model_id,
-                    priced_at, reserved_micro_cents, anthropic_usage)
-                VALUES (:attempt, :provider, :month, :model, :pricedAt, :held, :anthropic)
+                    priced_at, reserved_micro_cents, anthropic_usage, max_input_tokens, max_output_tokens)
+                VALUES (:attempt, :provider, :month, :model, :pricedAt, :held, :anthropic, :input, :output)
                 """, params);
             return Decision.RESERVED;
         });
@@ -114,14 +115,24 @@ public class ProviderSpendLedger {
             if (attempt == null || attempt.closed()) {
                 return false;
             }
+            var quantities = ProviderSpendPricing.quantities(usage, attempt.anthropic());
+            boolean outsideBound = !undispatched && (quantities != null
+                && (quantities.input() > attempt.maxInput() || quantities.output() > attempt.maxOutput())
+                || ProviderSpendPricing.hasUnboundedCharges(usage));
             Long charge = undispatched ? Long.valueOf(0) : ProviderSpendPricing.charge(
-                pricing.rates(attempt.provider(), attempt.model(), attempt.pricedAt()), usage, tier, attempt.anthropic());
+                pricing.rates(attempt.provider(), attempt.model(), attempt.pricedAt()), quantities, tier);
             if (charge == null) {
+                if (outsideBound) {
+                    jdbc.update("""
+                        UPDATE provider_spend_months SET bound_violation = TRUE
+                         WHERE provider_id = :provider AND month_start = :month
+                        """, Map.of("provider", attempt.provider(), "month", attempt.month()));
+                }
                 return false;
             }
             var params = Map.of("attempt", attemptId, "charge", charge,
                 "provider", attempt.provider(), "month", attempt.month(), "held", attempt.held(),
-                "violation", charge > attempt.held());
+                "violation", outsideBound || charge > attempt.held());
             jdbc.update("UPDATE provider_spend_attempts SET charged_micro_cents = :charge WHERE attempt_id = :attempt", params);
             jdbc.update("""
                 UPDATE provider_spend_months
@@ -136,18 +147,24 @@ public class ProviderSpendLedger {
 
     public int coverage(int provider) {
         var rows = jdbc.query("""
-            SELECT mp.id, m.name, p.base_url, mp.endpoint, p.cloud_provider_type,
+            SELECT mp.id, mp.model_id, m.name, p.base_url, mp.endpoint, p.cloud_provider_type, p.auth_name,
                    b.upstream_url, b.model_revision
               FROM provider_spend_bounds b JOIN model_provider mp ON mp.id = b.model_provider_id
               JOIN models m ON m.id = mp.model_id JOIN providers p ON p.id = mp.provider_id
              WHERE p.id = :provider AND p.provider_type = 'cloud'
             """, Map.of("provider", provider), (rs, index) -> {
                 var deployment = new Deployment(rs.getInt("id"), rs.getString("name"), rs.getString("base_url"),
-                    rs.getString("endpoint"), rs.getString("cloud_provider_type"));
+                    rs.getString("endpoint"), rs.getString("cloud_provider_type"), rs.getString("auth_name"));
                 return matches(deployment, rs.getString("upstream_url"), rs.getString("model_revision"))
-                    ? deployment.id() : null;
+                    ? rs.getInt("model_id") : null;
             });
-        return (int) rows.stream().filter(java.util.Objects::nonNull).distinct().count();
+        if (rows.isEmpty()) {
+            return 0;
+        }
+        OffsetDateTime now = jdbc.queryForObject("SELECT clock_timestamp()", Map.of(), OffsetDateTime.class);
+        return (int) rows.stream().filter(java.util.Objects::nonNull).distinct()
+            .filter(model -> ProviderSpendPricing.ceiling(pricing.rates(provider, model, now), 1, 1) != null)
+            .count();
     }
 
     public void recordReviewedBound(int provider, int model, BoundReview review) {
@@ -216,22 +233,24 @@ public class ProviderSpendLedger {
             return null;
         }
         return jdbc.query("""
-            SELECT provider_id, model_id, month_start, priced_at, reserved_micro_cents, charged_micro_cents, anthropic_usage
+            SELECT provider_id, model_id, month_start, priced_at, reserved_micro_cents, charged_micro_cents,
+                   anthropic_usage, max_input_tokens, max_output_tokens
               FROM provider_spend_attempts WHERE attempt_id = :attempt
             """, Map.of("attempt", attemptId), rs -> rs.next() ? new Attempt(rs.getInt("provider_id"),
                 rs.getInt("model_id"), rs.getObject("month_start", LocalDate.class),
                 rs.getObject("priced_at", OffsetDateTime.class), rs.getLong("reserved_micro_cents"),
-                rs.getObject("charged_micro_cents") != null, rs.getBoolean("anthropic_usage")) : null);
+                rs.getObject("charged_micro_cents") != null, rs.getBoolean("anthropic_usage"),
+                rs.getInt("max_input_tokens"), rs.getInt("max_output_tokens")) : null);
     }
 
     private Deployment deployment(int provider, int model) {
         return jdbc.query("""
-            SELECT mp.id, m.name, p.base_url, mp.endpoint, p.cloud_provider_type
+            SELECT mp.id, m.name, p.base_url, mp.endpoint, p.cloud_provider_type, p.auth_name
               FROM model_provider mp JOIN models m ON m.id = mp.model_id JOIN providers p ON p.id = mp.provider_id
              WHERE p.id = :provider AND m.id = :model AND p.provider_type = 'cloud'
             """, Map.of("provider", provider, "model", model),
             rs -> rs.next() ? new Deployment(rs.getInt("id"), rs.getString("name"), rs.getString("base_url"),
-                rs.getString("endpoint"), rs.getString("cloud_provider_type")) : null);
+                rs.getString("endpoint"), rs.getString("cloud_provider_type"), rs.getString("auth_name")) : null);
     }
 
     private BoundReview findBound(int provider, Integer model, String url, String revision) {
@@ -260,7 +279,8 @@ public class ProviderSpendLedger {
         java.net.URI uri = java.net.URI.create(official);
         String host = uri.getHost();
         String cloudType = "api.openai.com".equals(host) ? "openai" : "anthropic";
-        return cloudType.equals(deployed.cloudType()) && official.equals(ProviderSpendBounds.officialUrl(
+        return cloudType.equals(deployed.cloudType())
+            && ProviderSpendBounds.standardAuth(cloudType, deployed.authName()) && official.equals(ProviderSpendBounds.officialUrl(
             CloudForwardUrlBuilder.build(deployed.baseUrl(), uri.getRawPath(), deployed.endpoint())));
     }
 }

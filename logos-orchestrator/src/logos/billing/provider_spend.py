@@ -74,14 +74,14 @@ async def reserve(
     try:
         response = await _call(
             "reserve",
-            {"providerId": provider_id, "modelId": model_id, "upstreamUrl": url or None, "shape": _shape(payload)},
+            {"provider_id": provider_id, "model_id": model_id, "upstream_url": url or None, "shape": _shape(payload)},
         )
         if response.status_code == 402:
             raise HTTPException(402, "Provider monthly spend limit reached")
         if response.status_code == 422:
             raise HTTPException(422, "Request cost cannot be bounded under this provider's monthly spend limit")
         response.raise_for_status()
-        attempt = response.json()["attemptId"]
+        attempt = response.json()["attempt_id"]
         return None if attempt is None else uuid.UUID(attempt)
     except HTTPException:
         raise
@@ -98,14 +98,14 @@ async def settle(attempt_id: uuid.UUID | None, usage: dict, service_tier: str | 
         return
     await _settle(
         attempt_id,
-        {"attemptId": str(attempt_id), "usage": usage, "tier": service_tier, "undispatched": False},
+        {"attempt_id": str(attempt_id), "usage": usage, "tier": service_tier, "undispatched": False},
     )
 
 
 async def release_undispatched(attempt_id: uuid.UUID | None) -> None:
     """Release only when the executor can prove it never started the send."""
     if attempt_id is not None:
-        await _settle(attempt_id, {"attemptId": str(attempt_id), "undispatched": True})
+        await _settle(attempt_id, {"attempt_id": str(attempt_id), "undispatched": True})
 
 
 async def _settle(attempt_id: uuid.UUID, body: dict) -> None:

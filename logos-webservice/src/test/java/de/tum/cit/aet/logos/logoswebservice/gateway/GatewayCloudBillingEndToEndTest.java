@@ -108,6 +108,7 @@ class GatewayCloudBillingEndToEndTest {
         registry.add("spring.jpa.hibernate.ddl-auto", () -> "validate");
         registry.add("spring.datasource.hikari.maximum-pool-size", () -> "4");
         registry.add("spring.datasource.hikari.minimum-idle", () -> "1");
+        registry.add("logos.orchestrator.internal-secret", () -> "local-spend-test-secret");
     }
 
     private static final AtomicInteger SEQ = new AtomicInteger(1);
@@ -162,6 +163,31 @@ class GatewayCloudBillingEndToEndTest {
         if (upstream != null) {
             upstream.stop(0);
         }
+    }
+
+    @Test
+    void orchestratorAdmissionHttpContractAuthenticatesAndDistinguishesUncappedFromDenied() throws Exception {
+        Fixture f = seedPricedDeployment();
+        String body = """
+            {"provider_id":%d,"model_id":%d,"upstream_url":"https://api.openai.com/v1/chat/completions",
+             "shape":{"model":"synthetic-revision","messages":[{"role":"user","content":""}],"max_tokens":100}}
+            """.formatted(f.providerId(), f.modelId());
+        mvc.perform(post("/internal/provider-spend/reserve").contentType("application/json").content(body))
+            .andExpect(MockMvcResultMatchers.status().isUnauthorized());
+        var uncapped = mvc.perform(post("/internal/provider-spend/reserve").contentType("application/json").content(body)
+            .header("Authorization", "Bearer local-spend-test-secret"))
+            .andExpect(MockMvcResultMatchers.status().isOk()).andReturn();
+        var response = MAPPER.readTree(uncapped.getResponse().getContentAsString());
+        assertThat(response.has("attempt_id")).isTrue();
+        assertThat(response.path("attempt_id").isNull()).isTrue();
+        jdbc.update("""
+            INSERT INTO provider_spend_policies (provider_id, effective_month, limit_micro_cents)
+            VALUES (?, date_trunc('month', now() AT TIME ZONE 'UTC')::date, 1000000000)
+            """, f.providerId());
+        mvc.perform(post("/internal/provider-spend/reserve").contentType("application/json").content(body)
+            .header("Authorization", "Bearer local-spend-test-secret"))
+            .andExpect(MockMvcResultMatchers.status().is(422));
+        assertThat(seenRequestBody.get()).isNull();
     }
 
     @ParameterizedTest

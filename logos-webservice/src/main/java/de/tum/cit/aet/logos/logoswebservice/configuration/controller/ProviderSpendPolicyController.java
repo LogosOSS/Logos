@@ -14,7 +14,6 @@ import org.springframework.web.bind.annotation.RestController;
 
 import de.tum.cit.aet.logos.logoswebservice.configuration.service.ProviderSpendPolicyService;
 import de.tum.cit.aet.logos.logoswebservice.identity.entity.Role;
-import de.tum.cit.aet.logos.logoswebservice.audit.AuditLogService;
 import de.tum.cit.aet.logos.logoswebservice.gateway.ProviderSpendLedger;
 
 @RestController
@@ -24,13 +23,8 @@ public class ProviderSpendPolicyController {
 
     private final ProviderSpendPolicyService service;
 
-    private final ProviderSpendLedger ledger;
-    private final AuditLogService audit;
-
-    public ProviderSpendPolicyController(ProviderSpendPolicyService service, ProviderSpendLedger ledger, AuditLogService audit) {
+    public ProviderSpendPolicyController(ProviderSpendPolicyService service) {
         this.service = service;
-        this.ledger = ledger;
-        this.audit = audit;
     }
 
     @GetMapping
@@ -47,18 +41,12 @@ public class ProviderSpendPolicyController {
     @PutMapping("/reviewed-deployments/{modelId}")
     public Map<String, Object> recordReviewedBound(@PathVariable int providerId, @PathVariable int modelId,
             @RequestBody ProviderSpendLedger.BoundReview review) {
-        ledger.recordReviewedBound(providerId, modelId, review);
-        audit.record("provider.spend_cap_capability_reviewed", "provider", providerId, null, null,
-            Map.of("model_id", modelId, "revision", review.revision(), "evidence", review.evidenceUrl()));
-        return service.get(providerId);
+        return service.recordReviewedBound(providerId, modelId, review);
     }
 
     @DeleteMapping("/reviewed-deployments/{modelId}")
     public Map<String, Object> removeReviewedBound(@PathVariable int providerId, @PathVariable int modelId,
-            @RequestParam String upstreamUrl) {
-        ledger.removeReviewedBound(providerId, modelId, upstreamUrl);
-        audit.record("provider.spend_cap_capability_removed", "provider", providerId, null, null,
-            Map.of("model_id", modelId));
-        return service.get(providerId);
+            @RequestParam("upstream_url") String upstreamUrl) {
+        return service.removeReviewedBound(providerId, modelId, upstreamUrl);
     }
 }

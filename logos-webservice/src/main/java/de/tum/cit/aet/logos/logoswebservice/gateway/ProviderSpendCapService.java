@@ -28,6 +28,7 @@ public class ProviderSpendCapService {
     UUID reserve(GatewayDeployment deployment, String inferencePath, String query, JsonNode payload) {
         String target = null;
         if ((query == null || query.isEmpty()) && payload != null
+                && ProviderSpendBounds.standardAuth(deployment.cloudProviderType(), deployment.authName())
                 && deployment.modelName().equals(payload.path("model").asText(null))) {
             target = CloudForwardUrlBuilder.build(deployment.baseUrl(), inferencePath, deployment.endpoint());
         }

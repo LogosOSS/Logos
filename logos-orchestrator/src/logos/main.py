@@ -1835,8 +1835,11 @@ async def _reserve_cloud_attempt(context, provider_id: int, model_id: int, paylo
     # Beta/versioned features can change the documented ceilings. The
     # orchestrator supplies the stable Anthropic API version itself.
     versions = {name.lower(): value for name, value in headers.items()}
-    if versions.keys() & {"anthropic-beta", "openai-beta"} or (
-        versions.get("anthropic-version") is not None and versions.get("anthropic-version") != "2023-06-01"
+    auth_header = getattr(context, "auth_header", None)
+    if (
+        (auth_header and auth_header.lower() not in {"authorization", "x-api-key"})
+        or versions.keys() & {"anthropic-beta", "openai-beta"}
+        or (versions.get("anthropic-version") is not None and versions["anthropic-version"] != "2023-06-01")
     ):
         bounded_payload = None
     return await provider_spend.reserve(provider_id, model_id, url=context.forward_url, payload=bounded_payload)

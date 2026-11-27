@@ -46,6 +46,14 @@ final class ProviderSpendBounds {
         return ANTHROPIC.equals(host) && "/v1/messages".equals(path) ? "messages" : null;
     }
 
+    static boolean standardAuth(String cloudType, String configured) {
+        if (configured == null || configured.isBlank()) {
+            return true;
+        }
+        String expected = "anthropic".equals(cloudType) ? "x-api-key" : "authorization";
+        return expected.equalsIgnoreCase(configured.strip());
+    }
+
     static boolean trustedEvidence(String requestUrl, String revision, String outputField, String source) {
         URI official = parse(requestUrl);
         String kind = kind(official);

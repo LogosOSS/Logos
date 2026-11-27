@@ -368,6 +368,6 @@ def _uncapped_cloud_by_default(monkeypatch):
     from logos.billing import provider_spend
 
     async def uncapped(operation, body):
-        return httpx.Response(200, json={"attemptId": None}, request=httpx.Request("POST", "http://ledger.test"))
+        return httpx.Response(200, json={"attempt_id": None}, request=httpx.Request("POST", "http://ledger.test"))
 
     monkeypatch.setattr(provider_spend, "_call", uncapped)
