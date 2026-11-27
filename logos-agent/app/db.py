@@ -157,6 +157,34 @@ async def agent_cloud_deployments() -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
+async def agent_cloud_allowed_for_repository(
+    provider_id: int, team_repository_id: int | None, repo_slug: str | None
+) -> bool:
+    """Apply current team privacy; a removed or moved link is not a platform session."""
+    if team_repository_id is None:
+        return repo_slug is None
+    if not repo_slug:
+        return False
+
+    async with sessionmaker()() as db:
+        return bool(
+            (
+                await db.execute(
+                    text("""
+                SELECT EXISTS (
+                    SELECT 1 FROM team_repositories tr
+                    JOIN team_privacy_providers allowed
+                      ON allowed.team_id = tr.team_id AND allowed.provider_id = :provider
+                    WHERE tr.id = :repo_id AND tr.agent_enabled
+                      AND lower(tr.repo_slug) = lower(:slug)
+                )
+                """),
+                    {"provider": provider_id, "repo_id": team_repository_id, "slug": repo_slug},
+                )
+            ).scalar_one()
+        )
+
+
 async def set_agent_inference_grant(session_id: int, digest: str) -> bool:
     async with sessionmaker()() as db:
         changed = await db.execute(

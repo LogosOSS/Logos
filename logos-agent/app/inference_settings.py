@@ -79,11 +79,17 @@ async def cloud_options() -> list[dict[str, Any]]:
 
 
 async def permits_pin(session: dict[str, Any]) -> bool:
-    """Recheck the configured deployment and its model identity before launch."""
+    """Recheck the pin's deployment and its live repository privacy policy."""
+    provider_id = session.get("inference_provider_id")
+    model_id = session.get("inference_model_id")
+    if provider_id is None or model_id is None:
+        return False
+    if not await db.agent_cloud_allowed_for_repository(
+        provider_id, session.get("team_repository_id"), session.get("repo_slug")
+    ):
+        return False
     return any(
-        row["provider_id"] == session.get("inference_provider_id")
-        and row["model_id"] == session.get("inference_model_id")
-        and row["model"] == session.get("model")
+        row["provider_id"] == provider_id and row["model_id"] == model_id and row["model"] == session.get("model")
         for row in await cloud_options()
     )
 

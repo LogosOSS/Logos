@@ -392,7 +392,13 @@ async def put_inference_settings(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    logger.info("%s selected %s Agent inference", principal.username, body.mode)
+    logger.info(
+        "%s selected %s Agent inference (provider_id=%s, model_id=%s)",
+        principal.username,
+        body.mode,
+        body.provider_id,
+        body.model_id,
+    )
     return state
 
 
@@ -525,16 +531,8 @@ async def create_session(body: SessionCreate, principal: Principal = Depends(req
     # An operator's saved choice applies to every new session, including
     # this manual endpoint. The central insert captures it transactionally.
     selected = await db.agent_inference_selection()
-    if selected.get("mode") == "cloud":
-        if not await inference_settings.permits_pin(
-            {
-                "inference_provider_id": selected.get("provider_id"),
-                "inference_model_id": selected.get("model_id"),
-                "model": selected.get("model"),
-            }
-        ):
-            raise HTTPException(status_code=409, detail="The selected remote Agent model is no longer eligible")
-    else:
+    remote = selected.get("mode") == "cloud"
+    if not remote:
         chosen = selected.get("model") or body.model
         policy = await model_policy.refresh()
         if not policy.allows(chosen):
@@ -542,6 +540,7 @@ async def create_session(body: SessionCreate, principal: Principal = Depends(req
 
     task = body.task
     target: dict = {}
+    link = None
     if body.team_repository_id is not None:
         link = await db.coding_repository(body.team_repository_id)
         if link is None:
@@ -555,11 +554,6 @@ async def create_session(body: SessionCreate, principal: Principal = Depends(req
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Dev screenshots are only available for the platform repository",
             )
-        # The same task a triggered session for this repository gets: the
-        # request, followed by the repository's build command and the
-        # instructions its team wrote.
-        with repository_context.scope(link):
-            task = await conventions.for_task(body.task)
         target = {
             "repo_url": link["repo_url"],
             "repo_slug": link["repo_slug"],
@@ -567,6 +561,23 @@ async def create_session(body: SessionCreate, principal: Principal = Depends(req
             "verification_command": link.get("verification_command"),
             "repo_base_branch": link.get("branch") or "main",
         }
+    if remote and not await inference_settings.permits_pin(
+        {
+            "inference_provider_id": selected.get("provider_id"),
+            "inference_model_id": selected.get("model_id"),
+            "model": selected.get("model"),
+            **target,
+        }
+    ):
+        raise HTTPException(
+            status_code=409, detail="The selected remote Agent model is not eligible for this repository"
+        )
+    if link is not None:
+        # The same task a triggered session for this repository gets: the
+        # request, followed by the repository's build command and the
+        # instructions its team wrote.
+        with repository_context.scope(link):
+            task = await conventions.for_task(body.task)
     try:
         session_id = await db.create_session(
             workspace_id=body.workspace_id,

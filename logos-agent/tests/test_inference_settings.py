@@ -40,6 +40,62 @@ async def test_remote_catalog_filters_origins_and_does_not_expose_endpoints(monk
     assert not await inference_settings.permits_pin({**PIN, "inference_provider_id": None})
 
 
+async def test_pinned_remote_uses_the_live_repository_privacy_policy_before_discovery(monkeypatch):
+    current_policy = AsyncMock(side_effect=[True, False])
+    deployments = AsyncMock(
+        return_value=[{"provider_id": 2, "provider_name": "Example", "model_id": 8, "model": "cloud-model"}]
+    )
+    monkeypatch.setattr(db, "agent_cloud_allowed_for_repository", current_policy)
+    monkeypatch.setattr(inference_settings, "cloud_options", deployments)
+    linked = {**PIN, "team_repository_id": 12, "repo_slug": "o/repo"}
+
+    assert await inference_settings.permits_pin(linked)
+    assert not await inference_settings.permits_pin(linked)  # policy was withdrawn between two checks
+    assert [call.args for call in current_policy.await_args_list] == [(2, 12, "o/repo")] * 2
+    deployments.assert_awaited_once()
+
+
+async def test_manual_request_is_refused_before_queuing_under_disallowed_team_privacy(monkeypatch):
+    workspace = AsyncMock(return_value={"id": 1})
+    linked = AsyncMock(return_value={"id": 12, "repo_url": "https://github.com/o/repo", "repo_slug": "o/repo"})
+    selection = AsyncMock(return_value={"mode": "cloud", "provider_id": 2, "model_id": 8, "model": "cloud-model"})
+    denied = AsyncMock(return_value=False)
+    create = AsyncMock()
+    monkeypatch.setattr(db, "get_workspace", workspace)
+    monkeypatch.setattr(db, "coding_repository", linked)
+    monkeypatch.setattr(db, "agent_inference_selection", selection)
+    monkeypatch.setattr(db, "agent_cloud_allowed_for_repository", denied)
+    monkeypatch.setattr(db, "create_session", create)
+    main.app.dependency_overrides[main.require_agent_operator] = lambda: Principal(
+        "actor", "operator", frozenset({"logos_admin"})
+    )
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url="http://test") as client:
+            response = await client.post(
+                "/sessions", json={"workspace_id": 1, "team_repository_id": 12, "task": "an example coding task"}
+            )
+    finally:
+        main.app.dependency_overrides.pop(main.require_agent_operator)
+    assert response.status_code == 409
+    assert "not eligible for this repository" in response.json()["detail"]
+    denied.assert_awaited_once_with(2, 12, "o/repo")
+    create.assert_not_awaited()
+
+
+async def test_remote_resume_does_not_reattach_when_privacy_access_has_been_removed(monkeypatch):
+    manager = sessions.SessionManager()
+    linked = {**PIN, "id": 10, "container_id": "container", "team_repository_id": None, "repo_slug": "o/repo"}
+    monkeypatch.setattr(manager, "_container_now", AsyncMock(return_value=("paused", None)))
+    settle = AsyncMock()
+    attach = AsyncMock()
+    monkeypatch.setattr(manager, "_settle", settle)
+    monkeypatch.setattr(docker_engine, "connect_network", attach)
+
+    assert not await manager._resume(linked, "continue")
+    settle.assert_awaited_once_with(10, exit_code=None, error="The pinned remote Agent model is no longer eligible")
+    attach.assert_not_awaited()
+
+
 @pytest.mark.parametrize(
     "bad_origin",
     [

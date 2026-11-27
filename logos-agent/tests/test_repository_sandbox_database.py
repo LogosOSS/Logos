@@ -7,6 +7,7 @@ Every run uses and removes its own schema; application data is untouched.
 import asyncio
 import os
 import uuid
+from pathlib import Path
 
 import pytest
 from app import analysis_triggers, db
@@ -51,6 +52,7 @@ async def database(monkeypatch):
             await conn.execute(text("""CREATE TABLE agent_sessions (
                 id SERIAL PRIMARY KEY, workspace_id integer REFERENCES agent_workspaces(id),
                 task text, model text, status text, created_by text, created_at timestamptz DEFAULT now(),
+                inference_provider_id integer, inference_model_id integer,
                 started_at timestamptz, finished_at timestamptz, exit_code integer, error text,
                 container_id text, branch_name text, pr_url text, open_pull_request boolean,
                 deploy_to_dev boolean, screenshot_paths jsonb, no_push boolean DEFAULT FALSE,
@@ -62,6 +64,8 @@ async def database(monkeypatch):
                 progress_percent integer, progress_active_s bigint, progress_reported_at timestamptz,
                 active_seconds double precision NOT NULL DEFAULT 0, active_since timestamptz,
                 tokens_in bigint, tokens_out bigint, cost_usd numeric)"""))
+            await conn.execute(text("""CREATE TABLE agent_inference_settings (
+                id integer PRIMARY KEY, mode text, model text, provider_id integer, model_id integer)"""))
             await conn.execute(text("""CREATE TABLE ai_workflow_analyses (
                 id SERIAL PRIMARY KEY, team_id integer, team_repository_id integer, status text, source text,
                 commit_sha text, error text, started_at timestamptz, finished_at timestamptz,
@@ -146,6 +150,47 @@ async def test_grants_follow_the_link_only_while_it_names_the_sessions_repositor
         "agent_may_comment": False,
     }
     assert (await db.egress_grant(session_id))["hosts"] == []
+
+
+async def test_remote_agent_applies_live_team_privacy_view_and_never_upgrades_a_deleted_link_to_platform(database):
+    path = Path(__file__).resolve().parents[2] / "logos-webservice/src/main/resources/liquibase/changelog"
+    migration = (path / "095_team_privacy.xml").read_text()
+    async with database.begin() as conn:
+        await conn.execute(text("ALTER TABLE teams ADD COLUMN privacy_scope text"))
+        await conn.execute(text("""CREATE TABLE providers (
+            id integer, provider_type text, privacy_level text, eu_processing_verified boolean, base_url text)"""))
+        await conn.execute(text("CREATE TABLE model_provider (provider_id integer, endpoint text)"))
+        await conn.execute(text("INSERT INTO teams VALUES (1, 'team', 'WORLDWIDE')"))
+        await conn.execute(text("""INSERT INTO providers VALUES
+            (3, 'cloud', 'CLOUD_NOT_IN_EU_BY_US_PROVIDER', FALSE, 'https://cloud.example'),
+            (4, 'cloud', 'CLOUD_IN_EU_BY_EU_PROVIDER', TRUE, 'https://cloud-eu.example')"""))
+        for name in ("provider_processing_privacy", "team_privacy_providers"):
+            statement = f"CREATE VIEW {name}" + migration.split(f"CREATE VIEW {name}", 1)[1].split(";", 1)[0]
+            await conn.execute(text(statement))
+
+    assert await db.agent_cloud_allowed_for_repository(3, None, None)
+    assert not await db.agent_cloud_allowed_for_repository(3, None, "o/a")
+    assert not await db.agent_cloud_allowed_for_repository(3, 1, None)
+    assert not await db.agent_cloud_allowed_for_repository(3, 1, "o/other")
+    assert await db.agent_cloud_allowed_for_repository(3, 1, "O/A")
+    async with database.begin() as conn:
+        await conn.execute(text("UPDATE teams SET privacy_scope = 'EU' WHERE id = 1"))
+
+    assert not await db.agent_cloud_allowed_for_repository(3, 1, "o/a")
+    assert await db.agent_cloud_allowed_for_repository(4, 1, "o/a")
+
+    async with database.begin() as conn:
+        await conn.execute(text("UPDATE teams SET privacy_scope = 'LOCAL' WHERE id = 1"))
+    assert not await db.agent_cloud_allowed_for_repository(4, 1, "o/a")
+
+    async with database.begin() as conn:
+        await conn.execute(text("UPDATE teams SET privacy_scope = 'WORLDWIDE' WHERE id = 1"))
+        await conn.execute(text("UPDATE team_repositories SET agent_enabled = FALSE WHERE id = 1"))
+    assert not await db.agent_cloud_allowed_for_repository(3, 1, "o/a")
+    async with database.begin() as conn:
+        await conn.execute(text("DELETE FROM team_repositories WHERE id = 1"))
+    assert not await db.agent_cloud_allowed_for_repository(3, 1, "o/a")
+    assert not await db.agent_cloud_allowed_for_repository(3, None, "o/a")
 
 
 async def test_unrestricted_access_follows_the_link_only_while_it_names_the_sessions_repository(database):
