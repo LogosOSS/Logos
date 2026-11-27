@@ -162,7 +162,7 @@ async function nodeModel(page, ids, model) {
 // stretch fixed full-viewport layers (dialog backdrops) over the whole page.
 async function unlock(page) {
   await page.addStyleTag({
-    content: `html, body, .main-content { height: auto !important; max-height: none !important; overflow: visible !important; }
+    content: `html, body, .main-content, .public-stats-page { height: auto !important; max-height: none !important; overflow: visible !important; }
       .shell-layout { min-height: 100vh !important; height: auto !important; overflow: visible !important; align-items: stretch !important; }
       .sidebar { align-self: stretch !important; min-height: 100% !important; }`,
   });
@@ -379,7 +379,7 @@ const SHOTS = [
     needs: "seed/public-hourly-request-load.sql and a public cache refresh",
     full: true,
     go: async (p) => {
-      await p.goto(BASE + "/stats");
+      await p.goto(BASE + "/usage");
       await p.getByRole("heading", { name: "Typical hourly request load" }).waitFor();
       await p.locator(".hourly-public-hour").first().waitFor();
     },
