@@ -448,7 +448,7 @@ This total includes recorded costs from periods without a cap when you enable or
 Logos does not count unpriced requests or spend outside Logos. This total is not the vendor invoice.
 
 When recorded charges reach the limit, Logos blocks new requests.
-The spend total that the check uses can be up to 15 s old.
+The spend total that the check uses can be up to 5 s old.
 Requests already in progress can finish. The final total can exceed the limit.
 
 ![Monthly spend cap editor for a cloud provider](/img/roles/logos-admin-provider-spend-cap.png)
