@@ -80,12 +80,50 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  images:
+    name: Build shared E2E images
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build and export webservice and migration images
+        run: bash e2e/harness/stack/ci_images.sh build
+
+      - name: Upload migration image
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-ci-migrate-image
+          path: ${{ runner.temp }}/e2e-ci-images/migrate/
+          if-no-files-found: error
+          compression-level: 0
+          # Re-run all replaces the artifact; re-run failed jobs can reuse it.
+          overwrite: true
+          retention-days: 30
+
+      - name: Upload webservice image
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-ci-webservice-image
+          path: ${{ runner.temp }}/e2e-ci-images/webservice/
+          if-no-files-found: error
+          compression-level: 0
+          # Re-run all replaces the artifact; re-run failed jobs can reuse it.
+          overwrite: true
+          retention-days: 30
+
   # Tiers 2 and 3: the compose stack — real orchestrator, real database, real
   # worker nodes on simulated hardware.
   stack:
+    needs: images
     name: Stack (inter-node + client)
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      E2E_CI_IMAGES_SHA: ${{ github.sha }}
     steps:
       - name: Checkout repo
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -110,6 +148,16 @@ jobs:
           uv pip install --python .venv/bin/python --no-deps --no-build-isolation -e .
           uv pip check --python .venv/bin/python
         working-directory: e2e
+
+      - name: Download migration image
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: e2e-ci-migrate-image
+          path: ${{ runner.temp }}/e2e-ci-images/migrate/
+
+      - name: Load shared E2E images
+        run: |
+          bash e2e/harness/stack/ci_images.sh load migrate
 
       - name: Start the stack
         run: .venv/bin/python -m harness.stack.compose up
@@ -152,10 +200,13 @@ jobs:
   # webservice and an Angular production build on top — roughly triple the
   # startup cost, for assertions the SDK tier cannot make.
   browser:
+    needs: images
     name: Browser (Playwright)
     # Keep browser system dependencies on a fixed runner release.
     runs-on: ubuntu-24.04
     timeout-minutes: 40
+    env:
+      E2E_CI_IMAGES_SHA: ${{ github.sha }}
     steps:
       - name: Checkout repo
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -203,6 +254,23 @@ jobs:
           await browser.close();
           JS
         working-directory: logos-ui
+
+      - name: Download migration image
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: e2e-ci-migrate-image
+          path: ${{ runner.temp }}/e2e-ci-images/migrate/
+
+      - name: Download webservice image
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: e2e-ci-webservice-image
+          path: ${{ runner.temp }}/e2e-ci-images/webservice/
+
+      - name: Load shared E2E images
+        run: |
+          bash e2e/harness/stack/ci_images.sh load migrate
+          bash e2e/harness/stack/ci_images.sh load webservice
 
       - name: Start the stack with the UI profile
         run: .venv/bin/python -m harness.stack.compose up --ui
