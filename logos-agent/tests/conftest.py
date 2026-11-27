@@ -49,6 +49,16 @@ def owned_session_rows(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def no_saved_inference_choice(monkeypatch):
+    """Before an operator saves a global setting, preserve the legacy local default."""
+
+    async def selection():
+        return {}
+
+    monkeypatch.setattr(db, "agent_inference_selection", selection)
+
+
+@pytest.fixture(autouse=True)
 def local_model_policy(monkeypatch):
     policy = model_policy.ModelPolicy(
         local_models=frozenset({"local-model"}),

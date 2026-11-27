@@ -25,6 +25,7 @@ from . import (
     db,
     docker_engine,
     github,
+    inference_settings,
     memory_budget,
     memory_usage,
     model_policy,
@@ -46,6 +47,8 @@ from .schemas import (
     ControlState,
     ControlUpdate,
     EventKind,
+    InferenceSettings,
+    InferenceSettingsUpdate,
     InstructionState,
     InstructionUpdate,
     QueueMove,
@@ -91,7 +94,7 @@ async def lifespan(_app: FastAPI):
     # up to *show* the reason, and admission is gated on it anyway.
     policy = await model_policy.refresh()
     if not policy.ok:
-        logger.error("no session will start until the model policy is satisfied: %s", policy.detail)
+        logger.error("local sessions cannot start until the model policy is satisfied: %s", policy.detail)
     if settings.session_github_token and settings.session_github_token == settings.github_token:
         logger.warning(
             "session containers get the runner's own GitHub token: it can dispatch "
@@ -372,6 +375,27 @@ async def get_models(_: Principal = Depends(require_agent_operator)) -> dict[str
     }
 
 
+@app.get("/inference-settings", response_model=InferenceSettings, tags=["capacity"])
+async def get_inference_settings(_: Principal = Depends(require_agent_operator)) -> dict:
+    return await inference_settings.view()
+
+
+@app.put("/inference-settings", response_model=InferenceSettings, tags=["capacity"])
+async def put_inference_settings(
+    body: InferenceSettingsUpdate, principal: Principal = Depends(require_agent_operator)
+) -> dict:
+    if not principal.has_role("logos_admin"):
+        raise HTTPException(status_code=403, detail="Logos administrator role is required")
+    try:
+        state = await inference_settings.save(
+            body.mode, body.model, body.provider_id, body.model_id, principal.username
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    logger.info("%s selected %s Agent inference", principal.username, body.mode)
+    return state
+
+
 @app.get("/triggers", tags=["capacity"])
 async def get_triggers(_: Principal = Depends(require_agent_operator)) -> dict[str, object]:
     """Whether the runner reacts to the repository, and what it has done."""
@@ -498,13 +522,23 @@ async def create_session(body: SessionCreate, principal: Principal = Depends(req
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Private sessions cannot open a pull request or capture Dev screenshots",
         )
-    # Refuse a model that is not served locally at the point where a person
-    # asks for it, rather than accepting the session and failing it later:
-    # agent work must never bill a cloud provider, and the operator finds out
-    # in the form they submitted.
-    policy = await model_policy.refresh()
-    if not policy.allows(body.model):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=policy.refusal(body.model))
+    # An operator's saved choice applies to every new session, including
+    # this manual endpoint. The central insert captures it transactionally.
+    selected = await db.agent_inference_selection()
+    if selected.get("mode") == "cloud":
+        if not await inference_settings.permits_pin(
+            {
+                "inference_provider_id": selected.get("provider_id"),
+                "inference_model_id": selected.get("model_id"),
+                "model": selected.get("model"),
+            }
+        ):
+            raise HTTPException(status_code=409, detail="The selected remote Agent model is no longer eligible")
+    else:
+        chosen = selected.get("model") or body.model
+        policy = await model_policy.refresh()
+        if not policy.allows(chosen):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=policy.refusal(chosen))
 
     task = body.task
     target: dict = {}
@@ -645,6 +679,7 @@ async def retry_session(session_id: int, principal: Principal = Depends(require_
             automatic_analysis=False if row.get("trigger_kind") == "analysis" else None,
             retry_analysis_session_id=session_id if row.get("trigger_kind") == "analysis" else None,
             point_workspace_at=resumption_base(row),
+            retry_inference_session_id=session_id,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
