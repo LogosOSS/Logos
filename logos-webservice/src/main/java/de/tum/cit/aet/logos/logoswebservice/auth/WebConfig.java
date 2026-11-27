@@ -40,7 +40,7 @@ public class WebConfig implements WebMvcConfigurer {
             .excludePathPatterns(
                 "/error", "/info", "/public/stats", "/ws/**",
                 "/logosdb/get_model_health", "/internal/models_discovered",
-                "/internal/notifications",
+                "/internal/notifications", "/internal/provider-spend/status",
                 "/internal/gateway_relay_stats", "/internal/gateway_relay_stats/**",
                 // The deployers of the hosts authenticate with their own key in the controller.
                 "/deployments/deployer/**",

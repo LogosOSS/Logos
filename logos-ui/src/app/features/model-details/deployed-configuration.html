@@ -50,7 +50,7 @@
   @else if (deployment()?.mixed_configuration) { <p>Active replicas report different settings. Throughput is shown per run in Analysis.</p> }
   @else {
     @if (!benchmarkParameterChanges()) {
-      <dl class="key-parameters" aria-label="Live batching limits">
+      <dl class="key-parameters" aria-label="Live serving parameters">
         @for (parameter of keyParameters(); track parameter.key) {
           <div>
             <dt>{{ parameter.label }}</dt>

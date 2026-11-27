@@ -29,6 +29,7 @@ import { DataTableComponent } from '../../shared/components/data-table/data-tabl
 import { ErrorMessageComponent } from '../../shared/components/error-message/error-message';
 import { SelectComponent, AppSelectOption } from '../../shared/components/select/select';
 import { NodeModels } from './node-models/node-models';
+import { ProviderSpendCap } from './provider-spend-cap/provider-spend-cap';
 
 @Component({
   selector: 'app-providers',
@@ -42,6 +43,7 @@ import { NodeModels } from './node-models/node-models';
     ErrorMessageComponent,
     SelectComponent,
     NodeModels,
+    ProviderSpendCap,
   ],
   templateUrl: './providers.html',
   host: { '(window:pagehide)': 'discardWorkerKey()' },

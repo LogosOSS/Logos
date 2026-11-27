@@ -270,6 +270,21 @@ FROM (VALUES
 ) AS v(name, base_url, provider_type, cloud_provider_type, privacy_level, auth_name, auth_format)
 WHERE NOT EXISTS (SELECT 1 FROM providers p WHERE p.name = v.name);
 
+-- Synthetic cap and usage for the namespaced cloud provider. Never target a real provider.
+INSERT INTO provider_spend_policies (provider_id, effective_month, limit_micro_cents)
+SELECT p.id, (date_trunc('month', CURRENT_TIMESTAMP AT TIME ZONE 'UTC') + v.month_offset)::date, v.limit_micro_cents
+FROM providers p
+CROSS JOIN (VALUES (interval '0 month', 40000000000::bigint), (interval '1 month', 50000000000::bigint))
+    AS v(month_offset, limit_micro_cents)
+WHERE p.name = 'Docs Cloud (EU)' AND p.base_url = 'https://example.invalid/openai'
+ON CONFLICT (provider_id, effective_month) DO NOTHING;
+
+INSERT INTO log_entry (provider_id, timestamp_request, result_status, cost_finalized,
+                       settled_cost_micro_cents, environment, request_id)
+SELECT id, clock_timestamp(), 'success', true, 8725000000, 'docs-role-screenshots', 'docs-provider-cap-history'
+  FROM providers WHERE name = 'Docs Cloud (EU)' AND base_url = 'https://example.invalid/openai'
+ON CONFLICT DO NOTHING;
+
 -- Documentation-only worker identity for nightly-worker.mjs. This worker
 -- reports example telemetry but rejects inference and control commands.
 UPDATE providers
@@ -949,6 +964,28 @@ WHERE v.configuration->'metadata'->>'purpose' = 'docs-role-screenshots'
 
 UPDATE model_provider_benchmarks SET configuration = jsonb_set(configuration, '{nightly,baseline_id}', to_jsonb(id))
 WHERE configuration->'metadata'->>'purpose' = 'docs-role-screenshots' AND NOT configuration->'nightly' ? 'parameters';
+
+-- Two further single-parameter trials illustrate the categorical comparison charts.
+INSERT INTO model_provider_benchmarks(model_provider_id, configuration, dataset, sample_size, metrics, recorded_at)
+SELECT b.model_provider_id, b.configuration || jsonb_build_object(
+  'serving', b.configuration->'serving' || '{"enable_prefix_caching":true,"speculative_config":""}'::jsonb || trial.parameters,
+  'nightly', jsonb_build_object('baseline_id', b.id,
+    'original', b.configuration->'serving' || '{"enable_prefix_caching":true,"speculative_config":""}'::jsonb,
+    'parameters', trial.parameters),
+  'measurement', jsonb_build_object('started_at', b.recorded_at + trial.offset_time - interval '3 minutes',
+    'ended_at', b.recorded_at + trial.offset_time)),
+  b.dataset, b.sample_size, jsonb_set(b.metrics - 'aggregate_output_tokens_per_second',
+    '{output_tokens_per_second,successful,mean}', to_jsonb(trial.rate)),
+  b.recorded_at + trial.offset_time
+FROM model_provider_benchmarks b
+CROSS JOIN (VALUES
+  ('{"enable_prefix_caching":false}'::jsonb, interval '10 minutes', 40),
+  (jsonb_build_object('speculative_config',
+    '{"method":"ngram","num_speculative_tokens":3,"prompt_lookup_min":2,"prompt_lookup_max":5}'::text),
+    interval '14 minutes', 45)
+) AS trial(parameters, offset_time, rate)
+WHERE b.configuration->'metadata'->>'purpose' = 'docs-role-screenshots'
+  AND NOT b.configuration->'nightly' ? 'parameters' AND b.recorded_at::date = CURRENT_DATE;
 
 -- ---------------------------------------------------------------------------
 -- Node models and node settings of the documentation worker (Providers page).

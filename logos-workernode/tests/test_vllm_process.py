@@ -2705,6 +2705,7 @@ def test_speculative_decoding_requested_detects_both_spellings() -> None:
     assert _speculative_decoding_requested(VllmConfig(extra_args=['--speculative-config={"method":"mtp"}']))
     assert not _speculative_decoding_requested(VllmConfig(extra_args=["--enable-prefix-caching"]))
     assert not _speculative_decoding_requested(VllmConfig(speculative_config="   "))
+    assert not _speculative_decoding_requested(VllmConfig(speculative_config='{"method":"ngram"}'))
 
 
 @pytest.mark.asyncio

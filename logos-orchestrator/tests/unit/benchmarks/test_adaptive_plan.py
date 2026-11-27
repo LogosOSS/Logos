@@ -1,5 +1,5 @@
 from logos.benchmarks.adaptive_plan import options
-from logos.benchmarks.configuration import QWEN_MTP_CONFIG
+from logos.benchmarks.configuration import NGRAM_CONFIG, QWEN_MTP_CONFIG
 
 
 def test_automatic_limits_start_with_one_explicit_parameter_per_test():
@@ -35,11 +35,12 @@ def test_search_tries_an_unobserved_direction_then_refines_towards_incumbent():
 
 def test_search_varies_each_axis_from_a_measured_incumbent_and_keeps_other_overrides():
     current = {"max_num_seqs": 4, "max_num_batched_tokens": 4096, "kv_cache_dtype": "auto"}
-    limits = {"current": current, "gpu_count": 1}
+    choices = {"kv_cache_dtype": ("auto", "fp8")}
+    limits = {"current": current, "gpu_count": 1, "nightly_vllm_choices": choices}
     incumbent = {"max_num_seqs": 8, "kv_cache_dtype": "fp8"}
     attempted = [{"max_num_seqs": 8}, incumbent]
 
-    candidates = options(current, incumbent, attempted, limits, {"kv_cache_dtype": ("auto", "fp8")})
+    candidates = options(current, incumbent, attempted, limits, choices)
 
     assert candidates[:2] == [
         {"kv_cache_dtype": "fp8"},
@@ -72,3 +73,24 @@ def test_mtp_off_is_an_explicit_option_and_can_be_combined_with_a_batching_chang
 
     assert {"max_num_seqs": 8, "speculative_config": ""} in candidates
     assert all("speculative_config" not in candidate for candidate in options(current, incumbent, [], limits))
+
+
+def test_fallback_covers_all_four_turing_axes_in_one_round_without_an_improving_incumbent():
+    current = {
+        "max_num_seqs": 5,
+        "max_num_batched_tokens": 2560,
+        "enable_prefix_caching": True,
+        "speculative_config": "",
+    }
+    choices = {"enable_prefix_caching": (False, True), "speculative_config": ("", NGRAM_CONFIG)}
+    limits = {"current": current, "gpu_count": 1, "nightly_vllm_choices": choices}
+    attempted = []
+    for _ in range(4):
+        attempted.append(options(current, {}, attempted, limits, choices)[0])
+
+    assert attempted == [
+        {"max_num_seqs": 2},
+        {"max_num_batched_tokens": 1280},
+        {"enable_prefix_caching": False},
+        {"speculative_config": NGRAM_CONFIG},
+    ]

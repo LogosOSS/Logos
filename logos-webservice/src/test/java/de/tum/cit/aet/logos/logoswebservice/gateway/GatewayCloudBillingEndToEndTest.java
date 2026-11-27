@@ -3,6 +3,7 @@ package de.tum.cit.aet.logos.logoswebservice.gateway;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 
 import java.io.ByteArrayOutputStream;
@@ -76,6 +77,9 @@ class GatewayCloudBillingEndToEndTest {
     JwtDecoder jwtDecoder;
 
     @Autowired
+    ProviderSpendCapService providerSpend;
+
+    @Autowired
     @org.springframework.beans.factory.annotation.Qualifier("gatewayResponseExecutor")
     org.springframework.core.task.AsyncTaskExecutor responseExecutor;
 
@@ -98,6 +102,7 @@ class GatewayCloudBillingEndToEndTest {
         registry.add("spring.jpa.hibernate.ddl-auto", () -> "validate");
         registry.add("spring.datasource.hikari.maximum-pool-size", () -> "4");
         registry.add("spring.datasource.hikari.minimum-idle", () -> "1");
+        registry.add("logos.orchestrator.internal-secret", () -> "local-spend-test-secret");
     }
 
     private static final AtomicInteger SEQ = new AtomicInteger(1);
@@ -152,6 +157,103 @@ class GatewayCloudBillingEndToEndTest {
         if (upstream != null) {
             upstream.stop(0);
         }
+    }
+
+    @Test
+    void softCapUsesExistingFinalizedCostsAndLetsAnAdmittedRequestFinish() throws Exception {
+        Fixture f = seedPricedDeployment();
+        String modelName = "fixture-model-for-provider-cap";
+        jdbc.update("UPDATE models SET name = ? WHERE id = ?", modelName, f.modelId());
+        jdbc.update("INSERT INTO model_provider (model_id, provider_id) VALUES (?, ?)", f.modelId(), f.providerId());
+        jdbc.update("UPDATE teams SET default_cloud_rpm_limit = 0, default_cloud_tpm_limit = 0 WHERE id = ?",
+            f.key().teamId());
+        jdbc.update("INSERT INTO team_model_permissions (team_id, model_id) VALUES (?, ?)",
+            f.key().teamId(), f.modelId());
+        jdbc.update("INSERT INTO team_provider_permissions (team_id, provider_id) VALUES (?, ?)",
+            f.key().teamId(), f.providerId());
+        jdbc.update("""
+            INSERT INTO provider_spend_policies (provider_id, effective_month, limit_micro_cents)
+            VALUES (?, date_trunc('month', now() AT TIME ZONE 'UTC')::date, 740)
+            """, f.providerId());
+        providerSpend.refresh();
+
+        mvc.perform(get("/internal/provider-spend/status")).andExpect(MockMvcResultMatchers.status().isUnauthorized());
+        var allowed = mvc.perform(get("/internal/provider-spend/status").header("Authorization", "Bearer local-spend-test-secret"))
+            .andExpect(MockMvcResultMatchers.status().isOk()).andReturn();
+        var initial = MAPPER.readTree(allowed.getResponse().getContentAsString());
+        assertThat(initial.path("blocked_provider_ids")).noneMatch(id -> id.asInt() == f.providerId());
+        assertThat(initial.path("valid_for_ms").asLong()).isBetween(1L, 5000L);
+
+        responseBody = "{";
+        responseTail = """
+            "usage":{"prompt_tokens":37,"completion_tokens":0,"total_tokens":37}}
+            """;
+        responseTailRelease = new java.util.concurrent.CountDownLatch(1);
+        String key = jdbc.queryForObject("SELECT key_value FROM api_keys WHERE id = ?", String.class, f.key().id());
+        String payload = """
+            {"model":"%s","messages":[{"role":"user","content":"hello"}]}
+            """.formatted(modelName);
+        var first = mvc.perform(post("/openai/chat/completions").header("Authorization", "Bearer " + key)
+            .contentType("application/json").content(payload)).andReturn();
+        jdbc.update("UPDATE provider_spend_policies SET limit_micro_cents = 0 WHERE provider_id = ?", f.providerId());
+        providerSpend.refresh();
+        responseTailRelease.countDown();
+        mvc.perform(asyncDispatch(first)).andExpect(MockMvcResultMatchers.status().isOk());
+        assertThat(seenRequestBody.get()).isNotEmpty();
+
+        int logId = jdbc.queryForObject("SELECT id FROM log_entry WHERE api_key_id = ?", Integer.class, f.key().id());
+        assertThat(status(logId)).isEqualTo("success");
+        assertThat(usageTokens(logId)).containsEntry("prompt_tokens", 37);
+        jdbc.update("UPDATE provider_spend_policies SET limit_micro_cents = 740 WHERE provider_id = ?", f.providerId());
+        providerSpend.refresh();
+        seenRequestBody.set(null);
+        mvc.perform(post("/openai/chat/completions").header("Authorization", "Bearer " + key)
+            .contentType("application/json").content(payload)).andExpect(MockMvcResultMatchers.status().isPaymentRequired());
+        assertThat(seenRequestBody.get()).isNull();
+        var blocked = mvc.perform(get("/internal/provider-spend/status").header("Authorization", "Bearer local-spend-test-secret"))
+            .andExpect(MockMvcResultMatchers.status().isOk()).andReturn();
+        var blockedIds = MAPPER.readTree(blocked.getResponse().getContentAsString()).path("blocked_provider_ids");
+        assertThat(blockedIds).anyMatch(id -> id.asInt() == f.providerId());
+    }
+
+    @Test
+    void enablingAgainReadsPreviouslyFinalizedCostsInTheUtcMonthExactlyOnce() {
+        Fixture f = seedPricedDeployment();
+        var now = jdbc.queryForObject("SELECT statement_timestamp()", java.time.OffsetDateTime.class)
+            .withOffsetSameInstant(java.time.ZoneOffset.UTC);
+        var month = now.toLocalDate().withDayOfMonth(1);
+        var start = month.atStartOfDay().atOffset(java.time.ZoneOffset.UTC);
+        var end = month.plusMonths(1).atStartOfDay().atOffset(java.time.ZoneOffset.UTC);
+        jdbc.update("""
+            INSERT INTO log_entry (provider_id, timestamp_request, result_status, cost_finalized, settled_cost_micro_cents)
+            VALUES (?, ?, 'success', true, 100),
+                   (?, ?, 'timeout', true, 50),
+                   (?, ?, 'error', true, 999),
+                   (?, ?, 'success', true, 999),
+                   (?, ?, 'success', false, 999),
+                   (?, ?, NULL, true, 999),
+                   (?, ?, 'success', true, NULL)
+            """, f.providerId(), start, f.providerId(), start, f.providerId(), start.minusNanos(1000),
+            f.providerId(), end, f.providerId(), start, f.providerId(), start, f.providerId(), start);
+        assertThat(providerSpend.recordedCosts(f.providerId(), month)).isEqualByComparingTo("150");
+
+        providerSpend.refresh();
+        providerSpend.check(f.providerId());
+        jdbc.update("INSERT INTO provider_spend_policies VALUES (?, ?, 150)", f.providerId(), month);
+        providerSpend.refresh();
+        assertThatThrownBy(() -> providerSpend.check(f.providerId())).hasMessageContaining("402");
+
+        jdbc.update("UPDATE provider_spend_policies SET limit_micro_cents = NULL WHERE provider_id = ?", f.providerId());
+        providerSpend.refresh();
+        providerSpend.check(f.providerId());
+        jdbc.update("""
+            INSERT INTO log_entry (provider_id, timestamp_request, result_status, cost_finalized, settled_cost_micro_cents)
+            VALUES (?, ?, 'success', true, 100)
+            """, f.providerId(), start);
+        jdbc.update("UPDATE provider_spend_policies SET limit_micro_cents = 250 WHERE provider_id = ?", f.providerId());
+        providerSpend.refresh();
+        assertThat(providerSpend.recordedCosts(f.providerId(), month)).isEqualByComparingTo("250");
+        assertThatThrownBy(() -> providerSpend.check(f.providerId())).hasMessageContaining("402");
     }
 
     @ParameterizedTest

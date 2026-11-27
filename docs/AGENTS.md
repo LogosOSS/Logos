@@ -352,6 +352,7 @@ flows use a **concept** name (no role prefix); role-only list pages keep the
 | `logos-admin-model-request-measurements.png` | `tobias.wasner` | `/models/<id>/details` — **Performance → Request measurements** of a model with requests at more than one reasoning effort (local or cloud provider) | `roles/logos-admin.md#models` |
 | `logos-admin-providers.png` | `tobias.wasner` | `/providers` | `roles/logos-admin.md` |
 | `logos-admin-provider-connections.png` | `tobias.wasner` | `/providers` — a cloud provider expanded, connected models with their **Batch** labels | `roles/logos-admin.md` |
+| `logos-admin-provider-spend-cap.png` | `tobias.wasner` | `/providers` — **Monthly spend cap** editor for an expanded cloud provider | `roles/logos-admin.md#schedule-a-monthly-cloud-spend-cap` |
 | `logos-admin-add-provider.png` | `tobias.wasner` | `/providers` — **Add Provider** dialog, cloud provider **anthropic** selected, proposed base URL | `roles/logos-admin.md#add-a-provider` |
 | `logos-admin-edit-cloud-key.png` | `tobias.wasner` | **Edit Provider** for a cloud provider with a configured key | `roles/logos-admin.md#add-a-provider` |
 | `logos-admin-rotate-cloud-key.png` | `tobias.wasner` | **Rotate** for a cloud provider, empty **New API key** field | `roles/logos-admin.md#add-a-provider` |

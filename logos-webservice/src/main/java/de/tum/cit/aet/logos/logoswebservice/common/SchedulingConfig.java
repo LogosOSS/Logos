@@ -24,4 +24,13 @@ public class SchedulingConfig {
         scheduler.setThreadNamePrefix("hf-recheck-");
         return scheduler;
     }
+
+    /** Spend freshness must not depend on unrelated maintenance jobs completing. */
+    @Bean(defaultCandidate = false, destroyMethod = "shutdown")
+    public ThreadPoolTaskScheduler providerSpendScheduler() {
+        ThreadPoolTaskScheduler scheduler = new ThreadPoolTaskScheduler();
+        scheduler.setPoolSize(1);
+        scheduler.setThreadNamePrefix("provider-spend-");
+        return scheduler;
+    }
 }

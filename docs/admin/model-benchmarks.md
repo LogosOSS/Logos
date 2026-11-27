@@ -140,7 +140,8 @@ Worker disconnects and orchestrator restarts stop the job. Batches do not resume
 Expand **Performance → Benchmark runs** to see runs, changed parameters, measurement times and throughput.
 Open **Performance → Analysis → Compare parameter values**.
 Select a **Reference run**, **Parameter** and **Metric**.
-The chart shows one parameter at a time: sequence limit, batch token limit, tensor parallelism or concurrent requests.
+The chart shows one parameter at a time. Select the sequence limit, batch token limit, tensor parallelism, concurrent requests, prefix caching or N-gram decoding.
+Prefix caching and N-gram decoding appear when the reference has matching runs with different values for that setting.
 Other captured settings must match the reference.
 The dashed line marks the reference measurement. Labels show recorded values and percentage changes.
 For repeated runs, the box shows the middle 50% and the line marks the median.

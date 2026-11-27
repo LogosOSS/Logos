@@ -58,6 +58,28 @@ AZURE_PROVIDER = {
     "capability_checked_at": datetime.now(timezone.utc),
 }
 
+
+@pytest.mark.parametrize("resource", ["files", "batches"])
+@pytest.mark.parametrize("status", [402, 503])
+async def test_native_batch_spend_admission_runs_before_chargeable_forwarding(monkeypatch, resource, status):
+    calls = []
+
+    async def check(provider_id):
+        calls.append(provider_id)
+        raise HTTPException(status, "Provider spend admission refused")
+
+    def unexpected_upstream():
+        pytest.fail("Denied uploads and batch creations must not reach the provider")
+
+    monkeypatch.setattr(batch_api.provider_spend, "check", check)
+    monkeypatch.setattr(batch_api, "_http_client", unexpected_upstream)
+    operation = BatchOperation(resource=resource, method="POST", path=f"v1/{resource}")
+    with pytest.raises(HTTPException) as exc:
+        await batch_api.forward_batch_operation(OPENAI_PROVIDER, operation)
+    assert exc.value.status_code == status
+    assert calls == [OPENAI_PROVIDER["id"]]
+
+
 # What the key may run, as get_batch_model_deployments returns it.
 OPENAI_DEPLOYMENTS = [
     {

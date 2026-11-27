@@ -109,12 +109,14 @@ export class BenchmarkComparison {
     return ([
       { key: 'max_num_seqs', label: 'Sequence limit', fixed: `Batch token limit held at ${this.baselineSettings()['max_num_batched_tokens'] ?? 'auto'}` },
       { key: 'max_num_batched_tokens', label: 'Batch token limit', fixed: `Sequence limit held at ${this.baselineSettings()['max_num_seqs'] ?? 'auto'}` },
+      { key: 'enable_prefix_caching', label: 'Prefix caching', fixed: 'Other captured settings held fixed' },
+      { key: 'speculative_config', label: 'N-gram decoding', fixed: 'Other captured settings held fixed' },
       { key: 'tensor_parallel_size', label: 'Tensor parallelism', fixed: `Concurrency fixed at ${this.baselineSettings()['max_concurrency']}` },
       { key: 'max_concurrency', label: 'Concurrent requests', fixed: `TP fixed at ${this.baselineSettings()['tensor_parallel_size']}` },
     ] as const).map(parameter => {
       const runs = isolatedRuns(this.orderedRuns(), baseline, parameter.key);
       const values = [...new Set(runs.map(run => parameterValue(run, parameter.key)!))];
-      return { ...parameter, minPlotWidth: values.length * 68 + 72,
+      return { ...parameter, minPlotWidth: values.length * (parameter.key === 'speculative_config' ? 122 : 68) + 72,
         reference: comparisonValue(baseline, this.metric()),
         scale: fitChartScale([comparisonValue(baseline, this.metric()), ...runs.map(run => comparisonValue(run, this.metric()))]),
         groups: values.map(value => {
@@ -122,7 +124,9 @@ export class BenchmarkComparison {
             .map(run => ({ run, value: comparisonValue(run, this.metric()) }));
           return { parameter: value, rows, box: boxplot(rows.map(row => row.value)) };
         }) };
-    }).filter(chart => chart.groups.length > 0);
+    }).filter(chart => chart.groups.length > (
+      chart.key === 'enable_prefix_caching' || chart.key === 'speculative_config' ? 1 : 0
+    ));
   });
   readonly activeChart = computed(() => this.charts().find(chart => chart.key === this.parameter())
     ?? this.charts().find(chart => chart.groups.length > 1) ?? this.charts().at(0));

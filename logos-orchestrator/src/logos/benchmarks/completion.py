@@ -1,5 +1,6 @@
 """Capture the concrete measurement and parameter changes behind a completion notification."""
 
+from logos.benchmarks.configuration import SPECULATIVE_LABELS
 from logos.benchmarks.optimization import rate
 
 
@@ -37,15 +38,26 @@ def description(payload):
     benchmark = payload.get("benchmark_id")
     if not benchmark:
         return ""
-    changes = "; ".join(
-        f"{item['parameter']}: {item['before'] if item['before'] is not None else 'auto'} → {item['after']}"
-        for item in payload.get("changes", [])
-    )
+    changes = []
+    for item in payload.get("changes", []):
+        parameter, before, after = item["parameter"], item["before"], item["after"]
+        if parameter == "enable_prefix_caching":
+            states = {True: "Enabled", False: "Disabled"}
+            changes.append(
+                f"Prefix caching: {states.get(before, 'Not reported')} → {states.get(after, 'Not reported')}"
+            )
+        elif parameter == "speculative_config":
+            earlier = SPECULATIVE_LABELS.get(before or "", "Custom")
+            later = SPECULATIVE_LABELS.get(after, "Custom")
+            changes.append(f"Speculative decoding: {earlier} → {later}")
+        else:
+            changes.append(f"{parameter}: {before if before is not None else 'auto'} → {after}")
+    change_summary = " · ".join(changes)
     comparison = ""
     if (baseline := payload.get("baseline_throughput")) and (throughput := payload.get("throughput")):
         gain = (throughput / baseline - 1) * 100
         comparison = f" {throughput:.1f} tok/s ({gain:+.1f}% vs. the same-round baseline of {baseline:.1f} tok/s)."
-    return f" Benchmark #{benchmark}.{comparison} " + (changes + "." if changes else "No parameter changes.")
+    return f" Benchmark #{benchmark}.{comparison} " + (change_summary + "." if changes else "No parameter changes.")
 
 
 def status_description(status):
@@ -73,8 +85,13 @@ def notification_message(payload):
             )
             if key in payload["parameters"]
         ]
-        if "speculative_config" in payload["parameters"]:
-            settings.append("MTP 3 draft tokens" if payload["parameters"]["speculative_config"] else "MTP off")
+        parameters = payload["parameters"]
+        if "enable_prefix_caching" in parameters:
+            settings.append("Prefix caching " + ("on" if parameters["enable_prefix_caching"] else "off"))
+        if "speculative_config" in parameters:
+            settings.append(
+                "Speculative decoding " + SPECULATIVE_LABELS.get(parameters["speculative_config"], "Custom")
+            )
         benchmark = payload["benchmark_id"]
         gain = (payload["throughput"] / payload["baseline_throughput"] - 1) * 100
         return "Nightly configuration adoption failed", "\n".join(

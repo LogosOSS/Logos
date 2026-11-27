@@ -5,6 +5,7 @@ from contextlib import contextmanager
 
 from sqlalchemy import text
 
+from logos.benchmarks.configuration import SPECULATIVE_LABELS, canonical_speculative_config
 from logos.benchmarks.nightly import (
     CAPACITY_WAITING,
     MAX_PAIRS_PER_NIGHT,
@@ -149,9 +150,14 @@ def _active_trial_changes(original: dict | None, overrides: dict | None) -> list
     captured = lane_serving_configuration({"lane_config": {"vllm_config": original}})
     # Only the known Nightly variation controls belong in this response.
     # The journal and request can also contain arbitrary worker arguments.
-    captured["speculative_config"] = original.get("speculative_config")
     changes = []
-    for key in ("max_num_seqs", "max_num_batched_tokens", "kv_cache_dtype", "speculative_config"):
+    for key in (
+        "max_num_seqs",
+        "max_num_batched_tokens",
+        "kv_cache_dtype",
+        "enable_prefix_caching",
+        "speculative_config",
+    ):
         after = (overrides or {}).get(key)
         if after is None:
             continue
@@ -162,7 +168,7 @@ def _active_trial_changes(original: dict | None, overrides: dict | None) -> list
     return changes
 
 
-def _trial_value(key: str, value: int | str | None) -> int | str | None:
+def _trial_value(key: str, value: int | str | bool | None) -> int | str | bool | None:
     if key == "max_num_seqs" and (value is None or type(value) is int and value == 0):
         return "Auto"
     if key in ("max_num_seqs", "max_num_batched_tokens"):
@@ -171,21 +177,9 @@ def _trial_value(key: str, value: int | str | None) -> int | str | None:
         if value in (None, "", "auto"):
             return "Auto"
         return "fp8" if value in ("fp8", "fp8_e4m3") else "Custom"
-    if value in (None, ""):
-        return "Off"
-    try:
-        option = json.loads(value)
-    except (TypeError, ValueError):
-        return "Custom"
-    if (
-        isinstance(option, dict)
-        and option.keys() == {"method", "num_speculative_tokens"}
-        and option["method"] in ("mtp", "qwen3_5_mtp")
-        and type(option["num_speculative_tokens"]) is int
-        and option["num_speculative_tokens"] == 3
-    ):
-        return "3 draft tokens"
-    return "Custom"
+    if key == "enable_prefix_caching":
+        return value if type(value) is bool else None
+    return SPECULATIVE_LABELS.get(canonical_speculative_config(value), "Custom")
 
 
 def set_window(pair_id: int, window: MaintenanceWindow, expected: MaintenanceWindow) -> bool:

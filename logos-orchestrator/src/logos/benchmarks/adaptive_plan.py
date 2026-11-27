@@ -10,15 +10,16 @@ _SEQ_LIMIT = "max_num_seqs"
 _TOKEN_LIMIT = "max_num_batched_tokens"
 _AUTO_TRIALS = {_SEQ_LIMIT: (4, 8, 2, 16, 1, 32), _TOKEN_LIMIT: (2048, 4096, 1024, 8192, 512, 16384)}
 _MAX_OPTIONS = 12
+TrialValue = int | str | bool
 
 
 def options(
     current: dict,
-    incumbent: Mapping[str, int | str],
-    attempted: Iterable[Mapping[str, int | str]],
+    incumbent: Mapping[str, TrialValue],
+    attempted: Iterable[Mapping[str, TrialValue]],
     limits: dict,
-    extra_choices: Mapping[str, tuple[int | str, ...]] | None = None,
-) -> list[dict[str, int | str]]:
+    extra_choices: Mapping[str, tuple[TrialValue, ...]] | None = None,
+) -> list[dict[str, TrialValue]]:
     """Return safe single-axis neighbours of the incumbent, best fallback first.
 
     Input and output overrides are relative to the original serving configuration.
@@ -54,7 +55,7 @@ def options(
             seen.append(trial)
             overrides = {field: setting for field, setting in trial.items() if setting != baseline[field]}
             try:
-                validate_worker_overrides(ServingOverrides(**overrides), limits)
+                validate_worker_overrides(ServingOverrides(**overrides), limits, nightly=True)
             except ValueError:
                 continue
             candidates.append(overrides)

@@ -87,7 +87,12 @@ with psycopg2.connect(os.environ["LOGOS_DB_URL"]) as db:
         if not runs:
             raise SystemExit("Apply the illustrative benchmark seed first")
         reference = runs[0]["id"]
-        production = {"max_num_seqs": 16, "max_num_batched_tokens": 4096}
+        production = {
+            "max_num_seqs": 16,
+            "max_num_batched_tokens": 4096,
+            "enable_prefix_caching": True,
+            "speculative_config": "",
+        }
         runtime = {
             "runtime": {
                 "devices": {"devices": [{"kind": "nvidia", "name": "Documentation GPU", "memory_total_mb": 46080}]}

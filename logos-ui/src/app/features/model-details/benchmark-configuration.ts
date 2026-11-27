@@ -42,6 +42,25 @@ export function isSavedRequestBenchmark(run: ModelProviderBenchmark): boolean {
   return typeof field(run.configuration['workload'], 'id') === 'string';
 }
 
+export function speculativeDecodingLabel(value: unknown): string {
+  if (value === '' || value === 'Off') return 'Off';
+  if (typeof value !== 'string') return 'Custom';
+  if (value === '3 draft tokens' || value === 'MTP · 3 draft tokens') return 'MTP · 3 draft tokens';
+  if (value === 'N-gram · 3 draft tokens') return value;
+  try {
+    const config = JSON.parse(value);
+    if (['mtp', 'qwen3_5_mtp'].includes(config?.method) && Number.isInteger(config?.num_speculative_tokens)) {
+      const count = config.num_speculative_tokens;
+      return `MTP · ${count} draft ${count === 1 ? 'token' : 'tokens'}`;
+    }
+    if (config?.method === 'ngram' && config.num_speculative_tokens === 3
+      && config.prompt_lookup_min === 2 && config.prompt_lookup_max === 5 && Object.keys(config).length === 4) {
+      return 'N-gram · 3 draft tokens';
+    }
+  } catch { /* Older reports may contain plain text. */ }
+  return 'Custom';
+}
+
 export function benchmarkConfigurationItems(
   benchmark: ModelProviderBenchmark,
 ): readonly BenchmarkConfigurationItem[] {
@@ -107,6 +126,7 @@ export function servingConfigurationItems(
   benchmark: Pick<ModelProviderBenchmark, 'configuration'>,
 ): readonly BenchmarkConfigurationItem[] {
   const serving = servingConfiguration(benchmark.configuration);
+  const speculative = field(serving, 'speculative_config');
 
   return [
     item('tensor_parallel_size', 'Tensor parallel size', field(serving, 'tensor_parallel_size')),
@@ -120,6 +140,7 @@ export function servingConfigurationItems(
     item('max_num_seqs', 'Max sequences', field(serving, 'max_num_seqs')),
     item('max_num_batched_tokens', 'Max batched tokens', field(serving, 'max_num_batched_tokens')),
     item('enable_prefix_caching', 'Prefix caching', field(serving, 'enable_prefix_caching')),
+    item('speculative_config', 'Speculative decoding', speculative === '' ? 'Off' : speculative, speculativeDecodingLabel),
     item('max_model_len', 'Max model length', field(serving, 'max_model_len')),
     item(
       'gpu_memory_utilization',

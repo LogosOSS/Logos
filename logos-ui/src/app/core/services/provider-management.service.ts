@@ -6,6 +6,8 @@ import {
   ModelConnection,
   AddProviderPayload,
   UpdateProviderPayload,
+  ProviderSpendStatus,
+  ProviderSpendChange,
 } from '../../shared/models/provider.model';
 import {
   NodeConfig,
@@ -22,6 +24,18 @@ export class ProviderManagementService {
 
   getProviders(): Promise<Provider[]> {
     return firstValueFrom(this.http.post<Provider[]>('/api/logosdb/get_providers', {}));
+  }
+
+  getMonthlySpendCap(id: number): Promise<ProviderSpendStatus> {
+    return firstValueFrom(this.http.get<ProviderSpendStatus>(
+      `/api/logosdb/providers/${id}/monthly-spend-cap`,
+    ));
+  }
+
+  updateMonthlySpendCap(id: number, change: ProviderSpendChange): Promise<ProviderSpendStatus> {
+    return firstValueFrom(this.http.put<ProviderSpendStatus>(
+      `/api/logosdb/providers/${id}/monthly-spend-cap`, change,
+    ));
   }
 
   addProvider(payload: AddProviderPayload): Promise<any> {

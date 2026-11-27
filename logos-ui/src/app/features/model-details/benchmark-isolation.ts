@@ -1,15 +1,21 @@
 import { ModelProviderBenchmark } from '../../shared/models/provider.model';
 import { benchmarkConfigurationItems, servingConfigurationItems, isSavedRequestBenchmark } from './benchmark-configuration';
 
-export type ComparisonParameter = 'tensor_parallel_size' | 'max_concurrency' | 'max_num_seqs' | 'max_num_batched_tokens';
+type NumericParameter = 'tensor_parallel_size' | 'max_concurrency' | 'max_num_seqs' | 'max_num_batched_tokens';
+export type ComparisonParameter = NumericParameter | 'enable_prefix_caching' | 'speculative_config';
 
 export function comparisonSettings(run: ModelProviderBenchmark): Record<string, string> {
   return Object.fromEntries([...benchmarkConfigurationItems(run), ...servingConfigurationItems(run)]
     .filter(item => item.captured).map(item => [item.key, item.value]));
 }
 
-export function parameterValue(run: ModelProviderBenchmark, parameter: ComparisonParameter): number | null {
-  const value = Number(comparisonSettings(run)[parameter]);
+export function parameterValue(run: ModelProviderBenchmark, parameter: NumericParameter): number | null;
+export function parameterValue(run: ModelProviderBenchmark, parameter: ComparisonParameter): number | string | null;
+export function parameterValue(run: ModelProviderBenchmark, parameter: ComparisonParameter): number | string | null {
+  const setting = comparisonSettings(run)[parameter];
+  if (parameter === 'enable_prefix_caching') return setting === 'Enabled' || setting === 'Disabled' ? setting : null;
+  if (parameter === 'speculative_config') return setting === 'Off' || setting === 'N-gram · 3 draft tokens' ? setting : null;
+  const value = Number(setting);
   return Number.isInteger(value) && value > 0 ? value : null;
 }
 
@@ -81,6 +87,7 @@ function signature(run: ModelProviderBenchmark, parameter: ComparisonParameter |
     body: record(backend['extras'])['body'], seed: spec['seed'],
     warmup: spec['warmup'], cooldown: spec['cooldown'], constraints: spec['constraints'],
     hfOverrides: serving['hf_overrides'],
+    speculative: parameter === 'speculative_config' ? undefined : serving['speculative_config'],
   });
 }
 
@@ -94,6 +101,11 @@ export function isolatedRuns(runs: readonly ModelProviderBenchmark[], baseline: 
   if (!canCompare(baseline) || parameterValue(baseline, parameter) === null) return [];
   const expected = signature(baseline, parameter);
   return runs.filter(run => canCompare(run) && parameterValue(run, parameter) !== null && signature(run, parameter) === expected)
-    .sort((a, b) => parameterValue(a, parameter)! - parameterValue(b, parameter)!
-      || Date.parse(a.recorded_at) - Date.parse(b.recorded_at) || a.id - b.id);
+    .sort((a, b) => {
+      const left = parameterValue(a, parameter)!;
+      const right = parameterValue(b, parameter)!;
+      const difference = typeof left === 'number' && typeof right === 'number' ? left - right
+        : String(left).localeCompare(String(right));
+      return difference || Date.parse(a.recorded_at) - Date.parse(b.recorded_at) || a.id - b.id;
+    });
 }

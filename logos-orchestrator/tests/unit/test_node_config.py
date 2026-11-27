@@ -56,6 +56,14 @@ def test_capability_values_are_checked_against_their_expected_form():
     assert len(entry_errors([entry])) == 5
 
 
+def test_legacy_nightly_flags_accept_only_booleans_in_capability():
+    assert not entry_errors([_entry({"nightly_prefix_caching": True, "nightly_ngram": False})])
+    assert entry_errors([_entry({"nightly_ngram": "true"}, {"nightly_prefix_caching": True})]) == [
+        "org/model: capability 'nightly_ngram' must be a boolean",
+        "org/model: 'nightly_prefix_caching' belongs in capability, not overrides",
+    ]
+
+
 def test_error_items_split_model_key_message_and_suggestion():
     from logos.node_config import error_items
 

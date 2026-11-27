@@ -1,0 +1,94 @@
+:host { display: block; }
+
+.spend-cap {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 20px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid rgb(var(--color-outline-200) / var(--opacity-border));
+
+  p, h3, dl, dd { margin: 0; }
+
+  h3 { font-size: 1rem; }
+}
+
+.heading, .actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.heading {
+  justify-content: space-between;
+}
+
+.totals {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(9rem, 100%), 1fr));
+  gap: 8px;
+
+  div {
+    min-width: 0;
+    padding: 10px;
+    background: rgb(var(--color-primary-500) / var(--opacity-faint));
+    border-radius: 8px;
+  }
+
+  dt, dd { overflow-wrap: anywhere; }
+  dd { font-weight: 600; }
+}
+
+.hint, .warning { font-size: 0.875rem; }
+.hint { color: rgb(var(--color-typography-500)); }
+.warning { font-weight: 600; }
+
+.editor fieldset {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid rgb(var(--color-outline-200) / var(--opacity-border));
+  border-radius: 8px;
+
+  legend { font-weight: 600; }
+}
+
+.option, .amount {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.amount input {
+  box-sizing: border-box;
+  width: 12rem;
+  max-width: 100%;
+  padding: 8px;
+  border: 1px solid rgb(var(--color-outline-200) / var(--opacity-strong));
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+
+.option input { accent-color: rgb(var(--color-text-accent)); }
+
+@media (max-width: 480px) {
+  .totals {
+    grid-template-columns: minmax(0, 1fr);
+
+    div {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    dd {
+      flex-shrink: 0;
+      max-width: 55%;
+      text-align: end;
+    }
+  }
+}

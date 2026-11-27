@@ -1,9 +1,11 @@
 package de.tum.cit.aet.logos.logoswebservice.gateway;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -43,12 +45,14 @@ class GatewayImageGenerationToolTest {
 
     private HttpServer upstream;
     private final AtomicReference<String> seenImageHeader = new AtomicReference<>();
+    private final AtomicReference<String> seenBody = new AtomicReference<>();
     private final AtomicReference<Boolean> upstreamCalled = new AtomicReference<>(false);
 
     private final GatewayAuthService authService = mock(GatewayAuthService.class);
     private final GatewayCloudAccounting cloudAccounting = mock(GatewayCloudAccounting.class);
     private final GatewayCloudRateLimiter cloudRateLimiter = mock(GatewayCloudRateLimiter.class);
     private final GatewayOrchestratorProxy orchestratorProxy = mock(GatewayOrchestratorProxy.class);
+    private final ProviderSpendCapService spendCap = mock(ProviderSpendCapService.class);
     private InferenceGatewayController controller;
 
     @BeforeEach
@@ -58,7 +62,7 @@ class GatewayImageGenerationToolTest {
             upstreamCalled.set(true);
             seenImageHeader.set(exchange.getRequestHeaders().getFirst(
                 GatewayImageGenerationTool.AZURE_IMAGE_DEPLOYMENT_HEADER));
-            exchange.getRequestBody().readAllBytes();
+            seenBody.set(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
             byte[] out = "{\"id\":\"resp_1\",\"output\":[]}".getBytes(StandardCharsets.UTF_8);
             exchange.getResponseHeaders().add("Content-Type", "application/json");
             exchange.sendResponseHeaders(200, out.length);
@@ -73,7 +77,8 @@ class GatewayImageGenerationToolTest {
         when(cloudAccounting.admitAndReserve(any(), any(), any(), any(), any(), any())).thenReturn(1);
         controller = new InferenceGatewayController(true, authService, cloudAccounting,
             new GatewayCloudForwarder(new ObjectMapper(), cloudAccounting), cloudRateLimiter,
-            orchestratorProxy, new ObjectMapper(), new GatewayInFlightLimit(0));
+            orchestratorProxy, new ObjectMapper(), new GatewayInFlightLimit(0),
+            spendCap);
     }
 
     @AfterEach
@@ -113,6 +118,36 @@ class GatewayImageGenerationToolTest {
 
     private static final String IMAGE_REQUEST = "{\"model\":\"gpt-5.6-luna\",\"input\":\"draw\","
         + "\"tools\":[{\"type\":\"image_generation\",\"model\":\"gpt-image-1.5\"}]}";
+
+    @Test
+    void providerCapDeniesBeforeUpstreamOrKeyCostReservation() throws IOException {
+        GatewayDeployment deployment = openai(1, "gpt-4o-2024-08-06");
+        when(authService.deploymentsForModel(any(), eq(deployment.modelName()))).thenReturn(List.of(deployment));
+        doThrow(new ResponseStatusException(HttpStatus.PAYMENT_REQUIRED, "Provider monthly spend limit reached"))
+            .when(spendCap).check(deployment.providerId());
+
+        assertThatExceptionOfType(ResponseStatusException.class)
+            .isThrownBy(() -> post("""
+                {"model":"gpt-4o-2024-08-06","input":"hi","max_output_tokens":32}
+                """))
+            .satisfies(ex -> assertThat(ex.getStatusCode()).isEqualTo(HttpStatus.PAYMENT_REQUIRED));
+        assertThat(upstreamCalled.get()).isFalse();
+        verify(cloudAccounting, never()).admitAndReserve(any(), any(), any(), any(), any(), any());
+        verify(orchestratorProxy, never()).proxy(any(), any(), any());
+    }
+
+    @Test
+    void spendCheckDoesNotRequireAnOutputLimitOrRewriteRequestBody() throws IOException {
+        GatewayDeployment deployment = openai(1, "test-model");
+        when(authService.deploymentsForModel(any(), eq(deployment.modelName()))).thenReturn(List.of(deployment));
+        String original = """
+            {"model": "test-model", "input": "hi"}
+            """;
+
+        assertThat(post(original).getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(seenBody.get()).isEqualTo(original);
+        verify(spendCap).check(deployment.providerId());
+    }
 
     @Test
     void anAzureRequestWithTheImageToolNamesTheImageDeploymentAndStaysInTheGateway() throws Exception {

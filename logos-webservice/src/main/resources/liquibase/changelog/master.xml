@@ -110,4 +110,5 @@
     <include file="liquibase/changelog/107_azure_team_model_availability.xml"/>
     <include file="liquibase/changelog/108_log_entry_benchmark_source.xml"/>
     <include file="liquibase/changelog/109_nightly_proposer_model.xml"/>
+    <include file="liquibase/changelog/110_provider_monthly_spend_cap.xml"/>
 </databaseChangeLog>

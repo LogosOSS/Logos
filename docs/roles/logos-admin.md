@@ -301,7 +301,7 @@ Select the same column again to reverse the order. Missing values stay at the en
 
 Read **Currently deployed** below **Automatic benchmarks** in **Performance → Overview**.
 **Parameter changes** shows the values that differ from the round baseline for the active or latest saved trial.
-If no trial changes are available, then the summary shows the live batching limits.
+If no trial changes are available, then the summary shows the live batching limits and any reported prefix caching and speculative decoding settings.
 Expand **Configuration & selection details** for **Run selection**.
 Expand **Serving settings** to see the full worker configuration.
 The view identifies measurements with matching settings and the same measurement environment.
@@ -321,7 +321,7 @@ A fresh comparison must verify a historical candidate before automatic adoption.
 
 Configuration details and benchmark history start closed on desktop and mobile.
 **Analysis** opens with **Compare parameter values** expanded. Select the **Reference run**, **Parameter** and **Metric**.
-The chart shows one parameter at a time, with a dashed reference line and measured changes.
+The chart shows one parameter at a time, with a dashed reference line and measured changes. Select **Prefix caching** or **N-gram decoding** when those settings have comparable results.
 Only matching workloads and other captured settings enter the comparison.
 A single parameter value shows an explanation instead of an empty comparison chart.
 
@@ -432,6 +432,38 @@ Expand a provider for its connected models, or for the worker control actions
 (calibrate, sleep, wake, lane management).
 
 ![Providers page](/img/roles/logos-admin-providers.png)
+
+<span id="schedule-a-monthly-cloud-spend-cap" />
+
+### Set a monthly cloud spend cap
+
+1. Expand a cloud provider in **Providers**.
+2. In **Monthly spend cap**, select **Edit spend cap**.
+3. Select **Enable cap** and enter the **Monthly maximum (USD)**.
+4. Select **Save changes**.
+
+To remove the cap, clear **Enable cap** and select **Save changes**.
+Changes are saved for the current UTC month and continue each month unless a scheduled change replaces them.
+A limit of $0 blocks new billable requests through Logos.
+
+The section shows the current limit, the next scheduled change, and recorded charges for this month.
+Logos adds positive, finalized costs from the provider's request logs in the current UTC billing month.
+This total includes recorded costs from periods without a cap when you enable or re-enable it.
+Logos does not count unpriced requests or spend outside Logos. For example, provider-native batches or
+benchmarks without a finalized request cost do not add to the total. This total is not the vendor invoice.
+
+When recorded charges reach the limit, Logos blocks new requests.
+Admission checks can take up to 5 seconds to pick up a limit change, newly recorded charges, or the UTC month rollover.
+Requests already in progress can finish. The final total can exceed the limit.
+
+![Monthly spend cap editor for a cloud provider](/img/roles/logos-admin-provider-spend-cap.png)
+
+The administrator API also accepts GET and PUT at `/logosdb/providers/{providerId}/monthly-spend-cap`.
+Use the provider record ID, not the vendor account ID.
+To set the current limit, send `{"enabled": true, "limit_usd": "400"}`.
+To remove the current limit, send `{"enabled": false}`.
+To schedule a separate change for the next UTC month, send the same payload to
+`PUT /logosdb/providers/{providerId}/monthly-spend-cap/scheduled`.
 
 ### Add a Provider
 

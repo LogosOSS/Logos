@@ -5696,6 +5696,20 @@ class DBManager:
         limit = row._mapping["monthly_budget_micro_cents"]
         return True, (int(limit) if limit is not None else None)
 
+    def get_active_provider_spend_policy_ids(self) -> frozenset[int]:
+        """Return providers whose latest policy for the current UTC month has a cap."""
+        self.session.execute(text("SET LOCAL statement_timeout = '1s'"))
+        rows = self.session.execute(text("""
+                SELECT provider_id FROM (
+                    SELECT DISTINCT ON (provider_id) provider_id, limit_micro_cents
+                    FROM provider_spend_policies
+                    WHERE effective_month <= date_trunc('month', CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::date
+                    ORDER BY provider_id, effective_month DESC
+                ) current_policies
+                WHERE limit_micro_cents IS NOT NULL
+                """))
+        return frozenset(rows.scalars())
+
     def get_team_default_budget_usage(self, team_id: int, month_start: str) -> int:
         """Developer-key spend that still draws from the team's default monthly budget."""
         row = self.session.execute(

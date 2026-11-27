@@ -149,6 +149,7 @@
         @if (provider.provider_type === 'logosnode') {
           <app-node-models [providerId]="provider.id" />
         } @else {
+          <app-provider-spend-cap [providerId]="provider.id" />
           <section class="connections-section" aria-label="Connected models">
           <div class="expanded-header">
             <span class="expanded-title">Connected Models</span>
