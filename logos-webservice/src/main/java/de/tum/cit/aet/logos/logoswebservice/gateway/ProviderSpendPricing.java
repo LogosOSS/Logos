@@ -25,10 +25,13 @@ class ProviderSpendPricing {
     private static final String REQUEST = "billed_requests";
     private static final Set<String> INPUT_RATES = Set.of(INPUT, READ, WRITE, WRITE_1H);
     private static final Set<String> OUTPUT_RATES = Set.of(OUTPUT, REASONING);
-    private static final Set<String> USAGE = Set.of("prompt_tokens", "completion_tokens", "total_tokens",
+    private static final Set<String> SUPPORTED_METERING = Set.of("prompt_tokens", "completion_tokens",
         "prompt_cached_tokens", "prompt_cache_write_tokens", "prompt_cache_write_1h_tokens",
-        "prompt_cache_miss_tokens", "completion_reasoning_tokens", "usage_shape_disjoint", REQUEST,
-        INPUT_CHARACTERS, OUTPUT_CHARACTERS);
+        "prompt_cache_miss_tokens", "completion_reasoning_tokens", REQUEST, INPUT_CHARACTERS, OUTPUT_CHARACTERS);
+    // These exact fields describe or display usage, but contribute no independent charge.
+    // usage_estimated is different: it marks the entire report unreliable for settlement.
+    private static final Set<String> NON_BILLABLE_METADATA = Set.of(
+        "total_tokens", "usage_shape_disjoint", "estimated_prompt_tokens");
 
     private final NamedParameterJdbcTemplate jdbc;
 
@@ -70,8 +73,8 @@ class ProviderSpendPricing {
 
     static boolean hasUnboundedCharges(Map<String, Long> usage) {
         return usage != null && !usage.containsKey("usage_estimated")
-            && usage.entrySet().stream().anyMatch(pair -> !USAGE.contains(pair.getKey())
-                && pair.getValue() != null && pair.getValue() > 0);
+            && usage.entrySet().stream().anyMatch(pair -> !SUPPORTED_METERING.contains(pair.getKey())
+                && !NON_BILLABLE_METADATA.contains(pair.getKey()) && pair.getValue() != null && pair.getValue() > 0);
     }
 
     static Usage quantities(Map<String, Long> usage, boolean anthropic) {
@@ -98,6 +101,9 @@ class ProviderSpendPricing {
                 return null;
             }
             long context = Math.addExact(uncached, Math.addExact(cached, Math.addExact(write, write1)));
+            if (context == 0 && completion == 0 && usage.getOrDefault("total_tokens", 0L) > 0) {
+                return null;
+            }
             return new Usage(context, completion, usage.getOrDefault(INPUT_CHARACTERS, 0L) > 0,
                 usage.getOrDefault(OUTPUT_CHARACTERS, 0L) > 0, Map.of(INPUT, uncached, READ, cached, WRITE, write,
                 WRITE_1H, write1, OUTPUT, text, REASONING, reasoning, REQUEST, 1L));
@@ -134,9 +140,12 @@ class ProviderSpendPricing {
                     total = total.add(product(entry.getValue(), rate));
                 }
             }
-            if (!priced) {
-                return null; // Match the normal ledger's no priced quantity result.
+            if (!priced && (resolve(rates, usage.input(), tier, INPUT) == null
+                    || resolve(rates, usage.input(), tier, OUTPUT) == null)) {
+                return null;
             }
+            // With applicable rates on both sides, measured zero tokens and no
+            // request fee are priced at zero rather than an unpriced settlement.
             return total.movePointLeft(3).setScale(0, RoundingMode.HALF_UP).longValueExact();
         } catch (ArithmeticException e) {
             return null;

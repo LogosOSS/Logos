@@ -75,6 +75,12 @@ class ProviderSpendPricingTest {
         assertThat(ProviderSpendPricing.hasUnboundedCharges(Map.of("other_billable", 0L))).isFalse();
         assertThat(ProviderSpendPricing.hasUnboundedCharges(Map.of("other_billable", 2L, "usage_estimated", 1L))).isFalse();
         assertThat(ProviderSpendPricing.hasUnboundedCharges(Map.of("other_billable", 2L))).isTrue();
+        assertThat(ProviderSpendPricing.hasUnboundedCharges(Map.of("estimated_unknown_quantity", 2L))).isTrue();
+        assertThat(ProviderSpendPricing.hasUnboundedCharges(Map.of("estimated_prompt_tokens", 2L))).isFalse();
+        assertThat(ProviderSpendPricing.quantities(Map.of("estimated_prompt_tokens", 2L, "completion_tokens", 0L),
+            false)).isNull();
+        assertThat(ProviderSpendPricing.quantities(Map.of("prompt_tokens", 0L, "completion_tokens", 0L,
+            "total_tokens", 2L), false)).isNull();
     }
 
     @Test
@@ -85,9 +91,17 @@ class ProviderSpendPricingTest {
         var actual = ProviderSpendPricing.quantities(Map.of("prompt_tokens", 2000L, "completion_tokens", 3L), false);
         assertThat(ProviderSpendPricing.charge(List.of(rate(INPUT, 1000)), actual, null)).isNull();
         assertThat(ProviderSpendPricing.charge(List.of(rate(INPUT, Long.MAX_VALUE), rate(OUTPUT, 0)), actual, null)).isNull();
-        var zero = ProviderSpendPricing.quantities(Map.of("prompt_tokens", 0L, "completion_tokens", 0L), false);
+        var zero = ProviderSpendPricing.quantities(Map.of("prompt_tokens", 0L, "completion_tokens", 0L,
+            "total_tokens", 0L), false);
         assertThat(ProviderSpendPricing.charge(List.of(), zero, null)).isNull();
         assertThat(ProviderSpendPricing.charge(List.of(rate(REQUEST, 0)), zero, null)).isZero();
+        assertThat(ProviderSpendPricing.charge(List.of(rate(REQUEST, 1000), rate(INPUT, 1000), rate(OUTPUT, 2000)),
+            zero, null)).isEqualTo(1L);
+        assertThat(ProviderSpendPricing.charge(List.of(rate(INPUT, 1000), rate(OUTPUT, 2000)), zero, null)).isZero();
+        assertThat(ProviderSpendPricing.charge(List.of(rate(INPUT, 1000)), zero, null)).isNull();
+        assertThat(ProviderSpendPricing.charge(List.of(rate(OUTPUT, 2000)), zero, null)).isNull();
+        var contextualOutput = new ProviderSpendPricing.Rate(2, 1, 1, OUTPUT, "token", "priority", 1, AT, 2000);
+        assertThat(ProviderSpendPricing.charge(List.of(rate(INPUT, 1000), contextualOutput), zero, "priority")).isNull();
     }
 
     private static ProviderSpendPricing.Rate rate(String quantity, long value) {

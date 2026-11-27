@@ -4,9 +4,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import java.math.BigDecimal;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import java.sql.DriverManager;
 import java.time.LocalDate;
 import java.util.LinkedHashMap;
@@ -16,17 +17,25 @@ import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.Executors;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import liquibase.Contexts;
 import liquibase.LabelExpression;
 import liquibase.Liquibase;
 import liquibase.database.jvm.JdbcConnection;
 import liquibase.resource.ClassLoaderResourceAccessor;
 import org.junit.jupiter.api.Test;
+import org.springframework.http.MediaType;
+import org.springframework.http.converter.json.JacksonJsonHttpMessageConverter;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
+import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.server.ResponseStatusException;
+
+import tools.jackson.databind.PropertyNamingStrategies;
+import tools.jackson.databind.json.JsonMapper;
 
 import de.tum.cit.aet.logos.logoswebservice.audit.AuditLogService;
 import de.tum.cit.aet.logos.logoswebservice.configuration.controller.ProviderSpendPolicyController;
@@ -153,6 +162,8 @@ class ProviderSpendCapDatabaseTest {
             """, provider)).containsEntry("charged_micro_cents", new BigDecimal("18"))
             .containsEntry("held_micro_cents", BigDecimal.ZERO).containsEntry("bound_violation", false);
 
+        checkZeroMetering(jdbc, ledger, mapper, provider, model, messages, request);
+
         UUID previous = UUID.randomUUID();
         jdbc.update("""
             INSERT INTO provider_spend_months (provider_id, month_start, held_micro_cents)
@@ -190,6 +201,38 @@ class ProviderSpendCapDatabaseTest {
         assertThat(ledger.reserve(UUID.randomUUID(), provider, model, messages, request)).isEqualTo(exhausted);
 
         checkAdminPolicy(jdbc, provider, model, ledger);
+    }
+
+    private static void checkZeroMetering(JdbcTemplate jdbc, ProviderSpendLedger ledger, ObjectMapper mapper,
+            int provider, int model, String messages, JsonNode request) throws Exception {
+        var controller = new InternalProviderSpendController(new ProviderSpendCapService(ledger), mapper, "synthetic-secret");
+        var json = JsonMapper.builder().propertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE).build();
+        var mvc = MockMvcBuilders.standaloneSetup(controller)
+            .setMessageConverters(new JacksonJsonHttpMessageConverter(json)).build();
+        UUID attempt = UUID.randomUUID();
+        assertThat(ledger.reserve(attempt, provider, model, messages, request))
+            .isEqualTo(ProviderSpendLedger.Decision.RESERVED);
+
+        var body = mapper.createObjectNode().put("attempt_id", attempt.toString()).put("undispatched", false).putNull("tier");
+        try (var fixture = ProviderSpendCapDatabaseTest.class.getResourceAsStream(
+                "/fixtures/provider-spend-orchestrator-zero-usage.json")) {
+            body.set("usage", mapper.readTree(fixture).path("usage"));
+        }
+        var incomplete = body.deepCopy();
+        ((com.fasterxml.jackson.databind.node.ObjectNode) incomplete.path("usage")).remove("completion_tokens");
+        mvc.perform(post("/internal/provider-spend/settle").header("Authorization", "Bearer synthetic-secret")
+            .contentType(MediaType.APPLICATION_JSON).content(incomplete.toString())).andExpect(status().isOk());
+        assertThat(jdbc.queryForObject("SELECT charged_micro_cents FROM provider_spend_attempts WHERE attempt_id = ?",
+            Long.class, attempt)).isNull();
+
+        mvc.perform(post("/internal/provider-spend/settle").header("Authorization", "Bearer synthetic-secret")
+            .contentType(MediaType.APPLICATION_JSON).content(body.toString())).andExpect(status().isOk());
+        assertThat(jdbc.queryForObject("SELECT charged_micro_cents FROM provider_spend_attempts WHERE attempt_id = ?",
+            Long.class, attempt)).isZero();
+        assertThat(jdbc.queryForMap("""
+            SELECT charged_micro_cents, held_micro_cents, bound_violation FROM provider_spend_months WHERE provider_id = ?
+            """, provider)).containsEntry("charged_micro_cents", new BigDecimal("18"))
+            .containsEntry("held_micro_cents", BigDecimal.ZERO).containsEntry("bound_violation", false);
     }
 
     private static void checkAdminPolicy(JdbcTemplate jdbc, int provider, int model, ProviderSpendLedger ledger) {

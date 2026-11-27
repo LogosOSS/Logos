@@ -9,6 +9,7 @@ from fastapi import HTTPException
 from logos.billing import provider_spend
 from logos.billing.finalize import finalize_billing_inputs
 from logos.billing.provider_spend import _call as real_call
+from logos.live_stream import _usage_tokens_from_payload
 
 
 def response(status, json=None):
@@ -149,7 +150,10 @@ async def test_internal_wire_uses_only_configured_client_and_routes(monkeypatch)
         )
         == attempt
     )
-    await provider_spend.settle(attempt, {"prompt_tokens": 5, "completion_tokens": 3}, None)
+    zero = _settlement_fixture("zero-usage")
+    usage = _usage_tokens_from_payload(zero["response"], zero["request"], zero["path"], billable_request=False)
+    assert usage == zero["usage"]
+    await provider_spend.settle(attempt, usage, None)
     await provider_spend.release_undispatched(attempt)
 
     assert [path for path, _, _ in seen] == [
@@ -159,6 +163,14 @@ async def test_internal_wire_uses_only_configured_client_and_routes(monkeypatch)
     ]
     assert {auth for _, auth, _ in seen} == {"Bearer local-test-secret"}
     assert b"private prompt" not in seen[0][2]
+    assert json.loads(seen[1][2]) == {
+        "attempt_id": str(attempt),
+        "usage": zero["usage"],
+        "tier": None,
+        "undispatched": False,
+    }
+    assert b"Synthetic failure" not in seen[1][2]
+    assert b"Question?" not in seen[1][2]
 
 
 async def test_settlement_connection_failure_does_not_release_or_retry(monkeypatch, caplog):
@@ -196,12 +208,16 @@ def test_request_shape_fences_nested_or_oversized_unknown_metadata():
     assert "not carried" not in str(response)
 
 
-def test_gateway_settlement_fixture_uses_real_orchestrator_finalized_usage():
+def _settlement_fixture(suffix: str) -> dict:
     fixture = (
         Path(__file__).resolve().parents[4]
-        / "logos-webservice/src/test/resources/fixtures/provider-spend-orchestrator-usage.json"
+        / f"logos-webservice/src/test/resources/fixtures/provider-spend-orchestrator-{suffix}.json"
     )
-    data = json.loads(fixture.read_text(encoding="utf-8"))
+    return json.loads(fixture.read_text(encoding="utf-8"))
+
+
+def test_gateway_settlement_fixture_uses_real_orchestrator_finalized_usage():
+    data = _settlement_fixture("usage")
     usage, tier = finalize_billing_inputs(data["request"], data["response"], data["path"])
     assert usage == data["usage"]
     assert tier is None
