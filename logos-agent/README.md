@@ -390,6 +390,8 @@ unused and can be removed.
 | `LOGOS_AGENT_GITHUB_TOKEN` | — | The agent account's token. **Required.** |
 | `LOGOS_AGENT_GITHUB_LOGIN` | `LogosOSSAgent` | The account every token must belong to |
 | `LOGOS_AGENT_DEFAULT_MODEL` | — | Model when a session does not name one. Optional: without it, the alias `local-most-powerful` is the default when the agent key reaches it locally, and otherwise the only local model, if there is exactly one |
+| `LOGOS_AGENT_REMOTE_ALLOWED_ORIGINS` | — | Comma-separated HTTPS roots of trusted Logos Messages gateways. Set the same value in the runner and webservice. Empty disables cloud choices. |
+| `LOGOS_AGENT_REMOTE_NETWORK` | `logos-agent-remote-net` | Dedicated internal bridge for cloud-inference sessions. It must not be the local session or helper bridge. |
 | `LOGOS_AGENT_TRIGGERS_ENABLED` | `true` | Kill switch for reacting to the repository |
 | `LOGOS_AGENT_ANALYSIS_NIGHTLY_HOUR_UTC` | `0` | UTC hour of the nightly re-analysis of linked team repositories whose branch head moved; `-1` turns it off |
 | `LOGOS_AGENT_MAX_PARALLEL_SESSIONS` | `10` | Hard ceiling on concurrent (running + paused) sessions |
@@ -862,6 +864,34 @@ A fresh branch whose trusted candidate tree exactly matches its prepared base
 has nothing to publish. The runner records verification as skipped, without
 running the build command, pushing a branch, or changing the workspace's base.
 Existing branch retries still verify the complete pull request diff.
+
+#### Environment inference selection
+
+Logos Admins can save a local model or an approved Logos cloud provider/model
+pair under **Agents → Runner controls → Model inference**. The configured
+platform remains the origin of every session. The stored
+`agent_inference_settings` singleton is the environment's selection that new
+session consumers can read; existing sessions and retries keep their selected
+model and provider. No row or a local selection without a model preserves
+the previous per-session/default local policy.
+
+To make a cloud option available, register a provider of cloud vendor
+`logos`, use its approved HTTPS origin as the provider base URL, link the
+exact model, and provision a dedicated operating key with the model and
+permissions needed on the destination. The relay only forwards native
+`POST /v1/messages`; it does not accept arbitrary endpoints, pass
+workspace credentials upstream, or select a fallback deployment. Running
+requests are streamed without buffering and are closed when the session is
+paused, stopped, or loses its pin. The selected provider does not tie the
+source runner to a worker: the destination Logos instance decides how the
+model is served and records usage against the operating key.
+
+Choose a destination permitted to process the repository data. Linked
+repositories retain their source team's mandatory provider privacy policy.
+Existing sandbox and egress restrictions are unchanged. Cloud sessions do
+not wait for a local GPU lane but still use the runner's concurrency,
+memory budget and controls. Session credentials are opaque grants scoped to
+one active session, not operating keys.
 
 #### Model disclosure
 

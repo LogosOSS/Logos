@@ -666,7 +666,6 @@ services:
       # Approved compatible Logos inference origins, not URLs submitted by the UI.
       LOGOS_AGENT_REMOTE_ALLOWED_ORIGINS: "${LOGOS_AGENT_REMOTE_ALLOWED_ORIGINS:-}"
       LOGOS_AGENT_REMOTE_NETWORK: "${LOGOS_AGENT_REMOTE_NETWORK:-logos-agent-remote-net}"
-      LOGOS_AGENT_REMOTE_SESSION_MODEL_URL: "http://logos-agent-remote-gateway"
 
       # Sessions run in this image, on this network, under these ceilings.
       LOGOS_AGENT_WORKSPACE_IMAGE: "${REGISTRY:-ghcr.io/logososs}/logos-agent-workspace:${IMAGE_TAG:-latest}"
