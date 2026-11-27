@@ -11,7 +11,6 @@ from __future__ import annotations
 from dataclasses import replace
 
 import pytest
-
 from app import github
 
 

@@ -628,9 +628,8 @@ class TestTheSchedulerPassAnEndpointStarts:
 async def test_manual_private_session_rejects_publication_options(monkeypatch, option, value):
     from unittest.mock import AsyncMock
 
-    from fastapi import HTTPException
-
     from app.schemas import SessionCreate
+    from fastapi import HTTPException
 
     monkeypatch.setattr(main.db, "get_workspace", AsyncMock(return_value={"id": 3}))
     create = AsyncMock()
@@ -647,7 +646,6 @@ async def test_legacy_deploy_flag_is_rejected_only_when_true(monkeypatch):
     from unittest.mock import AsyncMock
 
     import httpx
-
     from app.auth import require_agent_operator
 
     workspace = AsyncMock(return_value={"id": 3})
