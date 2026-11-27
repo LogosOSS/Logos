@@ -777,6 +777,78 @@ gets. Deploys and screenshots stay with the platform repository. An idle
 workspace that last worked on another repository is moved to the link's branch;
 a busy one is refused.
 
+#### Bounded disk scratch for verification
+
+By default each verifier has a 2 GiB RAM-backed `/tmp`. For larger offline
+builds, the operator can assign a dedicated disk filesystem to verification.
+The filesystem capacity is the hard ceiling, including the copied candidate,
+cache and build output. It is **not** a session RAM increase, a change to the
+workspace cache, or permission to skip verification. Only one disk-backed
+verifier runs at a time; a contender waits up to `LOGOS_AGENT_HELPER_TIMEOUT_S`
+for a slot before failing. Its actual verification timeout starts separately.
+The application fails verification (and permits only a draft PR) if enabled
+disk scratch is misconfigured, full, or inaccessible.
+
+1. On the Linux Docker host, provision a dedicated, capacity-reserved
+   partition or thick logical volume (for example 20 GiB) and format **only
+   that new device** as ext4 or XFS. Do not use a sparse file, a loop device,
+   a thin LV without guaranteed backing space, a directory on an existing
+   filesystem, or a shared workspace/data volume.
+2. Mount that filesystem at a dedicated absolute path, for example
+   `/srv/logos-verifier-scratch`, using persistent boot configuration (e.g.
+   `UUID=<new-filesystem-uuid> /srv/logos-verifier-scratch ext4 defaults,nodev,nosuid 0 2`
+   in `/etc/fstab`). It must allow execution of scratch build tools and be
+   owned by root with no group/other write access. Leave it empty apart from
+   filesystem metadata such as ext4's `lost+found`. Keep the mounting path
+   private and make deployment depend on the mount being available. Verify
+   with `findmnt --mountpoint /srv/logos-verifier-scratch` and
+   `df -B1 /srv/logos-verifier-scratch`. The host filesystem's reported
+   capacity must not exceed the configured cap. Size the device for the
+   repository copy, required offline caches, and peak build output together.
+3. On that host, register the mounted filesystem as a new Docker volume:
+   ```sh
+   docker volume create --driver local \
+     --opt type=none --opt o=bind --opt device=/srv/logos-verifier-scratch \
+     logos_agent_verifier_scratch_disk
+   ```
+   Check `docker volume inspect logos_agent_verifier_scratch_disk` for the
+   exact path and options. Do not reuse the name of an ordinary local volume.
+4. Configure the corresponding deployment environment (GitHub Environment
+   variables for the production workflow, or the normal Compose environment
+   for manual deployments) with these values:
+   ```dotenv
+   LOGOS_AGENT_VERIFICATION_SCRATCH_VOLUME=logos_agent_verifier_scratch_disk
+   LOGOS_AGENT_VERIFICATION_SCRATCH_HOST_PATH=/srv/logos-verifier-scratch
+   LOGOS_AGENT_VERIFICATION_SCRATCH_MAX_GIB=20
+   ```
+   Use matching runner and workspace images that contain disk verification.
+   Pull both images before recreating the agent runner. To apply just the
+   runner configuration after the images are present:
+   ```sh
+   docker compose --profile agent up -d --no-deps logos-agent
+   ```
+   This recreates the runner, not the host. Compose may warn that the
+   pre-provisioned volume was not created by this project; the runner checks
+   its exact mount and rejects an automatically created fallback. Run the
+   read-only preflight before starting a large verification:
+   ```sh
+   docker compose --profile agent exec -T logos-agent python -m app.verification_scratch
+   ```
+
+Only the individual verifier's scratch directory is mounted read/write from
+disk; the workspace, artefacts, cache and root remain read-only, with no
+credentials or network. Docker rotates the verifier's logs separately.
+The runner removes scratch after Docker confirms no container owns it. On
+restart it reconciles orphaned helpers before retrying; if Docker cannot
+confirm the old helper is gone, scratch stays reserved rather than being
+reused. Do not manually delete it while a verifier is mounted. Clearing both
+the configured volume and host path returns to the 2 GiB tmpfs on the next
+runner recreation. Leave the mounted filesystem intact until the runner and
+every verifier using it are gone. To validate activation, run a linked
+repository verification that needs more than 2 GiB, check the verification
+result and diagnostics, then verify that its `verifier-*` directory has been
+removed.
+
 #### Working the way the repository asks
 
 Repositories have their own contribution process: claim an issue with a

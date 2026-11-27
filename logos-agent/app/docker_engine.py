@@ -76,6 +76,10 @@ async def ensure_volume(name: str, labels: dict[str, str] | None = None) -> None
     )
 
 
+async def inspect_volume(name: str) -> dict[str, Any]:
+    return (await _request("GET", f"/volumes/{name}")).json()
+
+
 async def volume_mountpoint(name: str) -> str:
     """The host path of a named volume (local driver only).
 
@@ -87,8 +91,7 @@ async def volume_mountpoint(name: str) -> str:
     `GET /volumes/{name}` returns the volume object itself — `Mountpoint` is
     a top-level field, not nested under the volume's name.
     """
-    response = await _request("GET", f"/volumes/{name}")
-    info = response.json()
+    info = await inspect_volume(name)
     mountpoint = info.get("Mountpoint")
     if not mountpoint:
         raise DockerError(500, f"volume {name} has no host mountpoint (driver: {info.get('Driver')})")
@@ -194,6 +197,7 @@ async def create_session_container(
     network: str | None = None,
     cache_volume: str | None = None,
     memory_mb: int | None = None,
+    verification_scratch: tuple[str, str] | None = None,
 ) -> str:
     """Create the container an agent session runs in.
 
@@ -227,6 +231,8 @@ async def create_session_container(
     the trusted helper containers pass the egress network explicitly.
     """
     verifying = env.get("LOGOS_SESSION_PHASE") == "verify"
+    if verification_scratch is not None and not verifying:
+        raise ValueError("only a verifier may mount verification scratch")
     if verifying and (ssh_key_host_path or ssh_known_hosts_host_path or state_host_path):
         raise ValueError("verification cannot mount credentials or runner state")
     if verifying and any(key in env for key in ("GITHUB_TOKEN", "GH_TOKEN", "GIT_SSH_COMMAND", "ANTHROPIC_AUTH_TOKEN")):
@@ -277,6 +283,25 @@ async def create_session_container(
         "AutoRemove": False,  # keep exit status readable after the run
         "RestartPolicy": {"Name": "no"},
     }
+
+    if verification_scratch is not None:
+        scratch_path, marker = verification_scratch
+        # The structured bind refuses missing sources and never includes
+        # nested mounts. Only the private per-verification slot is exposed.
+        host_config["Tmpfs"].pop("/tmp")
+        # Docker writes stdout/stderr outside the scratch filesystem. Keep
+        # diagnostics without letting build output fill that other disk.
+        host_config["LogConfig"] = {"Type": "local", "Config": {"max-size": "10m", "max-file": "2"}}
+        host_config["Mounts"] = [
+            {
+                "Type": "bind",
+                "Source": scratch_path,
+                "Target": "/tmp",
+                "ReadOnly": False,
+                "BindOptions": {"CreateMountpoint": False, "NonRecursive": True, "Propagation": "rprivate"},
+            }
+        ]
+        env = {**env, "LOGOS_VERIFICATION_SCRATCH_MARKER": marker}
 
     payload: dict[str, Any] = {
         "Image": image,

@@ -25,10 +25,23 @@ def credential_free(monkeypatch):
         "OPENAI_API_KEY",
         "ANTHROPIC_AUTH_TOKEN",
         "LOGOS_SESSION_PHASE",
+        "LOGOS_VERIFICATION_SCRATCH_MARKER",
         "LOGOS_VERIFICATION_PATHS",
         "LOGOS_VERIFICATION_TREE",
     ):
         monkeypatch.delenv(name, raising=False)
+
+
+def test_rejects_a_wrong_daemon_bind_before_reading_the_candidate(monkeypatch, tmp_path):
+    monkeypatch.setenv("LOGOS_SESSION_PHASE", "verify")
+    monkeypatch.setenv("LOGOS_VERIFICATION_SCRATCH_MARKER", "a" * 64)
+    monkeypatch.setattr(verify_checkout, "SCRATCH_ROOT", tmp_path)
+    monkeypatch.setattr(verify_checkout, "candidate_tree", lambda _: pytest.fail("must not read the candidate"))
+    assert verify_checkout.main(["logos-webservice"]) == 1
+    unrelated = tmp_path / "unrelated"
+    unrelated.write_text("a" * 64)
+    (tmp_path / ".logos-verifier-scratch").symlink_to(unrelated)
+    assert verify_checkout.main(["logos-webservice"]) == 1
 
 
 def test_selects_both_services_for_renamed_or_deleted_paths():

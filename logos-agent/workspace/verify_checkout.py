@@ -13,6 +13,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -21,6 +22,7 @@ from pathlib import Path, PurePosixPath
 CHECKOUT = Path("/workspace/repo")
 CACHE = Path("/opt/logos-verification")
 WORKSPACE_CACHE = Path("/cache")
+SCRATCH_ROOT = Path("/tmp")  # NOSONAR - private verifier mount, not a host directory
 SERVICES = ("logos-webservice", "logos-ui")
 COMMAND_TIMEOUT = 1800
 
@@ -51,6 +53,24 @@ def require_credential_free() -> None:
         raise RuntimeError("verification cannot execute in a trusted helper phase")
     if Path("/logos/deploy_key").exists():
         raise RuntimeError("verification cannot execute with a deploy key mounted")
+
+
+def require_scratch_identity() -> None:
+    """Refuse to run repository code on an unexpected daemon-side bind."""
+    marker = os.environ.get("LOGOS_VERIFICATION_SCRATCH_MARKER")
+    if marker is None:
+        return
+    if os.environ.get("LOGOS_SESSION_PHASE") != "verify" or not re.fullmatch("[0-9a-f]{64}", marker):
+        raise RuntimeError("invalid verification scratch identity")
+    try:
+        fd = os.open(SCRATCH_ROOT / ".logos-verifier-scratch", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as handle:
+            info = os.fstat(fd)
+            if stat.S_ISREG(info.st_mode) and info.st_uid == 0 and handle.read(65) == marker.encode("ascii"):
+                return
+    except OSError:
+        pass
+    raise RuntimeError("verification scratch bind does not match the reserved disk filesystem")
 
 
 def _environment(home: Path) -> dict[str, str]:
@@ -220,6 +240,7 @@ def verify_repository(command: str, checkout: Path, tree: str) -> None:
 def main(arguments: list[str] | None = None) -> int:
     try:
         require_credential_free()
+        require_scratch_identity()
         arguments = sys.argv[1:] if arguments is None else arguments
         if arguments:
             if any(service not in SERVICES for service in arguments):

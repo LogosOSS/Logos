@@ -49,6 +49,7 @@ from . import (
     model_policy,
     repository_context,
     upstream,
+    verification_scratch,
 )
 from .artifacts import read_artifact_text
 from .asyncio_tasks import cancel_and_wait
@@ -1980,6 +1981,41 @@ class SessionManager:
         artifact_host_path: str,
         cache_volume: str | None = None,
     ) -> int | None:
+        kwargs = {
+            "phase": phase,
+            "session_id": session_id,
+            "env": env,
+            "workspace_volume": workspace_volume,
+            "artifact_host_path": artifact_host_path,
+            "cache_volume": cache_volume,
+        }
+        if phase != "verify" or not (settings.verification_scratch_volume or settings.verification_scratch_host_path):
+            return await self._run_helper_container(**kwargs)
+        try:
+            async with verification_scratch.reserve(
+                settings.verification_scratch_volume,
+                settings.verification_scratch_host_path,
+                settings.verification_scratch_max_gib,
+                timeout_s=settings.helper_timeout_s,
+            ) as scratch:
+                return await self._run_helper_container(**kwargs, scratch=scratch)
+        except (OSError, RuntimeError) as exc:
+            # Disk mode was explicitly selected; never silently retry on
+            # tmpfs or mark the tree verified if its isolation wasn't proven.
+            self._last_helper_output[session_id] = f"[verify] disk scratch unavailable: {exc}"
+            return 1
+
+    async def _run_helper_container(
+        self,
+        *,
+        phase: str,
+        session_id: int,
+        env: dict[str, str],
+        workspace_volume: str,
+        artifact_host_path: str,
+        cache_volume: str | None = None,
+        scratch: verification_scratch.Scratch | None = None,
+    ) -> int | None:
         """Run one trusted one-shot helper container to completion, remove it.
 
         The helper phases (checkout preparation, finalization) are
@@ -2041,13 +2077,14 @@ class SessionManager:
                     artifact_host_path=artifact_host_path,
                     session_id=session_id,
                     network="none" if phase == "verify" else settings.session_egress_network,
-                    labels={"logos.agent.helper": phase},
+                    labels={"logos.agent.helper": phase, **({verification_scratch.LABEL: "true"} if scratch else {})},
                     ssh_known_hosts_host_path=known_hosts_host_path,
                     ssh_key_host_path=ssh_key_host_path,
                     # Only verification reads the workspace cache, read-only;
                     # credential-bearing helpers never mount it.
                     cache_volume=cache_volume if phase == "verify" else None,
                     memory_mb=memory_mb,
+                    **({"verification_scratch": (scratch.host_path, scratch.marker)} if scratch else {}),
                 )
                 helper.container_id = container_id
             finally:
