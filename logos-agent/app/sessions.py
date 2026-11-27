@@ -2104,6 +2104,10 @@ class SessionManager:
 
             async def start_and_wait() -> int | None:
                 try:
+                    # Disk admission and scheduling the monitored task can
+                    # yield after the initial post-create cancellation check.
+                    if self._helpers.get(session_id) is not helper:
+                        return 137
                     await docker_engine.start_container(container_id)
                 finally:
                     helper.started.set()

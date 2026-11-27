@@ -322,6 +322,35 @@ async def test_runner_verifier_cleans_after_removal_even_on_pressure(monkeypatch
     assert manager._last_helper_output[42].endswith("verification aborted" if pressure else "verified")
 
 
+async def test_cancel_during_disk_sample_does_not_start_verified_container(monkeypatch, pool):
+    manager = sessions.SessionManager()
+    monkeypatch.setattr(sessions, "settings", replace(sessions.settings, verification_scratch_volume=VOLUME))
+    monkeypatch.setattr(sessions.db, "get_session", AsyncMock(return_value={"status": "finalizing"}))
+    monkeypatch.setattr(docker_engine, "create_session_container", AsyncMock(return_value="verifier"))
+    monkeypatch.setattr(manager, "_what_it_printed", AsyncMock(return_value=""))
+    start = AsyncMock()
+    remove = AsyncMock()
+    monkeypatch.setattr(docker_engine, "start_container", start)
+    monkeypatch.setattr(docker_engine, "remove_container", remove)
+
+    async def cancelled_during_sample(_slot, run):
+        # Cancel can pop the record while the monitor samples disk pressure
+        # or while the new task is scheduled but has not started Docker yet.
+        manager._helpers.pop(42)
+        return await run()
+
+    monkeypatch.setattr(scratch.Scratch, "monitor", cancelled_during_sample)
+    assert (
+        await manager._run_helper(
+            phase="verify", session_id=42, env={}, workspace_volume="workspace", artifact_host_path="/artifacts/42"
+        )
+        == 137
+    )
+    start.assert_not_awaited()
+    remove.assert_awaited_once_with("verifier")
+    assert list(pool.glob("verifier-*")) == []
+
+
 async def test_scratch_is_mounted_only_as_a_private_verifier_tmp(monkeypatch):
     payloads = []
 
