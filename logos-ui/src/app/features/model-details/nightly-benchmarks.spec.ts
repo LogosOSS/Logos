@@ -7,7 +7,7 @@ import { provideRouter } from '@angular/router';
 import { ModelManagementService } from '../../core/services/model-management.service';
 import { Model } from '../../shared/models/model.model';
 import { ModelProviderBenchmark } from '../../shared/models/provider.model';
-import { ModelErrorReport } from './model-error-report';
+import { ModelDetails } from './model-details';
 import { NightlyBenchmarks, NightlyStatus } from './nightly-benchmarks';
 
 @Component({
@@ -35,11 +35,77 @@ describe('Nightly benchmark management', () => {
   });
   afterEach(() => { control.ngOnDestroy(); http.verify(); });
 
+  it('saves the selected pair window with its previous bounds and leaves rotation enabled', async () => {
+    control.state.update(state => ({ ...state!, enabled: true }));
+    control.openEditor();
+    expect(control.windowStart).toBe('05:00');
+    expect(control.windowEnd).toBe('08:00');
+    control.windowStart = '11:15';
+    control.windowEnd = '11:25';
+    expect(control.windowInvalid).toBe(true);
+    control.windowEnd = '13:00';
+    expect(control.windowInvalid).toBe(false);
+
+    const operation = control.saveWindow();
+    const request = http.expectOne('/api/logosdb/model_benchmarks/nightly/window');
+    expect(request.request.body).toEqual({
+      model_provider_id: 31, start: '11:15', end: '13:00', expected_start: '05:00', expected_end: '08:00',
+    });
+    request.flush({ window: { ...control.window, start: '11:15', end: '13:00', benchmark_start_cutoff: '13:00' } });
+    await operation;
+    expect(control.editing()).toBe(false);
+    expect(control.state()?.enabled).toBe(true);
+    expect(control.window?.start).toBe('11:15');
+  });
+
+  it('refreshes a conflicting schedule and keeps the draft until the editor is reopened', async () => {
+    control.openEditor();
+    control.windowEnd = '09:00';
+    const operation = control.saveWindow();
+    http.expectOne('/api/logosdb/model_benchmarks/nightly/window').flush({ detail: 'Window changed' }, {
+      status: 409, statusText: 'Conflict',
+    });
+    await operation;
+    const newer = { ...control.window!, end: '10:00', benchmark_start_cutoff: '10:00' };
+    http.expectOne('/api/logosdb/model_benchmarks/nightly/status').flush({ ...control.state()!, window: newer });
+    await Promise.resolve();
+    expect(control.editing()).toBe(true);
+    expect(control.windowEnd).toBe('09:00');
+    expect(control.windowError()).toBe('Window changed');
+    control.openEditor();
+    expect(control.windowEnd).toBe('10:00');
+    expect(control.windowError()).toBeNull();
+  });
+
+  it('keeps the editor open on a server failure and waits for confirmation before disabling', async () => {
+    control.state.update(state => ({ ...state!, enabled: true }));
+    control.openEditor();
+    await control.saveWindow();
+    http.expectNone('/api/logosdb/model_benchmarks/nightly/window');
+    control.windowEnd = '09:00';
+    const operation = control.saveWindow();
+    http.expectOne('/api/logosdb/model_benchmarks/nightly/window').flush(null, {
+      status: 500, statusText: 'Server Error',
+    });
+    await operation;
+    expect(control.editing()).toBe(true);
+    expect(control.windowError()).toContain('Could not save');
+    control.disableFromEditor();
+    expect(control.editing()).toBe(false);
+    expect(control.confirming()).toBe(true);
+    http.expectNone('/api/logosdb/model_benchmarks/nightly/configure');
+    const disable = control.confirmDisable();
+    const request = http.expectOne('/api/logosdb/model_benchmarks/nightly/configure');
+    expect(request.request.body).toEqual({ model_provider_id: 31, enabled: false, expected_enabled: true });
+    request.flush({ ...control.state()!, enabled: false, status: 'disabled' });
+    await disable;
+    expect(control.state()?.enabled).toBe(false);
+  });
+
   it('labels the rotation status and distinguishes worker recovery', async () => {
-    const fixture = TestBed.createComponent(NightlyBenchmarks);
-    fixture.componentRef.setInput('pairId', control.pairId);
-    fixture.componentRef.setInput('providerName', control.providerName);
+    const fixture = TestBed.createComponent(NightlySettingsHost);
     fixture.detectChanges();
+    const worker = fixture.componentInstance.worker();
     const ready = control.state()!;
     http.expectOne('/api/logosdb/model_benchmarks/nightly/status').flush(ready);
     await fixture.whenStable();
@@ -49,15 +115,26 @@ describe('Nightly benchmark management', () => {
     expect(status.textContent.trim()).toBe('Disabled');
     expect(status.querySelector('.status-dot--gray')).not.toBeNull();
 
-    fixture.componentInstance.state.set({ ...ready, enabled: true, status: 'scheduled' });
+    worker.state.set({ ...ready, enabled: true, status: 'scheduled' });
     fixture.detectChanges();
     expect(status.textContent.trim()).toBe('Enabled');
     expect(status.querySelector('.status-dot--gray, .status-dot--warn')).toBeNull();
 
-    fixture.componentInstance.state.update(current => ({ ...current!, recovery_required: true }));
+    const details: HTMLElement = fixture.nativeElement.querySelector('section.nightly');
+    for (const [phase, label] of [['preparing', 'Preparing benchmark lane'], ['running', 'Benchmark in progress']]) {
+      worker.state.set({ ...ready, enabled: true, status: phase, recovery_required: true });
+      fixture.detectChanges();
+      expect(status.textContent.trim()).toBe('Enabled');
+      expect(status.querySelector('.status-dot--warn')).toBeNull();
+      expect(details.querySelector('[role="alert"]')).toBeNull();
+      expect(details.querySelector('[role="status"]')?.textContent).toContain(label);
+    }
+
+    worker.state.set({ ...ready, enabled: true, status: 'recovery_required', recovery_required: true });
     fixture.detectChanges();
     expect(status.textContent).toMatch(/Enabled\s*· Recovery pending/);
     expect(status.querySelector('.status-dot--warn')).not.toBeNull();
+    expect(details.querySelector('[role="alert"]')?.textContent).toContain('Worker recovery is pending');
   });
 
   it('shows the workload inline and enables scheduling after applying the selection', async () => {
@@ -73,6 +150,8 @@ describe('Nightly benchmark management', () => {
     const section: HTMLElement = fixture.nativeElement.querySelector('section');
     const workload = section.querySelector<HTMLSelectElement>('#nightly-workload-31')!;
     const toggle = section.querySelector<HTMLButtonElement>('.nightly__toggle')!;
+    const scheduleButtons = Array.from(section.querySelectorAll('.nightly__actions button'));
+    expect(scheduleButtons.map(button => button.textContent.trim())).toEqual(['Enable automatic benchmarks']);
     expect(workload.labels?.[0].textContent).toBe('Request workload');
     expect(workload.closest('details')).toBeNull();
     expect(toggle.disabled).toBe(false);
@@ -218,7 +297,7 @@ describe('Nightly benchmark management', () => {
 
   it('uses the server cutoff in status labels', () => {
     expect(control.statusLabel('window_closed')).toContain('08:00');
-    expect(control.statusLabel('window_closed_below_half')).toContain('08:00');
+    expect(control.statusLabel('window_closed_below_half')).toBe('Stopped · benchmark window ended');
   });
 
   it('distinguishes waiting for GPU capacity from a round deferred to another window', () => {
@@ -241,8 +320,8 @@ describe('Nightly worker selection', () => {
       } },
     ] });
     const http = TestBed.inject(HttpTestingController);
-    const init = vi.spyOn(ModelErrorReport.prototype, 'ngOnInit').mockResolvedValue();
-    const fixture = TestBed.createComponent(ModelErrorReport);
+    const init = vi.spyOn(ModelDetails.prototype, 'ngOnInit').mockResolvedValue();
+    const fixture = TestBed.createComponent(ModelDetails);
     const component = fixture.componentInstance;
     component.model.set({ id: 1, name: 'Test model' } as Model);
     component.loading.set(false);

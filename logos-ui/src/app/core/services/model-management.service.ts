@@ -1,6 +1,6 @@
-import { BenchmarkBatch } from '../../features/model-error-report/benchmark-batch';
+import { BenchmarkBatch } from '../../features/model-details/benchmark-batch';
 import { Injectable, inject } from '@angular/core';
-import { BenchmarkSettings, BenchmarkWorkerLimits, DatasetMetadata, DEFAULT_BENCHMARK_SETTINGS, SavedBenchmarkWorkload } from '../../features/model-error-report/benchmark-settings';
+import { BenchmarkSettings, BenchmarkWorkerLimits, DatasetMetadata, DEFAULT_BENCHMARK_SETTINGS, SavedBenchmarkWorkload } from '../../features/model-details/benchmark-settings';
 import { HttpClient } from '@angular/common/http';
 import { firstValueFrom } from 'rxjs';
 import { Model, AddModelPayload, UpdateModelPayload } from '../../shared/models/model.model';
@@ -14,6 +14,10 @@ export class ModelManagementService {
 
   getModels(): Promise<Model[]> {
     return firstValueFrom(this.http.post<Model[]>('/api/logosdb/get_models', {}));
+  }
+
+  getModel(modelId: number): Promise<Model> {
+    return firstValueFrom(this.http.post<Model>('/api/logosdb/get_model', { id: modelId }));
   }
 
   /**
@@ -33,7 +37,7 @@ export class ModelManagementService {
     return firstValueFrom(
       this.http.post<ModelBenchmarkResponse>(
         '/api/logosdb/model_benchmarks',
-        { model_id: modelId },
+        { model_id: modelId, summary_only: true },
       ),
     );
   }

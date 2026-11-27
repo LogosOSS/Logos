@@ -4,16 +4,15 @@ title: Nightly Benchmarks
 
 # Nightly Benchmarks
 
-Logos admins manage each model/worker pair under **Model Details → Performance → Overview → Nightly rotation**.
+Logos admins manage each model/worker pair under **Model Details → Performance → Overview → Automatic benchmarks**.
 Each worker tile shows its schedule status. Select a tile to see its maintenance window and request workload.
-The scheduler uses the worker's current settings to build the plan when the nightly run starts.
-Trials use explicit serving limits when the current settings are automatic.
+The scheduler measures the worker's current settings first and uses each result to select a trial.
 
 Schedules are off by default and persist in PostgreSQL. The nightly plan is independent
 of the manual benchmark editor. Disabling a schedule cancels its active run and
 restores the worker before it returns to production.
 
-## Enable, Inspect and Disable a Schedule
+## Edit, Enable and Disable a Schedule
 
 See the [illustrated admin walkthrough](../roles/logos-admin.md#nightly-benchmarks)
 for screenshots of the schedule controls.
@@ -22,14 +21,18 @@ for screenshots of the schedule controls.
 
 1. Sign in as a Logos Admin and open **Models**.
 2. Open the model's **Model Details → Performance** tab.
-3. In **Overview**, select the worker tile under **Nightly rotation**.
+3. In **Overview**, select the worker tile under **Automatic benchmarks**.
 4. Review the time window and **Request workload**. Apply any dataset change before enabling the schedule.
-5. Select **Enable nightly rotation**. The worker shows any missing prerequisite beside the controls.
+5. Select **Enable automatic benchmarks**. The worker shows any missing prerequisite beside the controls.
 6. Check for **Enabled** and a green dot beside the worker.
 
 The schedule persists after a page reload or browser close.
-To remove the pair from rotation, open its tile and select **Disable nightly rotation**.
-Confirm with **Disable nightly rotation**.
+Use **Edit schedule** to set the daily start and end time for the selected model and worker, then select **Save window**.
+The end must be on the same day and more than 10 minutes after the start.
+Until you save a custom window, the pair follows the deployment default of 05:00–08:00 Europe/Berlin.
+An active round keeps its original end time.
+Changing the window allows another run on the same day. It uses the pair's existing daily quota slot.
+To remove the pair from rotation, open **Edit schedule**, select **Disable automatic benchmarks** and confirm.
 Activation requires
 an updated, connected worker. Run admission also checks the lane and the other
 available workers.
@@ -68,13 +71,13 @@ parameter configurations, further rounds and bounded retries belong to the same 
 The count persists across application restarts and disabling/re-enabling a
 schedule cannot reset it. The next Berlin calendar date has a fresh quota.
 
-The 08:00 admission cutoff can leave fewer than 2 pairs tested. Remaining
+The admission cutoff for each pair can leave fewer than 2 pairs tested. Remaining
 pairs keep their priority for the next night. Recovery of an interrupted worker
 always happens before selection, even when tonight's quota is already full.
 
 After a successful round, the scheduler stores the candidate and confirms the next production configuration.
 It then gives the other admitted pair its turn.
-Further rounds use the same saved inputs and refine the candidate until 08:00.
+Further rounds can refine the candidate with the same saved inputs during that pair's window.
 The daily quota limits distinct pairs, not rounds.
 A failed baseline or a round without successful variants does not schedule another round.
 If the baseline fails, the scheduler stops the remaining variants and restores the worker.
@@ -85,8 +88,8 @@ Disabling a schedule stops further rounds. Pending recovery always takes priorit
 
 All times use `Europe/Berlin`, including daylight-saving changes.
 
-- Start configurations and retries from 05:00 inclusive to 08:00 exclusive.
-- At 08:00, stop an active run with fewer than 50% of its measured requests
+- Start configurations and retries from the pair's start time inclusive to its end time exclusive.
+- At the end of the window, stop an active run with fewer than 50% of its measured requests
   successfully completed. Started requests and output tokens do not count
   toward this percentage. With 50 samples, at least 25 must have completed.
 - At or above 50%, let the current configuration finish. Do not start another
@@ -94,9 +97,9 @@ All times use `Europe/Berlin`, including daylight-saving changes.
   an outer limit; the preparation budget is separate.
 - During measurement, 5 minutes without output content or a successful
   request completion stops the run. Transport and lease heartbeats do not
-  count. This watchdog also applies after 08:00.
+  count. This watchdog also applies after the window ends.
 - A stalled run gets at most 1 retry with the same configuration, after a
-  worker-lane restart, and only before 08:00. A second stall skips that
+  worker-lane restart, and only before the window ends. A second stall skips that
   configuration. Configuration errors are recorded and skipped without retry.
 - Preparation and warm-up have a separate 15-minute budget. Worker draining
   also has a 15-minute budget. Cleanup can finish after the nominal window.
@@ -106,46 +109,40 @@ every 15 s. These intervals do not guarantee an exact response time.
 
 ## Workload and Parameter Plan
 
-Each round starts with the current production configuration.
-The table shows an initial round, not a limit on the tests for the night.
-If explicit positive values are known, then it tests `max_num_seqs` and
-`max_num_batched_tokens` at approximately 75% and 125% of their current values.
-It changes only 1 parameter at a time. With sequence limit 16 and batch-token
-limit 4096, the candidate configurations are:
+Each round measures the current production configuration as the baseline.
+The scheduler selects up to 4 trials during the round.
+Each trial changes 1 parameter from the best eligible configuration measured in the round.
+The scheduler checks worker limits and excludes configurations it already tried.
 
-| Configuration | `max_num_seqs` | `max_num_batched_tokens` |
-|---|---:|---:|
-| Current configuration | 16 | 4096 |
-| Lower sequence limit | 12 | 4096 |
-| Higher sequence limit | 20 | 4096 |
-| Lower batch-token limit | 16 | 3072 |
-| Higher batch-token limit | 16 | 5120 |
+| Parameter | Trial values |
+|---|---|
+| `max_num_seqs` | Initial options for an automatic limit include 4 and 8. |
+| `max_num_batched_tokens` | Initial options for an automatic limit include 2048 and 4096. |
+| `kv_cache_dtype` | `auto` or `fp8` on supported CUDA deployments of Qwen2.5-Coder 7B AWQ, Qwen2.5-Coder 14B AWQ, and Qwen3.8-27B. |
+| `speculative_config` | Off or MTP with 3 draft tokens on supported Qwen3.8-27B deployments. This model has a built-in MTP draft head. |
 
-Invalid combinations are skipped. Automatic sequence limits use trial values 4 and 8.
-Automatic batch-token limits use trial values 2048 and 4096.
-Each trial sets both limits explicitly. A known limit remains fixed when the other limit is automatic.
-These values are test candidates, not inferred production defaults.
-The unchanged production configuration always runs first.
-Later rounds change the search radius around the saved candidate.
-The radii are 25%, 50%, 12.5%, 75%, 37.5%, 62.5% and 87.5%, then repeat.
-Worker hardware limits still apply. Repeated measurements remain possible.
+The scheduler calculates numerical options around the best measured configuration.
+It tests in an untried direction or reduces the step within a measured interval.
+If the scheduler has multiple options, then it asks `Qwen/Qwen2.5-Coder-14B-Instruct-AWQ` to return one candidate ID through the Logos gateway.
+The scheduler sends the candidate settings, aggregate measurements, GPU limits, and time left.
+The model must be ready on a separate worker and available to the managed Logos agent key.
+If the model is unavailable, the call times out, or the response is invalid, then the scheduler selects the candidate by rule.
+The rule gives priority to parameters with fewer trials near the best measured configuration.
 
 Without a saved request workload, every configuration uses GSM8K `main/test`, the `question` column, 50 requests,
 512 maximum output tokens, concurrent profile with concurrency 4, and seed 42.
 Quantization, context length and model weights are not search parameters.
 The fixed output cap is not itself an optimization parameter.
 
-Completed GuideLLM reports are stored in `model_provider_benchmarks` and appear
-in the existing performance comparison. Internal inference requests use the
-existing `log_entry` logging path. The status endpoint reports per-configuration
-outcomes, retries and benchmark IDs. Failed or incomplete runs are not stored
-as successful throughput measurements. With a saved request dataset and one
-existing serving replica, Logos can apply an eligible improvement over the
-production baseline. Hugging Face runs retain the original production settings.
+Logos stores completed GuideLLM reports in `model_provider_benchmarks` and shows them in the performance comparison.
+Internal benchmark requests use the `log_entry` logging path.
+The status endpoint shows the baseline in the plan because the scheduler selects later configurations during the round.
+The round report records each tested configuration, selection source, outcome, retries, and benchmark ID.
+Hugging Face runs retain the original production settings.
 
 ## Fixed Request Workloads
 
-Select the worker tile under **Nightly rotation** to open **Request workload**.
+Select the worker tile under **Automatic benchmarks** to open **Request workload**.
 Use **Request workload** to replace Hugging Face data for the schedule.
 
 1. Choose **Recent FULL request logs** in **Request workload**.
@@ -193,8 +190,8 @@ The setting applies to all enabled nightly schedules in that deployment.
 The orchestrator reads its own configured database. It does not connect Dev to Prod.
 Deploy migration 069, the orchestrator and the user interface together.
 
-At the maintenance window start, Logos stores 1 source selection before calibration.
-The default cutoff is 05:00 Europe/Berlin.
+Logos stores 1 source selection for the day before calibration or the first Nightly round, whichever comes first.
+The cutoff is 05:00 Europe/Berlin by default. An enabled pair that starts earlier moves the cutoff earlier when the source is first selected.
 The selection contains the latest 50 successful FULL requests with stored inputs.
 Both request arrival and completion must occur at or before the cutoff.
 The recorded `log_entry.user_id` must match exactly 1 user with the configured username.
@@ -203,7 +200,7 @@ Benchmark replays, other users, failed requests and requests without FULL inputs
 The order is request arrival, newest first. The request ID resolves equal arrival times.
 The source model does not restrict selection. All tested models use the same selected inputs.
 
-Each tested model measures its production configuration first, then the previous winner and batching variants.
+Each round measures the production configuration first. The scheduler then selects a trial after each measurement.
 Every configuration uses all 50 saved requests with 4 concurrent requests.
 No request is replaced during a plan or after an application restart.
 Source-log deletion does not remove the saved inputs.
@@ -228,7 +225,7 @@ The fixed Dev pilot retains its reference across nights while its inputs and cap
 
 ## Iterative Optimization and the Fixed Reference
 
-Each night measures production settings first, then the previous winner and its neighbouring batching settings.
+Each round uses its own production baseline to assess trials.
 The first successful production measurement establishes the fixed reference for that workload and environment.
 The reference does not reuse measurements from another dataset or an earlier Hugging Face run.
 A change to the workload, captured hardware, worker version or other serving settings starts a separate series.
@@ -241,13 +238,10 @@ The candidate's p95 request latency cannot exceed 110% of the nightly baseline.
 Among eligible candidates, Logos saves the highest observed aggregate throughput and its parameters.
 The historical winner remains until an eligible measurement exceeds its recorded throughput.
 These checks prevent selection through shorter or truncated answers. They do not measure answer quality.
-After each completed plan, Logos selects the fastest eligible measurement from that plan.
-When it beats the production baseline and the round used a single existing
-serving replica, Logos applies its sequence and batch-token limits.
-Logos compares measurements from the same frozen dataset and environment.
-An older throughput record alone cannot trigger adoption.
-If no eligible configuration improves throughput, then the original production settings return.
-The optimizer keeps its historical reference after adoption. The next round measures the adopted settings as a fresh baseline.
+With a saved request dataset and 1 existing serving replica, Logos can repeat the fastest eligible trial as a confirmation run.
+The trial and its confirmation must both improve throughput and pass the comparison checks against the same baseline.
+If confirmation succeeds, then Logos applies the candidate settings. Otherwise, it restores the original settings.
+The next round measures the deployed settings as a fresh baseline.
 
 The PostgreSQL recovery journal records adoption intent before Logos changes the live lane.
 After the worker confirms the lane is ready, Logos stores the adopted benchmark and its parameters in `nightly_benchmarks.optimizer.production_adoption`.
@@ -271,7 +265,10 @@ A blue ring marks its benchmark. Select **Deployed** to find it or **Show all** 
 If the live settings cannot be matched, select **Last adoption** to find the last confirmed adoption in its timeline.
 The timeline separates workloads and test settings. Measurements can span worker releases.
 Expand **What does Logos check?** for the nightly adoption checks and examples of the request latency limit.
-Expand **Currently deployed → Configuration & selection details** to inspect **Serving settings** and **Run selection**.
+**Parameter changes** under **Currently deployed** shows only the values that differ from the round baseline.
+It shows the active trial during a benchmark or the latest saved trial for the selected worker.
+Expand **Configuration & selection details** for **Run selection**.
+Expand **Serving settings** inside these details to see the full worker configuration.
 If a batching limit is unavailable, it shows **Not reported**.
 If no benchmark matches, then **Last confirmed adoption** can show the last adopted result and link to its benchmark.
 If a limit is unavailable and there is no saved adoption, then the summary shows **Live benchmark unverified**.
@@ -302,6 +299,7 @@ After the final configuration check, Logos stores the final state and completion
 The event includes the outcome, completed round count, total successful configuration count, reference and winner IDs.
 Logos retries failed notification delivery, including outside the maintenance window.
 A stable event key prevents duplicate notifications after a retry or application restart.
+When a changed window runs again on the same day, that run has its own completion notification and round counts.
 Logos Admins receive a notification with the nightly outcome.
 The notification shows the last interruption reason and the number of retry rounds.
 Select **View benchmark** with its number to open the measurement in **Model Details → Performance**.
@@ -324,16 +322,16 @@ local-date claim limits distinct pairs after an application restart. Restored ro
 Existing manual benchmarks finish before nightly admission.
 
 The selected worker must be online, healthy and not calibrating. Logos measures one vLLM lane.
-If the model has no ready lane, then Logos can start a temporary lane.
+If the model has no ready lane with its own GPUs, then Logos can start a temporary lane.
 If the model has several replicas on the worker, then Logos directs benchmark requests to the selected lane.
 The scheduler lets requests already accepted for that model finish before the round starts.
-Other models on the same worker and other workers continue to serve requests.
 
-The worker reserves the selected GPU group for the benchmark lane. It checks the estimated GPU memory for the lane and its warm-up.
+The worker reserves all GPUs that the benchmark lane needs for its configured parallelism.
+It checks the estimated GPU memory for the lane and its warm-up.
 The check uses live NVIDIA memory telemetry, an explicit KV-cache budget, and a calibrated or measured lane footprint.
-Existing production lanes can continue to serve on those GPUs. New loads and other changes that increase memory use on the group wait.
-If the benchmark cannot fit alongside existing lanes, then Logos waits for capacity and can retry within the maintenance window.
-Logos preserves existing production lanes when a temporary lane needs more capacity.
+If another compute process uses a selected GPU, then Logos waits and can retry within the maintenance window.
+The worker prevents other Logos lanes from starting or waking on the reserved GPUs.
+Other models can continue to serve on GPUs outside that group.
 
 Logos saves the benchmark lane configuration before it changes the lane. After testing, it restores that configuration or removes the temporary lane.
 Automatic adoption applies to rounds that use one existing serving replica.
@@ -418,7 +416,7 @@ New benchmark configurations stop when the window ends.
 
 Calibration has priority. A healthy worker with pending calibration blocks new benchmarks during the calibration window.
 Each worker gets at most 1 automatic calibration attempt per window.
-Benchmarks start only after these attempts finish and before 08:00.
+Benchmarks that overlap the calibration window wait for these attempts and can start until their own window closes.
 If new calibration work appears during a benchmark, the current run finishes first.
 The scheduler restores the worker and stops the remaining benchmark plan with `calibration_pending`.
 
@@ -567,8 +565,8 @@ last successful measurement. The current pair limit is the code constant
 | `capacity_deferred` | The maintenance window ended while the round waited for GPU capacity. |
 | `continuing` | The production configuration is confirmed. Another round waits for its turn within this window. |
 | `completed` | The night finished. Inspect individual outcomes; this does not mean every configuration succeeded. |
-| `window_closed` | No further configuration can start after 08:00. |
-| `window_closed_below_half` | The window ended before half of the current test requests completed. The UI shows **Stopped · nightly window ended**. |
+| `window_closed` | No further configuration can start after the pair's window ends. |
+| `window_closed_below_half` | Fewer than half of the current test's requests completed successfully before the benchmark window ended. The UI shows **Stopped · benchmark window ended**. |
 | `preparation_timeout` / `stalled` | Preparation exceeded its budget, or measurement stopped making progress. Inspect the attempt report. |
 | `recovery_required` | The original configuration is not ready. Resolve the worker error; keep the reservation and journal intact. |
 | `interrupted_recovered` | The scheduler restored a worker from its persisted recovery journal. |
@@ -576,7 +574,7 @@ last successful measurement. The current pair limit is the code constant
 
 A restart, a failed run or an opt-in change does not clear the nightly quota.
 If fewer than 2 pairs run, check eligibility, existing manual jobs, recovery
-and the 08:00 cutoff. One long round can use the available admission window.
+and each pair's cutoff. One long round can use the available admission window.
 
 ## Validation
 

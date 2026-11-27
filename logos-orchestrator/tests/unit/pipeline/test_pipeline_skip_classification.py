@@ -66,6 +66,7 @@ class _FakeContextResolver:
             "request_path": request_path,
             "request_id": request_id,
             "deployment_info": deployment_info,
+            "api_key_id": api_key_id,
         }
         return _StubExecutionContext(model_id, provider_id)
 
@@ -164,6 +165,27 @@ async def test_request_path_propagates_to_context_resolver():
     # The scheduled entry of the request's deployment list rides along so the
     # resolver can skip its database roundtrip for logosnode targets .
     assert resolver.kwargs["deployment_info"] == {"model_id": 27, "provider_id": 12, "type": "cloud"}
+
+
+@pytest.mark.parametrize("internal_benchmark, key_id", [(True, -81), (False, 81)])
+async def test_benchmark_job_id_is_kept_for_queue_admission_only(internal_benchmark, key_id):
+    pipeline, _, scheduler, resolver = _build_pipeline()
+    deployment = {"model_id": 27, "provider_id": 12, "type": "logosnode"}
+    result = await pipeline.process(
+        PipelineRequest(
+            payload={"messages": [{"role": "user", "content": "hi"}]},
+            headers={},
+            allowed_models=[27],
+            deployments=[deployment],
+            required_provider_id=12 if internal_benchmark else None,
+            api_key_id=key_id,
+            internal_benchmark=internal_benchmark,
+        )
+    )
+    assert result.success
+    assert scheduler.last_request.api_key_id == key_id
+    assert resolver.kwargs["api_key_id"] == (None if internal_benchmark else key_id)
+    assert resolver.kwargs["deployment_info"] == deployment
 
 
 @pytest.mark.parametrize("cancel_during_resolve", [True, False])

@@ -33,7 +33,7 @@ import {
 interface NightlySchedule {
   model_id: number; model_provider_id: number; provider_name: string;
   state: 'next' | 'queued' | 'recent' | 'blocked' | 'disabled' | 'waiting' | 'busy';
-  reason: string; last_run_date: string | null; recent_success: boolean;
+  reason: string; last_run_date: string | null; recent_success: boolean; next_date?: string | null;
 }
 
 const PROFILE_AXES = ['latency', 'quality', 'price'] as const;
@@ -76,7 +76,8 @@ export class Models implements OnInit, OnDestroy {
   }
 
   nightlyDetail(row: NightlySchedule): string {
-    return `${row.provider_name}: ${row.reason}${row.state === 'next' ? ' · ' + this.nightly()?.next_date : ''}`
+    const nextDate = row.next_date ?? this.nightly()?.next_date;
+    return `${row.provider_name}: ${row.reason}${row.state === 'next' && nextDate ? ' · ' + nextDate : ''}`
       + (row.last_run_date ? ` · Last attempt: ${row.last_run_date}` : '')
       + (row.recent_success ? ' · Successful measurement in the last 7 days' : '');
   }
@@ -131,6 +132,7 @@ export class Models implements OnInit, OnDestroy {
   // ── List state ──────────────────────────────────────────────────────────
   models = signal<Model[]>([]);
   capabilities = signal<Record<number, ModelCapability>>({});
+  private modelListVersion = 0;
   loading = signal(true);
   search = signal('');
   loadError = signal(false);
@@ -284,27 +286,31 @@ export class Models implements OnInit, OnDestroy {
   }
 
   async fetchModels(): Promise<void> {
-  this.loading.set(true);
-  this.loadError.set(false);
+    const version = ++this.modelListVersion;
+    this.loading.set(true);
+    this.loadError.set(false);
 
-  try {
-    const models = await this.modelService.getModels();
-    this.models.set(models);
+    let models: Model[];
+    try {
+      models = await this.modelService.getModels();
+      if (version !== this.modelListVersion) return;
+      this.models.set(models);
+    } catch {
+      if (version === this.modelListVersion) this.loadError.set(true);
+      return;
+    } finally {
+      if (version === this.modelListVersion) this.loading.set(false);
+    }
 
-    // The capabilities endpoint rejects empty id lists with a 400, so an
-    // empty catalogue must not trigger the call — and must not read as a
-    // failed load.
-    this.capabilities.set(
-      models.length > 0
-        ? await this.modelService.getModelCapabilities(models.map((model) => model.id))
-        : {},
-    );
-  } catch {
-    this.loadError.set(true);
-  } finally {
-    this.loading.set(false);
+    try {
+      const capabilities = models.length
+        ? await this.modelService.getModelCapabilities(models.map(model => model.id))
+        : {};
+      if (version === this.modelListVersion) this.capabilities.set(capabilities);
+    } catch {
+      if (version === this.modelListVersion) this.capabilities.set({});
+    }
   }
-}
       
   getCapabilities(modelId: number): ModelCapability | undefined {
     return this.capabilities()[modelId];

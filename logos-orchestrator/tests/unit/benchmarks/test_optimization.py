@@ -3,6 +3,7 @@ import copy
 import pytest
 
 from logos.benchmarks import optimization as optimizer
+from logos.benchmarks.configuration import QWEN_MTP_CONFIG
 
 
 def measured(identifier, throughput, *, sequences=16):
@@ -29,16 +30,41 @@ def test_search_reuses_winner_keeps_reference_and_resets_changed_conditions():
     search = optimizer.context(current, snapshot, workload, {})
     search["state"].update(reference_id=1, best_parameters={"max_num_seqs": 32, "max_num_batched_tokens": 8192})
     next_search = optimizer.context(current, snapshot, workload, search["state"])
-    plan = optimizer.plan(current, next_search)
-    assert plan[0].serving_overrides.max_num_seqs == 16
-    assert plan[1].serving_overrides.max_num_seqs == 32
-    assert all(run.samples == 10 and run.workload_id == workload["id"] for run in plan)
+    assert next_search["state"]["best_parameters"] == {"max_num_seqs": 32, "max_num_batched_tokens": 8192}
     snapshot["runtime"]["devices"]["devices"][0]["used_memory_mb"] = 999
     assert optimizer.context(current, snapshot, workload, search["state"])["reference_id"] == 1
     snapshot["runtime"]["devices"]["devices"][0]["uuid"] = "gpu2"
     assert optimizer.context(current, snapshot, workload, search["state"])["reference_id"] is None
     assert (
         optimizer.context({**current, "dtype": "bfloat16"}, snapshot, workload, search["state"])["reference_id"] is None
+    )
+
+
+@pytest.mark.parametrize(
+    ("captured", "resolved"),
+    [
+        ({}, {"kv_cache_dtype": "auto", "speculative_config": ""}),
+        ({"kv_cache_dtype": ""}, {"kv_cache_dtype": "auto", "speculative_config": ""}),
+        ({"kv_cache_dtype": "fp8_e4m3"}, {"kv_cache_dtype": "fp8", "speculative_config": ""}),
+    ],
+)
+def test_series_identity_uses_effective_cache_dtype_and_disabled_mtp(captured, resolved):
+    workload = {"id": "a" * 64, "name": "Trial", "request_count": 10, "provenance": "synthetic"}
+    snapshot = {}
+    original = captured.copy()
+    recorded = optimizer.context(captured, snapshot, workload, {})
+    planned = optimizer.context(resolved, snapshot, workload, recorded["state"])
+
+    assert recorded["series_key"] == planned["series_key"]
+    assert recorded["state"]["environment_key"] == planned["state"]["environment_key"]
+    assert captured == original
+    assert (
+        optimizer.context({**captured, "kv_cache_dtype": "fp8_e5m2"}, snapshot, workload, {})["series_key"]
+        != recorded["series_key"]
+    )
+    assert (
+        optimizer.context({**captured, "speculative_config": QWEN_MTP_CONFIG}, snapshot, workload, {})["series_key"]
+        != recorded["series_key"]
     )
 
 
@@ -116,52 +142,73 @@ def test_changed_daily_cohort_retains_candidate_parameters_without_comparing_old
     assert "best_parameters" not in optimizer.context(current, {}, different_user, previous)["state"]
 
 
-def test_further_rounds_explore_new_radii_on_the_same_frozen_requests():
-    current = {"max_num_seqs": 16, "max_num_batched_tokens": 4096}
-    search = {"state": {}, "workload_id": "a" * 64, "workload": {"request_count": 50}}
-    plans = [optimizer.plan(current, search, round_index=index) for index in range(3)]
-    values = [
-        {tuple(sorted(run.serving_overrides.model_dump(exclude_none=True).items())) for run in plan[1:]}
-        for plan in plans
+def test_search_records_only_attempted_trials_in_the_round():
+    baseline = measured(10, 40)
+    search = {
+        "state": {},
+        "reference_id": None,
+        "adaptive_baseline": {"max_num_seqs": 16},
+        "attempted": [{}, {"max_num_seqs": 8}],
+    }
+    report = [
+        {"configuration": 1, "status": "success", "benchmark_id": 10, "kind": "baseline"},
+        {"configuration": 2, "status": "stalled", "kind": "trial", "parameters": {"max_num_seqs": 24}},
+        {"configuration": 3, "status": "window_closed", "kind": "trial", "parameters": {"max_num_seqs": 12}},
     ]
-    assert len(set.union(*values)) == 12
-    for plan in plans:
-        assert plan[0].serving_overrides.model_dump(exclude_none=True) == current
-        assert all(run.samples == 50 and run.workload_id == "a" * 64 for run in plan)
-        assert all(
-            sum(value != current[key] for key, value in run.serving_overrides.model_dump(exclude_none=True).items())
-            == 1
-            for run in plan[1:]
-        )
-    assert optimizer.round_index({"nightly_session": {"date": "2026-10-29", "rounds": 2}}, "2026-10-29") == 2
-    assert optimizer.round_index({"nightly_session": {"date": "2026-10-28", "rounds": 7}}, "2026-10-29") == 0
+    state = optimizer.select_state(search, [baseline], report)
+    assert state["attempted_parameters"] == [{}, {"max_num_seqs": 8}, {"max_num_seqs": 24}]
+    assert state["adaptive_baseline"] == {"max_num_seqs": 16}
+
+
+def adoption_report():
+    return [
+        {"configuration": 1, "status": "success", "benchmark_id": 10, "kind": "baseline"},
+        {"configuration": 2, "status": "success", "benchmark_id": 11, "kind": "trial"},
+        {
+            "configuration": 3,
+            "status": "success",
+            "benchmark_id": 12,
+            "kind": "confirmation",
+            "confirms_benchmark_id": 11,
+        },
+    ]
 
 
 @pytest.mark.parametrize("throughput", [39, 40, 41])
 def test_adoption_requires_a_fresh_strict_improvement_not_a_historical_record(throughput):
-    baseline, candidate = measured(10, 40), measured(11, throughput, sequences=32)
+    baseline, candidate = measured(10, 40), measured(11, 60, sequences=32)
+    confirmation = measured(12, throughput, sequences=32)
     search = {"series_key": "series", "workload_id": "a" * 64, "state": {"best_throughput": 100}}
-    report = [
-        {"configuration": 1, "status": "success", "benchmark_id": 10},
-        {"configuration": 2, "status": "success", "benchmark_id": 11},
-    ]
-    adoption = optimizer.adoption_candidate(search, [baseline, candidate], report)
+    report = adoption_report()
+    adoption = optimizer.adoption_candidate(search, [baseline, candidate, confirmation], report)
     if throughput <= 40:
         assert adoption is None
     else:
-        assert adoption["benchmark_id"] == 11
+        assert adoption["benchmark_id"] == 12
+        assert adoption["trial_benchmark_id"] == 11
         assert adoption["baseline_id"] == 10
         assert adoption["parameters"] == {"max_num_seqs": 32}
 
 
-@pytest.mark.parametrize("failure", ["failed", "shorter", "baseline", "series", "dataset", "unrelated_parameter"])
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "failed",
+        "shorter",
+        "baseline",
+        "series",
+        "dataset",
+        "unrelated_parameter",
+        "mismatched_confirmation",
+        "missing_confirmation",
+        "unsafe_confirmation",
+    ],
+)
 def test_adoption_rejects_unverified_or_unrelated_measurements(failure):
     baseline, candidate = measured(10, 40), measured(11, 80, sequences=32)
+    confirmation = measured(12, 70, sequences=32)
     search = {"series_key": "series", "workload_id": "a" * 64}
-    report = [
-        {"configuration": 1, "status": "success", "benchmark_id": 10},
-        {"configuration": 2, "status": "success", "benchmark_id": 11},
-    ]
+    report = adoption_report()
     if failure == "failed":
         report[1]["status"] = "failed"
     if failure == "baseline":
@@ -173,8 +220,15 @@ def test_adoption_rejects_unverified_or_unrelated_measurements(failure):
     if failure == "dataset":
         search["workload_id"] = "changed"
     if failure == "unrelated_parameter":
-        candidate["configuration"]["nightly"]["parameters"]["dtype"] = "auto"
-    assert optimizer.adoption_candidate(search, [baseline, candidate], report) is None
+        for run in (candidate, confirmation):
+            run["configuration"]["nightly"]["parameters"]["dtype"] = "auto"
+    if failure == "mismatched_confirmation":
+        confirmation["configuration"]["nightly"]["parameters"]["max_num_seqs"] = 16
+    if failure == "missing_confirmation":
+        report.pop()
+    if failure == "unsafe_confirmation":
+        confirmation["metrics"]["request_latency_ms"]["successful"]["percentiles"]["p95"] = 1101
+    assert optimizer.adoption_candidate(search, [baseline, candidate, confirmation], report) is None
 
 
 def test_selection_explains_multiple_failures_without_disclosing_request_content():

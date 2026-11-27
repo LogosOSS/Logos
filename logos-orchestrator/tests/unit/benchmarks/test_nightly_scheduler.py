@@ -1,7 +1,7 @@
 import asyncio
 import copy
 from contextlib import nullcontext
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 from unittest.mock import DEFAULT, AsyncMock, MagicMock
 
 import pytest
@@ -15,6 +15,7 @@ from logos.benchmarks.nightly import (
     NightlyStopped,
 )
 from logos.benchmarks.reservations import benchmark_reservations
+from logos.maintenance_window import MaintenanceWindow
 
 GPU_BUDGET = {"0": 12_288.0}
 
@@ -83,7 +84,50 @@ def scheduler(monkeypatch):
     monkeypatch.setattr(module.store, "finish_recovery_jobs", lambda _: None)
     planner._facade.reserve_model_for_drain.side_effect = benchmark_reservations.reserve_nightly
     monkeypatch.setattr(module.store, "record_comparison", MagicMock())
-    monkeypatch.setattr(module.store, "adoption_candidate", MagicMock(return_value=None))
+    service.trial_rates = {}
+
+    def round_measurements(_pair, ids):
+        measurements = []
+        for identifier in ids:
+            parameters = next(
+                (
+                    call.args[2]
+                    for call in reversed(module.store.record_comparison.call_args_list)
+                    if call.args[0] == identifier
+                ),
+                {},
+            )
+            search = (
+                next(
+                    (
+                        call.kwargs.get("search")
+                        for call in reversed(module.store.record_comparison.call_args_list)
+                        if call.args[0] == identifier
+                    ),
+                    None,
+                )
+                or {}
+            )
+            measurements.append(
+                {
+                    "id": identifier,
+                    "sample_size": 1,
+                    "configuration": {
+                        "workload": {"id": search.get("workload_id")},
+                        "nightly": {"series_key": search.get("series_key"), "parameters": parameters},
+                    },
+                    "metrics": {
+                        "aggregate_output_tokens_per_second": service.trial_rates.get(identifier, 40),
+                        "request_totals": {"total": 1, "successful": 1, "errored": 0, "incomplete": 0},
+                        "request_latency_ms": {"successful": {"percentiles": {"p95": 1000}}},
+                        "replay_samples": [{"source_log_id": 8, "output_tokens": 100, "finish_reason": "stop"}],
+                    },
+                }
+            )
+        return measurements
+
+    monkeypatch.setattr(module.store, "round_measurements", round_measurements)
+    monkeypatch.setattr(module.nightly_proposer, "propose", AsyncMock(return_value=None))
     monkeypatch.setattr(module.store, "finalize_continuations", MagicMock())
     service.saved = []
     monkeypatch.setattr(module.store, "save", MagicMock(side_effect=lambda *args, **_: service.saved.append(args)))
@@ -119,10 +163,13 @@ async def test_improvement_is_journaled_and_confirmed_before_production_is_relea
             "provenance": "synthetic",
         },
     )
-    module.store.adoption_candidate.return_value = adoption()
+    scheduler.trial_rates.update({2: 55, 6: 52})
+    submitted = []
 
-    async def submit(*args):
-        return 1, asyncio.create_task(asyncio.sleep(0, result=1))
+    async def submit(_pair, settings):
+        submitted.append(settings)
+        identifier = len(submitted)
+        return identifier, asyncio.create_task(asyncio.sleep(0, result=identifier))
 
     scheduler.submit = submit
     calls = []
@@ -142,7 +189,10 @@ async def test_improvement_is_journaled_and_confirmed_before_production_is_relea
 
     monkeypatch.setattr(module.store, "finish", commit)
     assert await scheduler.run_schedule(31, MagicMock())
-    assert calls[0]["adoption"]["benchmark_id"] == 2
+    assert len(submitted) == 6
+    assert submitted[1] == submitted[-1]
+    assert calls[0]["adoption"]["benchmark_id"] == 6
+    assert calls[0]["adoption"]["trial_benchmark_id"] == 2
     report = scheduler.saved[-1][2]
     if fails:
         assert "adoption" not in calls[1]
@@ -445,7 +495,7 @@ def rotation(scheduler, monkeypatch):
     monkeypatch.setattr(module.store, "has_active_benchmarks", lambda **kwargs: False)
     monkeypatch.setattr(module.store, "claimed_today", lambda day: len(claimed))
 
-    def claim(pair, day):
+    def claim(pair, day, *, window):
         if pair in claimed:
             return False
         claimed.add(pair)
@@ -463,6 +513,37 @@ async def test_rotation_admits_two_pairs_sequentially_and_keeps_daily_cap(schedu
     await scheduler.tick()
     assert claimed == {31, 32}
     assert [call.args[0] for call in scheduler.run_schedule.await_args_list] == [31, 32]
+
+
+async def test_rotation_admits_only_the_pair_with_an_open_custom_window(scheduler, rotation, monkeypatch):
+    rows, claimed = rotation
+    rows[1].update(window_start=time(12), window_end=time(13))
+    monkeypatch.setattr(module, "local_now", lambda: datetime.fromisoformat("2026-11-25T12:05:00+01:00"))
+
+    await scheduler.tick()
+
+    assert claimed == {32}
+    assert scheduler.run_schedule.await_args.args[0] == 32
+
+
+async def test_rotation_can_claim_an_edited_window_after_a_failed_round_today(scheduler, rotation, monkeypatch):
+    rows, _ = rotation
+    now = datetime.fromisoformat("2026-11-25T13:10:00+01:00")
+    rows[0].update(
+        last_run_date=now.date(),
+        status="failed",
+        window_start=time(13, 10),
+        window_end=time(13, 30),
+        window_revision=2,
+        last_run_window_revision=1,
+    )
+    monkeypatch.setattr(module, "local_now", lambda: now)
+    monkeypatch.setattr(module.store, "claimed_today", lambda _: module.MAX_PAIRS_PER_NIGHT)
+
+    await scheduler.tick()
+
+    scheduler.run_schedule.assert_awaited_once()
+    assert scheduler.run_schedule.await_args.args[0] == 31
 
 
 async def test_metal_worker_does_not_claim_a_nightly_slot(scheduler, rotation):
@@ -504,7 +585,7 @@ async def test_capacity_deferral_retries_after_cooldown_during_the_same_window(s
 
     monkeypatch.setattr(module, "local_now", lambda: claimed_at + timedelta(seconds=CAPACITY_RETRY_SECONDS))
     await scheduler.tick()
-    claim.assert_called_once_with(31, claimed_at.date())
+    claim.assert_called_once_with(31, claimed_at.date(), window=MaintenanceWindow.from_env())
     assert scheduler.run_schedule.await_args.args[0] == 31
 
 
@@ -532,7 +613,7 @@ async def test_claimed_round_can_retry_after_worker_reconnects(scheduler, rotati
     now += timedelta(seconds=15)
     await scheduler.tick()
 
-    claim.assert_called_once_with(31, claimed_at.date())
+    claim.assert_called_once_with(31, claimed_at.date(), window=MaintenanceWindow.from_env())
     scheduler.run_schedule.assert_awaited_once()
 
 
@@ -1004,7 +1085,7 @@ async def test_restored_rounds_rotate_without_admitting_a_third_pair(scheduler, 
     rows, claimed = rotation
     day = module.local_now().date()
 
-    def claim(pair, date):
+    def claim(pair, date, *, window):
         row = next(item for item in rows if item["model_provider_id"] == pair)
         if pair in claimed and row.get("status") != "continuing":
             return False
@@ -1064,42 +1145,56 @@ async def test_failed_baseline_stops_variants_and_restores_production(scheduler,
     assert benchmark_reservations.allows(20, "model", "production")
 
 
-async def test_completed_winner_is_durable_before_a_later_trial_is_interrupted(scheduler, monkeypatch):
+@pytest.mark.parametrize("confirmed_rate", [40, 52])
+async def test_adaptive_trials_use_previous_measurement_and_require_confirmation(
+    scheduler, monkeypatch, confirmed_rate
+):
     target, snapshot, lane = scheduler.target_lane(31)
     target["model_id"] = 1
-    scheduler.target_lane = lambda pair: (target, snapshot, lane)
+    scheduler.target_lane = lambda _: (target, snapshot, lane)
     monkeypatch.setattr(module.store, "status", lambda _: {"enabled": True, "workload_id": "a" * 64})
     monkeypatch.setattr(
         module.workloads,
         "load",
-        lambda *args: {
-            "id": "a" * 64,
-            "name": "Saved requests",
-            "request_count": 10,
-            "provenance": "synthetic",
-        },
+        lambda *args: {"id": "a" * 64, "name": "Frozen", "request_count": 10, "provenance": "synthetic"},
     )
-    import copy
+    scheduler.trial_rates.update({2: 55, 6: confirmed_rate})
+    measured = []
 
-    journals = []
-    monkeypatch.setattr(module.store, "save", lambda *args: journals.append(copy.deepcopy(args)))
-    module.store.adoption_candidate.side_effect = lambda pair, search, report: adoption() if len(report) >= 2 else None
-    submitted = 0
+    async def propose(*, excluded_worker_id, candidates, observations, remaining_seconds, limits):
+        assert excluded_worker_id == 20
+        assert len(observations) == len(measured)
+        if len(observations) == 1:
+            assert observations[0]["baseline"] and observations[0]["throughput"] == 40
+            return 1
+        assert measured[1] not in candidates
+        assert observations[1]["parameters"] == measured[1]
+        assert observations[1]["throughput"] == 55
+        return None
 
-    async def submit(*args):
-        nonlocal submitted
-        submitted += 1
-        if submitted == 3:
-            assert journals[-1][3]["adoption"]["benchmark_id"] == 2
-            raise NightlyStopped("interrupted")
-        return submitted, asyncio.create_task(asyncio.sleep(0, result=submitted))
+    monkeypatch.setattr(module.nightly_proposer, "propose", propose)
+
+    async def submit(_pair, settings):
+        assert module.NIGHTLY_BASELINE_CONFIG.get() == lane["lane_config"]["vllm_config"]
+        measured.append(settings.serving_overrides.model_dump(exclude_none=True))
+        identifier = len(measured)
+        return identifier, asyncio.create_task(asyncio.sleep(0, result=identifier))
 
     scheduler.submit = submit
     assert await scheduler.run_schedule(31, MagicMock())
-    assert submitted == 3
-    scheduler.restore.assert_awaited_once()
-    assert scheduler.restore.call_args.args[1]["adoption"]["benchmark_id"] == 2
-    assert any(item.get("status") == "adopted" for item in scheduler.saved[-1][2])
+    report = scheduler.saved[-1][2]
+    assert [row["selection_source"] for row in report if "selection_source" in row] == [
+        "baseline",
+        "agent",
+        "rule",
+        "rule",
+        "rule",
+        "confirmation",
+    ]
+    assert report[5]["confirms_benchmark_id"] == 2
+    assert measured[5] == measured[1]
+    assert any(row["status"] == "adopted" for row in report) == (confirmed_rate > 40)
+    assert module.NIGHTLY_BASELINE_CONFIG.get() is None
 
 
 def lane_status(lane_id, *, model="model", seqs=16, static=False, can_sleep=False):
@@ -1207,8 +1302,7 @@ async def test_nightly_reuses_and_restores_the_only_warm_locked_lane(scheduler):
         assert benchmark_reservations.pinned_lane(20, "model") == "lane"
         if not submitted:
             assert runtime["lanes"] == [original]
-            assert settings.serving_overrides.max_num_seqs == 16
-            assert settings.serving_overrides.max_num_batched_tokens == 4096
+            assert settings.serving_overrides.model_dump(exclude_none=True) == {}
         else:
             config = runtime["lanes"][0]["lane_config"]["vllm_config"]
             config.update(settings.serving_overrides.model_dump(exclude_none=True))
@@ -1261,6 +1355,19 @@ async def test_nightly_loads_a_temporary_lane_alongside_production(scheduler):
     assert benchmark_reservations.allows(20, "other-model", "production")
 
 
+def test_nightly_can_place_a_temporary_lane_away_from_shared_production_gpus(scheduler):
+    original = lane_status("lane")
+    peer = lane_status("peer", model="other-model")
+    original["lane_config"]["gpu_devices"] = "0,1"
+    peer["occupied_gpu_devices"] = "1"
+    runtime, _ = simulate_worker(scheduler, [original, peer])
+
+    assert scheduler.target_lane(31)[2] is None
+    config = scheduler._temporary_config(31, 20, "model", runtime["lanes"])
+    assert config["gpu_devices"] == ""
+    assert config["vllm_config"] == original["lane_config"]["vllm_config"]
+
+
 async def test_nightly_defers_when_a_temporary_lane_does_not_fit(scheduler):
     initial = [lane_status("other", model="other-model")]
     runtime, events = simulate_worker(scheduler, initial, max_lanes=1)
@@ -1288,7 +1395,7 @@ async def test_capacity_deferral_during_a_trial_restores_without_adopting(schedu
         "load",
         lambda *args: {"id": "a" * 64, "name": "Saved requests", "request_count": 10, "provenance": "synthetic"},
     )
-    module.store.adoption_candidate.side_effect = lambda pair, search, report: adoption() if len(report) >= 2 else None
+    scheduler.trial_rates[2] = 55
     original = lane_status("lane")
     runtime, events = simulate_worker(scheduler, [original])
     submitted = 0

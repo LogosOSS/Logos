@@ -1,4 +1,4 @@
-app-model-error-report select,
+app-model-details select,
 .performance-editor select {
   appearance: none;
   padding-right: 40px !important;
@@ -7,4 +7,4 @@ app-model-error-report select,
   background-position: right 14px center !important;
   background-size: 12px 8px !important;
 }
-app-model-error-report app-benchmark-comparison label::after { display: none; }
+app-model-details app-benchmark-comparison label::after { display: none; }

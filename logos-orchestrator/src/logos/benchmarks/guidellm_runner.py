@@ -18,7 +18,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from logos.benchmarks.configuration import BenchmarkSettings, ServingOverrides
+from logos.benchmarks.configuration import QWEN_MTP_CONFIG, BenchmarkSettings, ServingOverrides
 from logos.benchmarks.nightly import NIGHTLY_CONTEXT, NIGHTLY_GPU_BUDGET_REASON, PROGRESS, NightlyCapacityDeferred
 from logos.benchmarks.nightly_store import write_progress
 
@@ -328,6 +328,24 @@ def lane_serving_configuration(lane: dict[str, Any]) -> dict[str, Any]:
                     result[key] = json.loads(raw)
                 except (ValueError, TypeError):
                     result[key] = raw
+    if "speculative_config" in vllm_config:
+        speculative = vllm_config["speculative_config"]
+        if speculative:
+            try:
+                config = json.loads(speculative)
+            except (TypeError, ValueError):
+                config = None
+            result["speculative_config"] = (
+                QWEN_MTP_CONFIG
+                if isinstance(config, dict)
+                and config.get("method") in ("mtp", "qwen3_5_mtp")
+                and config.keys() == {"method", "num_speculative_tokens"}
+                and type(config.get("num_speculative_tokens")) is int
+                and config["num_speculative_tokens"] == 3
+                else "custom"
+            )
+        else:
+            result["speculative_config"] = ""
     # The worker includes global flags, aliases and lane override precedence.
     # Older workers without this field cannot establish an implicit default.
     backend_metrics = lane.get("backend_metrics")

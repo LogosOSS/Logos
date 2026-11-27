@@ -1,12 +1,18 @@
 from contextlib import nullcontext
+from datetime import time
 from importlib import import_module
 from unittest.mock import Mock
 
 import pytest
 from fastapi import HTTPException, Request
 
+from logos.benchmarks import optimization
+from logos.benchmarks.configuration import QWEN_MTP_MODEL
+from logos.benchmarks.guidellm_runner import extract_serving_configuration
 from logos.benchmarks.nightly import CAPACITY_WAITING
-from logos.dbutils.dbrequest import NightlySelectionStatusRequest, NightlyUpdateRequest
+from logos.benchmarks.worker_limits import nightly_tuning_configuration, worker_limits
+from logos.dbutils.dbrequest import NightlySelectionStatusRequest, NightlyUpdateRequest, NightlyWindowRequest
+from logos.maintenance_window import MaintenanceWindow
 
 TARGET = {"provider_id": 20, "provider_type": "logosnode", "model_id": 11, "model_name": "model"}
 LIVE = {"max_num_seqs": 12, "max_num_batched_tokens": 2048}
@@ -23,6 +29,7 @@ def routes(monkeypatch):
     registry = Mock()
     registry.is_provider_online.return_value = True
     registry.peek_runtime_snapshot.return_value = {
+        "session_id": "worker-session",
         "runtime": {
             "supports_benchmark_restart": True,
             "supports_nightly_gpu_budget": True,
@@ -33,7 +40,7 @@ def routes(monkeypatch):
                     "lane_config": {"vllm_config": LIVE},
                 }
             ],
-        }
+        },
     }
     scheduler = Mock()
     scheduler.preview_configuration.return_value = PREVIEW
@@ -80,6 +87,7 @@ async def test_status_uses_a_future_plan_without_presenting_it_as_the_live_deplo
     assert result["deployment"]["maintenance"] is not use_preview
     assert bool(result["deployment"]["series_key"]) is not use_preview
     assert result["worker_ready"] is True
+    assert result["active_trial"] is None
     selection.assert_called_once_with(31, WORKLOAD["id"], length_comparison_id=42)
     if use_preview:
         scheduler.preview_configuration.assert_called_once_with(
@@ -87,6 +95,73 @@ async def test_status_uses_a_future_plan_without_presenting_it_as_the_live_deplo
         )
     else:
         scheduler.preview_configuration.assert_not_called()
+
+
+@pytest.mark.parametrize(("job_id", "reserved"), [(41, True), (41, False), (-31, True)])
+async def test_status_only_exposes_an_active_trial_from_the_nightly_reservation(routes, monkeypatch, job_id, reserved):
+    router, request, _, _ = routes
+    monkeypatch.setattr(
+        router.store,
+        "status",
+        Mock(return_value={"status": "running", "recovery_required": True}),
+    )
+    monkeypatch.setattr(router.workloads, "list_for_model", Mock(return_value=[]))
+    monkeypatch.setattr(router.store, "selection_summary", Mock(return_value={}))
+    active = {"baseline_id": 71, "changes": [{"parameter": "max_num_seqs", "before": 12, "after": 6}]}
+    trial = Mock(return_value=active)
+    monkeypatch.setattr(router.store, "active_trial", trial)
+    monkeypatch.setattr(router.benchmark_reservations, "owner", Mock(return_value=job_id))
+    monkeypatch.setattr(router.benchmark_reservations, "is_nightly_reserved", Mock(return_value=reserved))
+
+    result = await router.nightly_status(NightlySelectionStatusRequest(model_provider_id=31), request)
+
+    if job_id > 0 and reserved:
+        trial.assert_called_once_with(31, 20, 41, "worker-session")
+        assert result["active_trial"] == active
+    else:
+        trial.assert_not_called()
+        assert result["active_trial"] is None
+
+
+@pytest.mark.parametrize(("reported", "effective"), [("", "auto"), ("fp8_e4m3", "fp8")])
+async def test_live_deployment_and_nightly_planning_share_cache_identity(routes, monkeypatch, reported, effective):
+    router, request, scheduler, registry = routes
+    monkeypatch.setattr(router, "target_for", lambda _: {**TARGET, "model_name": QWEN_MTP_MODEL})
+    snapshot = registry.peek_runtime_snapshot.return_value
+    snapshot["runtime"]["devices"] = {
+        "nvidia_smi_available": True,
+        "devices": [{"kind": "nvidia", "extra": {"index": 0, "compute_capability": "12.0"}}],
+    }
+    snapshot["runtime"]["lanes"][0].update(
+        model=QWEN_MTP_MODEL,
+        nightly_vllm_version="0.34.0",
+        lane_config={"vllm": True, "gpu_devices": "0", "vllm_config": {**LIVE, "kv_cache_dtype": reported}},
+    )
+    serving = extract_serving_configuration(snapshot, QWEN_MTP_MODEL)
+    scheduler.preview_configuration.return_value = serving
+    tuning = nightly_tuning_configuration(worker_limits(snapshot, QWEN_MTP_MODEL))
+    assert tuning["kv_cache_dtype"] == effective
+    measured = optimization.context(tuning, snapshot, WORKLOAD, {})
+    monkeypatch.setattr(
+        router.store,
+        "status",
+        Mock(
+            return_value={
+                "status": "completed",
+                "workload_id": WORKLOAD["id"],
+                "recovery_required": False,
+                "optimizer": measured["state"],
+            }
+        ),
+    )
+    monkeypatch.setattr(router.workloads, "load", Mock(return_value=WORKLOAD))
+    monkeypatch.setattr(router.workloads, "list_for_model", Mock(return_value=[WORKLOAD]))
+    monkeypatch.setattr(router.store, "selection_summary", Mock(return_value={}))
+
+    result = await router.nightly_status(NightlySelectionStatusRequest(model_provider_id=31), request)
+
+    assert result["deployment"]["series_key"] == measured["series_key"]
+    assert result["deployment"]["configuration"]["kv_cache_dtype"] == reported
 
 
 async def test_only_gpu_budget_capable_workers_can_enable_nightly_rotation(routes, monkeypatch):
@@ -106,3 +181,33 @@ async def test_only_gpu_budget_capable_workers_can_enable_nightly_rotation(route
     result = await router.configure_nightly(data, request)
     assert result["enabled"] is True
     set_enabled.assert_called_once_with(31, True, False)
+
+
+async def test_window_endpoint_reports_the_persisted_pair_window(routes, monkeypatch):
+    router, request, _, _ = routes
+    saved = Mock(return_value=True)
+    monkeypatch.setattr(router.store, "set_window", saved)
+    data = NightlyWindowRequest(
+        model_provider_id=31, start="13:10", end="13:30", expected_start="05:00", expected_end="08:00"
+    )
+    zone = MaintenanceWindow.from_env().timezone
+    window = MaintenanceWindow(time(13, 10), time(13, 30), zone)
+
+    assert await router.configure_nightly_window(data, request) == {"window": window.describe()}
+    saved.assert_called_once_with(31, window, MaintenanceWindow(time(5), time(8), zone))
+
+
+@pytest.mark.parametrize(("end", "status"), [("13:20", 400), ("13:30", 409)])
+async def test_window_endpoint_rejects_short_and_stale_updates(routes, monkeypatch, end, status):
+    router, request, _, _ = routes
+    saved = Mock(return_value=False)
+    monkeypatch.setattr(router.store, "set_window", saved)
+    data = NightlyWindowRequest(
+        model_provider_id=31, start="13:10", end=end, expected_start="05:00", expected_end="08:00"
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await router.configure_nightly_window(data, request)
+
+    assert exc.value.status_code == status
+    assert saved.call_count == (1 if status == 409 else 0)

@@ -1,14 +1,14 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <databaseChangeLog
     xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
-    logicalFilePath="liquibase/changelog/100_model_profile_source_cleanup.xml"
+    logicalFilePath="liquibase/changelog/107_model_profile_source_cleanup.xml"
     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
     xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
         http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
 
     <!-- residency_source is "calibrated", "hf" or empty. Drops the other
          labels and bumps sync_revision so no worker echo restores them. -->
-    <changeSet id="100-model-profile-source-cleanup" author="logos">
+    <changeSet id="107-model-profile-source-cleanup" author="logos">
         <sql><![CDATA[
             UPDATE model_profiles
                SET residency_source = NULL,

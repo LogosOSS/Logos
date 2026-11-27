@@ -4,7 +4,7 @@ import { BehaviorSubject } from 'rxjs';
 import { HttpClient, provideHttpClient } from '@angular/common/http';
 import { ModelManagementService } from '../../core/services/model-management.service';
 import { ModelBenchmarkPair, ModelBenchmarkRun, ModelBenchmarkResponse, ModelProviderBenchmark } from '../../shared/models/provider.model';
-import { ModelErrorReport } from './model-error-report';
+import { ModelDetails } from './model-details';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -13,7 +13,7 @@ function deferred<T>() {
 }
 
 describe('Benchmark runner', () => {
-  let component: ModelErrorReport;
+  let component: ModelDetails;
   let service: { getBenchmarks: ReturnType<typeof vi.fn>; getBenchmarkWorkerLimits: ReturnType<typeof vi.fn>; startBenchmark: ReturnType<typeof vi.fn>; cancelBenchmark: ReturnType<typeof vi.fn> };
   const empty: ModelBenchmarkResponse = { benchmarks: [], pairs: [], runs: [] };
   const pair = { model_provider_id: 1, provider_id: 2, endpoint_configured: true } as ModelBenchmarkPair;
@@ -26,7 +26,7 @@ describe('Benchmark runner', () => {
       { provide: HttpClient, useValue: {} },
       { provide: ModelManagementService, useValue: service },
     ] });
-    component = TestBed.runInInjectionContext(() => new ModelErrorReport());
+    component = TestBed.runInInjectionContext(() => new ModelDetails());
     component.modelId.set(1);
   });
   afterEach(() => { component.ngOnDestroy(); vi.restoreAllMocks(); });
@@ -158,7 +158,7 @@ describe('Benchmark runner', () => {
 
   it('labels scheduled cutoffs as stopped while preserving real failures', () => {
     const stopped = { ...run, status: 'failed' as const, error_message: 'window_closed_below_half', updated_at: '2026-11-11T07:00:01Z' };
-    expect(component.benchmarkStatusLabel(stopped)).toContain('Stopped · nightly window ended');
+    expect(component.benchmarkStatusLabel(stopped)).toContain('Stopped · benchmark window ended');
     expect(component.isBenchmarkWindowStop(stopped)).toBe(true);
     const failed = { ...stopped, error_message: 'stalled' };
     expect(component.benchmarkStatusLabel(failed)).toContain('Failed');
@@ -261,7 +261,7 @@ describe('Benchmark provider picker', () => {
       provider_type: 'logosnode', endpoint_configured: true } as ModelBenchmarkPair;
     const online = { ...offline, model_provider_id: 2, provider_id: 2, provider_name: 'Online worker' };
     TestBed.configureTestingModule({
-      imports: [ModelErrorReport],
+      imports: [ModelDetails],
       providers: [provideRouter([]), provideHttpClient(), {
         provide: ModelManagementService, useValue: {
           getBenchmarks: async () => ({ benchmarks: [], runs: [], pairs: [offline, online] }),
@@ -274,8 +274,8 @@ describe('Benchmark provider picker', () => {
         },
       }],
     });
-    vi.spyOn(ModelErrorReport.prototype, 'ngOnInit').mockResolvedValue();
-    const fixture = TestBed.createComponent(ModelErrorReport);
+    vi.spyOn(ModelDetails.prototype, 'ngOnInit').mockResolvedValue();
+    const fixture = TestBed.createComponent(ModelDetails);
     const component = fixture.componentInstance;
     component.model.set({ id: 1, name: 'Test model' } as any);
     component.modelId.set(1);
@@ -328,14 +328,14 @@ describe('Benchmark deletion feedback', () => {
   it('shows a rejected deletion outside the hidden overview while analysis stays selected', async () => {
     const deleteBenchmark = vi.fn().mockRejectedValue(new Error('Service unavailable'));
     TestBed.configureTestingModule({
-      imports: [ModelErrorReport],
+      imports: [ModelDetails],
       providers: [provideRouter([]), provideHttpClient(), {
         provide: ModelManagementService, useValue: { deleteBenchmark },
       }],
     });
-    vi.spyOn(ModelErrorReport.prototype, 'ngOnInit').mockResolvedValue();
+    vi.spyOn(ModelDetails.prototype, 'ngOnInit').mockResolvedValue();
     vi.spyOn(window, 'confirm').mockReturnValue(true);
-    const fixture = TestBed.createComponent(ModelErrorReport);
+    const fixture = TestBed.createComponent(ModelDetails);
     const component = fixture.componentInstance;
     component.model.set({ id: 1, name: 'Test model' } as any);
     component.loading.set(false);

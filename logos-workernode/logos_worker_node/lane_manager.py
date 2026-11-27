@@ -35,6 +35,7 @@ from logos_worker_node.models import (
     VllmEngineConfig,
     WorkerConfig,
 )
+from logos_worker_node.profile_fingerprint import cached_vllm_version
 from logos_worker_node.resource_lock import Claim, ResourceLock
 from logos_worker_node.vllm_process import VllmProcessHandle, effective_gmu
 
@@ -2989,6 +2990,7 @@ class LaneManager:
         # snapshot.devices because their memory could not be read.
         faulted_indices: set[int] = set(snapshot.faulted_gpu_indices)
         device_rows: list[dict[str, float]] = []
+        gpu_uuid_by_index: dict[int, str] = {}
         for fallback_index, device in enumerate(snapshot.devices):
             if device.kind != "nvidia":
                 continue
@@ -3000,6 +3002,7 @@ class LaneManager:
             if device.health == "faulted":
                 faulted_indices.add(index)
                 continue
+            gpu_uuid_by_index[index] = device.device_id
             device_rows.append(
                 {
                     "index": float(index),
@@ -3053,6 +3056,10 @@ class LaneManager:
 
         allowed_rows = [row for row in device_rows if int(row["index"]) in set(allowed_indices)]
         if nightly:
+            _, occupied = await self._nightly_gpu_process_usage(None)
+            allowed_rows = [row for row in allowed_rows if gpu_uuid_by_index[int(row["index"])] not in occupied]
+            if len(allowed_rows) < lane_config.vllm_config.parallel_gpu_count:
+                raise NightlyGpuBudgetUnavailable(f"lane {lane_id} has too few GPUs without other compute processes")
             for row in allowed_rows:
                 row["free_mb"] = max(0.0, row["free_mb"] - _NIGHTLY_WARMUP_HEADROOM_MB)
         reserved_gpus = self._blocked_gpus(lane_id, nightly=nightly)
@@ -3094,7 +3101,7 @@ class LaneManager:
 
         required_total_mb = self._estimate_lane_vram_mb(lane_config)
         if required_total_mb <= 0:
-            if faulted_indices or reserved_gpus or self._model_restricts_gpus(lane_config.model):
+            if nightly or faulted_indices or reserved_gpus or self._model_restricts_gpus(lane_config.model):
                 # Without an estimate there is nothing to fit, but leaving the
                 # lane unpinned would let it start on a faulted GPU or outside
                 # the model's GPU choice: take the allowed GPUs with the most
@@ -3344,7 +3351,12 @@ class LaneManager:
 
         profile = self._model_profiles.get_profile(config.model) if self._model_profiles else None
         estimate = self._estimate_lane_vram_mb(config) / count
-        measured = await self._nightly_process_gpu_vram(replacing.status().pid) if replacing is not None else {}
+        measured, occupied = await self._nightly_gpu_process_usage(
+            replacing.status().pid if replacing is not None else None
+        )
+        shared_gpus = sorted(index for index in gpus if devices[index].device_id in occupied)
+        if shared_gpus:
+            raise NightlyGpuBudgetUnavailable(f"GPU(s) {shared_gpus} have other compute processes")
         available_footprint = (
             math.isfinite(estimate)
             and estimate > kv_mb
@@ -3382,10 +3394,8 @@ class LaneManager:
             needs[index] = required
         return needs
 
-    async def _nightly_process_gpu_vram(self, root_pid: int | None) -> dict[str, float]:
-        """Measure only VRAM allocated by this lane and its subprocesses, by GPU UUID."""
-        if not root_pid:
-            return {}
+    async def _nightly_gpu_process_usage(self, root_pid: int | None) -> tuple[dict[str, float], set[str]]:
+        """Return the lane's VRAM and GPUs used by other compute processes, by GPU UUID."""
         try:
             proc = await asyncio.create_subprocess_exec(
                 "nvidia-smi",
@@ -3394,39 +3404,50 @@ class LaneManager:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
             )
-        except OSError:
-            return {}
+        except OSError as exc:
+            raise NightlyGpuBudgetUnavailable("GPU compute processes could not be checked") from exc
         try:
             async with asyncio.timeout(8):
                 stdout, _ = await proc.communicate()
-        except TimeoutError:
+        except TimeoutError as exc:
             if proc.returncode is None:
                 try:
                     proc.kill()
                 except ProcessLookupError:
                     pass
             await proc.wait()
-            return {}
+            raise NightlyGpuBudgetUnavailable("GPU compute processes could not be checked") from exc
         if proc.returncode != 0:
-            return {}
-        result: dict[str, float] = {}
+            raise NightlyGpuBudgetUnavailable("GPU compute processes could not be checked")
+        measured: dict[str, float] = {}
+        occupied: set[str] = set()
         parents: dict[int, int | None] = {}
+        worker_pid = str(os.getpid())
         for line in stdout.decode(errors="replace").splitlines():
-            parts = [part.strip() for part in line.split(",")]
-            if len(parts) != 3 or not parts[1].isdigit():
+            if not line.strip() or line.strip() == "No running processes found":
                 continue
+            parts = [part.strip() for part in line.split(",")]
+            if len(parts) != 3 or not parts[0]:
+                raise NightlyGpuBudgetUnavailable("Invalid GPU compute process telemetry")
             gpu_uuid, pid, raw = parts
+            # The worker can have its own CUDA context. Its memory stays included
+            # in GPU usage and never counts as reclaimable lane memory.
+            if pid == worker_pid:
+                continue
+            if (
+                root_pid is None
+                or not pid.isdigit()
+                or self._resolve_owner_pid(int(pid), {root_pid}, parents) != root_pid
+            ):
+                occupied.add(gpu_uuid)
+                continue
             try:
                 value = float(raw)
             except ValueError:
                 continue
-            if (
-                math.isfinite(value)
-                and value > 0
-                and self._resolve_owner_pid(int(pid), {root_pid}, parents) == root_pid
-            ):
-                result[gpu_uuid] = result.get(gpu_uuid, 0.0) + value
-        return result
+            if math.isfinite(value) and value > 0:
+                measured[gpu_uuid] = measured.get(gpu_uuid, 0.0) + value
+        return measured, occupied
 
     async def _wait_for_vram_headroom(
         self,
@@ -3759,13 +3780,13 @@ class LaneManager:
         were full, so two loads never start on one GPU. When nothing else
         fits, the lane waits until one of them has started and places again.
         """
+        nightly_options = {"nightly": True} if nightly else {}
         if claim is None:
-            placed = await self._auto_place_gpu_devices(lane_id, lane_config)
+            placed = await self._auto_place_gpu_devices(lane_id, lane_config, **nightly_options)
             # Others cannot start meanwhile, but a calibration slice is picked
             # without the lock and must see where this lane starts.
             self._loading_gpus[lane_id] = self._launch_gpu_set(placed)
             return placed
-        nightly_options = {"nightly": True} if nightly else {}
         while True:
             async with self._placement_lock:
                 # Taken before the placement awaits: a load that finishes
@@ -4774,6 +4795,8 @@ class LaneManager:
         context_length = 0
         flash_attention = False
         gpu_devices = ""
+        nightly_vllm_version = None
+        nightly_blocked_vllm_fields = []
 
         if lc is not None:
             model = lc.model
@@ -4800,6 +4823,11 @@ class LaneManager:
                 parallel_sizes = self._launch_parallel_sizes(lc.vllm_config, self._vllm_engine_config.global_extra_args)
                 if parallel_sizes:
                     backend_metrics["pipeline_parallel_size"] = parallel_sizes["pp"]
+                if collect_telemetry and not is_metal_backend():
+                    nightly_vllm_version = (
+                        await asyncio.to_thread(cached_vllm_version, lc.vllm_config.vllm_binary) or None
+                    )
+                    nightly_blocked_vllm_fields = self._nightly_blocked_vllm_fields(lc.vllm_config)
         if collect_telemetry and hasattr(handle, "get_backend_metrics"):
             try:
                 backend_metrics.update(await handle.get_backend_metrics())
@@ -4908,6 +4936,8 @@ class LaneManager:
             active_requests=active_requests,
             loaded_models=loaded_models,
             lane_config=lc,
+            nightly_vllm_version=nightly_vllm_version,
+            nightly_blocked_vllm_fields=nightly_blocked_vllm_fields,
             backend_metrics=backend_metrics,
             reported_vram_mb=vram_reported_mb,
             pid_vram_mb=vram_by_pid_mb,
@@ -4919,6 +4949,18 @@ class LaneManager:
             last_cold_load_s=getattr(handle, "last_cold_load_s", None),
             last_wake_from_sleep_s=getattr(handle, "last_wake_from_sleep_s", None),
         )
+
+    def _nightly_blocked_vllm_fields(self, config: VllmConfig) -> list[str]:
+        # Raw flags are appended after the typed settings and can silently
+        # override them. Publish names only, since flags may contain secrets.
+        flags = {
+            arg.partition("=")[0].replace("_", "-")
+            for arg in (*self._vllm_engine_config.global_extra_args, *config.extra_args)
+        }
+        fields = {"kv_cache_dtype", "speculative_config"}
+        if flags & {"--config", "--kv-transfer-config", "--attention-config", "--attention-backend"}:
+            return sorted(fields)
+        return sorted(field for field in fields if "--" + field.replace("_", "-") in flags)
 
     async def _query_process_vram_map(self, pids: list[int]) -> dict[int, float]:
         """Query per-process VRAM from nvidia-smi for the given PIDs."""

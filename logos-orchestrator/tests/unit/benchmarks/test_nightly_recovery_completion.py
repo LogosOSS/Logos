@@ -17,6 +17,7 @@ REPORT = [{"status": "success"}, {"status": "recovery_required", "reason": REASO
 def nightly(monkeypatch):
     row = {
         "last_run_date": date(2026, 10, 29),
+        "last_run_window_revision": 0,
         "status": "recovery_required",
         "optimizer": {},
         "enabled": True,

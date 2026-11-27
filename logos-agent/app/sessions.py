@@ -297,12 +297,20 @@ async def reserved_memory_mb() -> int:
     return await db.reserved_memory_mb(settings.session_memory_mb) + sum(_held_memory.values())
 
 
-async def memory_admission_block(control: controls.Controls) -> str:
+async def memory_admission_block(control: controls.Controls, *, override_mb: int | None = None) -> str:
     """Why the host's memory budget has no room for one more session, or an empty string."""
     budget = memory_budget.current()
+    if override_mb is not None:
+        ceiling = memory_budget.override_ceiling_mb()
+        if ceiling is None:
+            return "the runner memory budget is unavailable for a custom RAM limit"
+        if override_mb > ceiling:
+            return f"the requested {override_mb} MiB exceeds this runner's {ceiling} MiB limit"
     if budget is None:
         return ""
-    return budget.admission_block(reserved_mb=await reserved_memory_mb(), session_mb=control.session_memory_mb)
+    return budget.admission_block(
+        reserved_mb=await reserved_memory_mb(), session_mb=override_mb or control.session_memory_mb
+    )
 
 
 # The memory each session was started with, from the claim or, after a
@@ -1216,9 +1224,11 @@ class SessionManager:
                 control = await controls.current()
                 running = await db.sessions_in_status(SessionStatus.RUNNING)
                 paused = await db.sessions_in_status(SessionStatus.PAUSED)
-                if not policy.ok or not control.may_resume() or len(running) >= control.max_parallel:
+                if not policy.ok or not control.may_resume():
                     return
                 for session in paused:
+                    if len(running) >= control.parallel_for(session.get("memory_override_mb")):
+                        continue
                     wanted = policy.resolve(session.get("model"))
                     measured, candidate_reading = await capacity.read_load_pair(
                         lane=policy.lane(wanted), ours=_ours_by_model(running, policy), own_api_key_id=own_key
@@ -1247,13 +1257,12 @@ class SessionManager:
                 live = len(running)
                 woken = 0
                 for session in paused:
-                    if live >= control.max_parallel:
+                    parallel = control.parallel_for(session.get("memory_override_mb"))
+                    if live >= parallel:
                         logger.info(
-                            "not resuming session %s: %s sessions is the ceiling in force",
-                            session["id"],
-                            control.max_parallel,
+                            "not resuming session %s: %s sessions is the ceiling in force", session["id"], parallel
                         )
-                        break
+                        continue
                     if not await self._resume(session, why):
                         # It stayed paused, or it was settled because its
                         # container had gone. Either way it took no capacity
@@ -1316,7 +1325,9 @@ class SessionManager:
             # As measured: adding to a lane is a question about the lane.
             reading = await capacity.read_load(lane=admission_policy.lane(wanted))
             self._last_reading = reading
-            blocked = control.admission_block()
+            override_mb = candidate.get("memory_override_mb")
+            max_parallel = control.parallel_for(override_mb)
+            blocked = control.admission_block(override_mb)
             if blocked:
                 # Draining, paused, or a ceiling of zero: nothing new starts.
                 return
@@ -1324,12 +1335,12 @@ class SessionManager:
                 reading,
                 running=len(running),
                 paused=len(paused),
-                max_parallel=control.max_parallel,
+                max_parallel=max_parallel,
             )
             if not may_start:
                 return
             # The host's memory: what live sessions reserved, plus this one.
-            if await memory_admission_block(control):
+            if await memory_admission_block(control, override_mb=override_mb):
                 return
             if not self._capacity_sample_available(reading):
                 return
@@ -1342,12 +1353,22 @@ class SessionManager:
             # The memory is written by the claim itself, so the next admission
             # counts it, and kept for the session's life: a later change of
             # the per-session memory applies to sessions started later.
+            limit_mb = override_mb or control.session_memory_mb
+            budget = memory_budget.current()
+            memory_claim = (
+                {
+                    "memory_budget_mb": budget.budget_mb - sum(_held_memory.values()),
+                    "legacy_default_mb": settings.session_memory_mb,
+                }
+                if budget is not None
+                else {}
+            )
             taken = await db.claim_session(
-                int(candidate["id"]), max_active=control.max_parallel, memory_mb=control.session_memory_mb
+                int(candidate["id"]), max_active=max_parallel, memory_mb=limit_mb, **memory_claim
             )
             if taken:
                 self._spend_capacity_sample(reading)
-                taken = {**taken, "memory_mb": control.session_memory_mb}
+                taken = {**taken, "memory_mb": limit_mb}
                 _remember_memory(taken)
             claimed = [taken] if taken else []
             # The claim is what makes these rows this pass's to launch, so

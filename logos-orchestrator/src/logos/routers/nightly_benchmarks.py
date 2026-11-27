@@ -1,5 +1,7 @@
 """Admin-only nightly benchmark activation and status."""
 
+from datetime import time
+
 from fastapi import APIRouter, HTTPException, Request
 from sqlalchemy import text
 from starlette.concurrency import run_in_threadpool
@@ -9,13 +11,15 @@ from logos.benchmarks import nightly_store as store
 from logos.benchmarks import optimization, recent_requests, workloads
 from logos.benchmarks.deployment import deployment_snapshot
 from logos.benchmarks.guidellm_runner import extract_serving_configuration
-from logos.benchmarks.nightly import local_now, parameter_plan
+from logos.benchmarks.nightly import baseline_settings, local_now, schedule_window
 from logos.benchmarks.nightly_overview import overview
+from logos.benchmarks.reservations import benchmark_reservations
 from logos.dbutils.dbmanager import DBManager
 from logos.dbutils.dbrequest import (
     BenchmarkWorkloadRequest,
     NightlySelectionStatusRequest,
     NightlyUpdateRequest,
+    NightlyWindowRequest,
     RecentBenchmarkWorkloadRequest,
 )
 from logos.maintenance_window import MaintenanceWindow, maintenance_node_limit
@@ -41,6 +45,7 @@ async def nightly_status(data: NightlySelectionStatusRequest, request: Request):
     _require_internal_secret(request)
     target = target_for(data.model_provider_id)
     result = store.status(data.model_provider_id)
+    window = schedule_window(result)
     result["workload_policy"] = recent_requests.policy(local_now())
     snapshot = main._logosnode_registry.peek_runtime_snapshot(target["provider_id"])
     current = extract_serving_configuration(snapshot, target["model_name"])
@@ -60,20 +65,21 @@ async def nightly_status(data: NightlySelectionStatusRequest, request: Request):
         if source and source.get("username") == recent_requests.username():
             workload["source_selection"] = source
         search = optimization.context(baseline, snapshot or {}, workload, result.get("optimizer") or {})
-    result["plan"] = [
-        run.model_dump()
-        for run in (
-            optimization.plan(
-                baseline, search, round_index=optimization.round_index(search["state"], local_now().date())
-            )
-            if search
-            else parameter_plan(baseline)
-        )
-    ]
+    # Later configurations depend on measurements and are recorded in the report as they run.
+    result["plan"] = [baseline_settings(baseline, workload if search else None).model_dump()]
     result["workloads"] = workloads.list_for_model(target["model_id"]) if "model_id" in target else []
     if search and not any(item["id"] == workload["id"] for item in result["workloads"]):
         result["workloads"].append(workloads.metadata(workload))
     result["model_id"] = target.get("model_id")
+    result["active_trial"] = None
+    worker_session = (snapshot or {}).get("session_id")
+    provider_id, model_name = target["provider_id"], target["model_name"]
+    if result["status"] == "running" and result["recovery_required"] and worker_session:
+        job_id = benchmark_reservations.owner(provider_id, model_name, exact=True)
+        if job_id and job_id > 0 and benchmark_reservations.is_nightly_reserved(provider_id, model_name):
+            result["active_trial"] = store.active_trial(
+                data.model_provider_id, provider_id, job_id, str(worker_session)
+            )
     with DBManager() as db:
         active_benchmark = db.session.execute(
             text(
@@ -99,7 +105,7 @@ async def nightly_status(data: NightlySelectionStatusRequest, request: Request):
     result["selection"] = store.selection_summary(
         data.model_provider_id, result.get("workload_id"), length_comparison_id=data.length_comparison_id
     )
-    result["window"] = MaintenanceWindow.from_env().describe()
+    result["window"] = window.describe()
     result["timezone"] = result["window"]["timezone"]
     result["max_maintenance_nodes"] = maintenance_node_limit()
     return result
@@ -124,12 +130,29 @@ async def configure_nightly(data: NightlyUpdateRequest, request: Request):
             )
         else:
             result = store.set_enabled(data.model_provider_id, data.enabled, data.expected_enabled)
-        result["window"] = MaintenanceWindow.from_env().describe()
+        result["window"] = schedule_window(result).describe()
         result["workload_policy"] = recent_requests.policy()
         result["max_maintenance_nodes"] = maintenance_node_limit()
         return result
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/window")
+async def configure_nightly_window(data: NightlyWindowRequest, request: Request):
+    _require_internal_secret(request)
+    target_for(data.model_provider_id)
+    timezone = MaintenanceWindow.from_env().timezone
+    try:
+        window = MaintenanceWindow(time.fromisoformat(data.start), time.fromisoformat(data.end), timezone)
+        expected = MaintenanceWindow(
+            time.fromisoformat(data.expected_start), time.fromisoformat(data.expected_end), timezone
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not store.set_window(data.model_provider_id, window, expected):
+        raise HTTPException(status_code=409, detail="The nightly window changed. Reopen the editor and try again.")
+    return {"window": window.describe()}
 
 
 @router.post("/workloads")

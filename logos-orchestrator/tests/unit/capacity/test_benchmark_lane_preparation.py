@@ -178,6 +178,47 @@ async def test_configured_benchmark_waits_for_worker_configuration():
     assert planner.prepare_benchmark_lane.await_count == 2
 
 
+async def test_nightly_trial_resets_an_omitted_flag_to_the_original_lane():
+    from logos.benchmarks.configuration import ServingOverrides
+    from logos.benchmarks.reservations import benchmark_reservations
+
+    planner, _, _ = _configured_planner()
+    baseline = {"max_num_seqs": 0, "extra_args": ["--trust-remote-code"]}
+    prior_trial = {**baseline, "extra_args": [*baseline["extra_args"], "--max-num-batched-tokens", "4"]}
+    expected = {**baseline, "max_num_seqs": 8}
+
+    def snapshot(config):
+        return {
+            "runtime": {
+                "devices": {"nvidia_smi_available": True, "devices": [{"kind": "nvidia"}]},
+                "lanes": [
+                    {
+                        "lane_id": "model-lane",
+                        "model": "org/model",
+                        "runtime_state": "loaded",
+                        "lane_config": {"vllm": True, "vllm_config": config},
+                    }
+                ],
+            }
+        }
+
+    planner._registry.peek_runtime_snapshot.side_effect = [
+        snapshot(prior_trial),
+        snapshot(prior_trial),
+        snapshot(expected),
+    ]
+    planner._registry.send_command.return_value = {"lane_config": {"vllm_config": expected}}
+    benchmark_reservations.reserve_nightly(7, "org/model", -31)
+    benchmark_reservations.pin_lane(7, "org/model", -31, "model-lane")
+    try:
+        assert await planner.prepare_configured_benchmark_lane(
+            7, "org/model", ServingOverrides(max_num_seqs=8), baseline_config=baseline
+        )
+    finally:
+        benchmark_reservations.release(-31)
+    assert planner._registry.send_command.call_args.args[2]["updates"]["vllm_config"] == expected
+
+
 async def test_nightly_configuration_checks_only_the_pinned_replica():
     from logos.benchmarks.configuration import ServingOverrides
     from logos.benchmarks.reservations import benchmark_reservations
@@ -226,6 +267,40 @@ async def test_nightly_configuration_checks_only_the_pinned_replica():
         },
         timeout_seconds=600,
     )
+
+
+async def test_nightly_baseline_reuses_the_pinned_process_when_batching_flags_match():
+    from logos.benchmarks.configuration import ServingOverrides
+    from logos.benchmarks.reservations import benchmark_reservations
+
+    planner, _, _ = _configured_planner()
+    planner._registry.peek_runtime_snapshot.side_effect = None
+    planner._registry.peek_runtime_snapshot.return_value = {
+        "runtime": {
+            "devices": {"nvidia_smi_available": True, "devices": [{"kind": "nvidia"}]},
+            "lanes": [
+                {
+                    "lane_id": "model-lane",
+                    "model": "org/model",
+                    "runtime_state": "loaded",
+                    "lane_config": {
+                        "vllm": True,
+                        "vllm_config": {"max_num_seqs": 5, "extra_args": ["--max-num-batched-tokens=2560"]},
+                    },
+                }
+            ],
+        }
+    }
+    benchmark_reservations.reserve_nightly(7, "org/model", -31)
+    benchmark_reservations.pin_lane(7, "org/model", -31, "model-lane")
+    try:
+        assert await planner.prepare_configured_benchmark_lane(
+            7, "org/model", ServingOverrides(max_num_seqs=5, max_num_batched_tokens=2560)
+        )
+    finally:
+        benchmark_reservations.release(-31)
+    planner.prepare_benchmark_lane.assert_awaited_once()
+    planner._registry.send_command.assert_not_awaited()
 
 
 async def test_configured_benchmark_refuses_to_reconfigure_after_losing_its_pin():

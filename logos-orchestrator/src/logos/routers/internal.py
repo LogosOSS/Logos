@@ -31,6 +31,7 @@ from logos.benchmarks.guidellm_runner import (
 )
 from logos.benchmarks.huggingface_datasets import dataset_metadata, search_datasets
 from logos.benchmarks.nightly import (
+    NIGHTLY_BASELINE_CONFIG,
     NIGHTLY_CONTEXT,
     PROGRESS,
     NightlyCapacityDeferred,
@@ -657,6 +658,10 @@ async def internal_run_model_benchmark(data: InternalBenchmarkRequest, request: 
     _require_internal_secret(request)
 
     configurations = data.batch.configurations if data.batch else [data]
+    if not NIGHTLY_CONTEXT.get() and any(
+        settings.serving_overrides.speculative_config is not None for settings in configurations
+    ):
+        raise HTTPException(status_code=400, detail="Speculative decoding overrides are available to Nightly only.")
     checked_datasets = {}
     for settings in configurations:
         if settings.workload_id:
@@ -745,9 +750,10 @@ async def internal_run_model_benchmark(data: InternalBenchmarkRequest, request: 
         if provider_type == "logosnode" and NIGHTLY_CONTEXT.get() and pinned_lane is None:
             raise HTTPException(status_code=409, detail="Nightly benchmark no longer owns its pinned lane")
         try:
-            limits = worker_limits(runtime_snapshot, model_name, lane_id=pinned_lane)
+            baseline_config = NIGHTLY_BASELINE_CONFIG.get() if owns_nightly_reservation else None
+            limits = worker_limits(runtime_snapshot, model_name, lane_id=pinned_lane, baseline_config=baseline_config)
             for settings in configurations:
-                validate_worker_overrides(settings.serving_overrides, limits)
+                validate_worker_overrides(settings.serving_overrides, limits, nightly=owns_nightly_reservation)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except RuntimeError as exc:
@@ -827,6 +833,7 @@ async def internal_run_model_benchmark(data: InternalBenchmarkRequest, request: 
                     model_name,
                     settings.serving_overrides,
                     progress_callback=report_preparation_stage,
+                    **({"baseline_config": baseline_config} if baseline_config is not None else {}),
                 )
 
         else:
@@ -961,6 +968,8 @@ async def internal_model_benchmark_completion(job_id: int, path: str, request: R
             "model_id": int(target["model_id"]),
             "provider_id": int(target["provider_id"]),
             "type": "logosnode",
+            "model_name": target["model_name"],
+            "provider_name": target["provider_name"],
             "privacy_level": target.get("privacy_level"),
             "cloud_provider_type": target.get("cloud_provider_type"),
             "base_url": target.get("base_url"),

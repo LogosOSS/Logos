@@ -3,7 +3,7 @@ import { provideHttpClient } from '@angular/common/http';
 import { provideHttpClientTesting, HttpTestingController } from '@angular/common/http/testing';
 import { provideRouter } from '@angular/router';
 import { DeployedConfiguration, deployedMeasurement, deployedResult, DeploymentSnapshot } from './deployed-configuration';
-import { benchmarkResultRow } from './benchmark-result-row';
+import { benchmarkResultRow, displayParameterChange } from './benchmark-result-row';
 import { ModelProviderBenchmark } from '../../shared/models/provider.model';
 
 const deployment: DeploymentSnapshot = { available: true, maintenance: false, series_key: 'series', configuration: { max_num_seqs: 4, max_num_batched_tokens: 2048 } };
@@ -104,6 +104,52 @@ describe('Deployment status on Overview', () => {
     expect(component.workerStatus()).toBe('No live status');
     component.error.set(true);
     expect(component.workerStatus()).toBe('Status check failed');
+    fixture.destroy();
+    http.verify();
+  });
+
+  it('puts the active or latest saved changes before the collapsed serving settings', async () => {
+    TestBed.configureTestingModule({ providers: [provideHttpClient(), provideHttpClientTesting(), provideRouter([])] });
+    const fixture = TestBed.createComponent(DeployedConfiguration);
+    const baseline = run(1), variant = run(2), other = { ...run(3), model_provider_id: 2 };
+    variant.configuration['nightly'] = { baseline_id: 1,
+      parameters: { max_num_seqs: 2, max_num_batched_tokens: 2048 },
+      original: { max_num_seqs: 4, max_num_batched_tokens: 2048 } };
+    other.configuration['nightly'] = { ...variant.configuration['nightly'] as object };
+    fixture.componentRef.setInput('pairId', 1);
+    fixture.componentRef.setInput('providerName', 'Worker');
+    fixture.componentRef.setInput('runs', [other, variant, baseline]);
+    fixture.detectChanges();
+    const http = TestBed.inject(HttpTestingController);
+    http.expectOne('/api/logosdb/model_benchmarks/nightly/status').flush({
+      deployment, active_trial: { baseline_id: null, changes: [] },
+    });
+    await Promise.resolve();
+    fixture.detectChanges();
+    const content: HTMLElement = fixture.nativeElement;
+    const summary = () => content.querySelector('section[aria-label="Parameter changes"]')!;
+    expect(summary().textContent).toContain('Measuring baseline');
+    expect(summary().textContent).toContain('No parameter changes');
+    expect(summary().querySelector('a')).toBeNull();
+
+    const component = fixture.componentInstance;
+    component.state.update(state => ({ ...state!, active_trial: { baseline_id: 1,
+      changes: [{ parameter: 'max_num_seqs', before: 4, after: 2 }] } }));
+    fixture.detectChanges();
+    expect(summary().textContent).toContain('Testing against baseline #1');
+    expect(summary().querySelector('dt')?.textContent).toBe('Sequences');
+    expect(summary().querySelector('dd')?.textContent).toMatch(/4\s+→.*2/);
+
+    component.state.update(state => ({ ...state!, active_trial: null }));
+    fixture.detectChanges();
+    expect(summary().textContent).toContain('Baseline #1');
+    expect(summary().querySelector('a')?.getAttribute('href')).toContain('benchmark=2');
+    expect(summary().querySelectorAll('dt')).toHaveLength(1);
+    expect(content.querySelector('.key-parameters')).toBeNull();
+    const serving = content.querySelector<HTMLDetailsElement>('.serving-settings')!;
+    expect(serving.open).toBe(false);
+    expect(serving.querySelector('summary')?.textContent).toBe('Serving settings');
+    expect(serving.textContent).toContain('Max batched tokens');
     fixture.destroy();
     http.verify();
   });
@@ -217,6 +263,20 @@ describe('Deployment status on Overview', () => {
 });
 
 describe('Current deployment measurement', () => {
+  it('uses the same names for live and saved changes and omits equivalent cache modes', () => {
+    const variant = run(2);
+    variant.configuration['nightly'] = { baseline_id: 1,
+      parameters: { kv_cache_dtype: 'fp8', speculative_config: '{"method":"mtp","num_speculative_tokens":3}' },
+      original: { kv_cache_dtype: 'fp8_e4m3', speculative_config: '' } };
+    expect(benchmarkResultRow(variant, [run(1), variant]).changes).toEqual([
+      'Speculative decoding: Off → MTP · 3 draft tokens',
+    ]);
+    expect(displayParameterChange({ parameter: 'speculative_config', before: 'Off', after: '3 draft tokens' }))
+      .toMatchObject({ before: 'Off', after: 'MTP · 3 draft tokens' });
+    expect(displayParameterChange({ parameter: 'max_num_batched_tokens', before: null, after: 2048 }))
+      .toMatchObject({ before: 'Not reported', after: '2048' });
+  });
+
   it('matches captured settings and environment, independently of a historical winner', () => {
     const old = run(1), latest = run(2), other = run(3);
     other.configuration['serving'] = { max_num_seqs: 8 };

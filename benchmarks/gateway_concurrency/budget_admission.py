@@ -16,6 +16,8 @@ What it measures:
 - a closed-loop load: ``CONCURRENCY`` workers, each sending non-streaming
   requests back to back for ``DURATION_S`` seconds. The default duration
   spans at least two budget-cache expiries, so the load sees the refresh;
+- workers start evenly across one idle round trip, capped at a tenth of the
+  phase, to avoid lockstep bursts against the fixed-delay fake upstream;
 - latency per time window, the status histogram (5xx = pool exhaustion or
   an upstream error), and the slowest requests;
 - the budget refresh query itself, run in the database before and after the
@@ -233,7 +235,12 @@ async def _worker(
     t_start: float,
     deadline: float,
     rows: List[Dict[str, Any]],
+    *,
+    start_delay_s: float,
 ) -> None:
+    wait_s = t_start + start_delay_s - time.perf_counter()
+    if wait_s > 0:
+        await asyncio.sleep(wait_s)
     while time.perf_counter() < deadline:
         sent_at = time.perf_counter() - t_start
         r = await gw.post_chat_completion(client, url, headers)
@@ -246,6 +253,27 @@ async def _worker(
                 "error": r.error,
             }
         )
+
+
+async def _run_load(
+    client: httpx.AsyncClient,
+    url: str,
+    headers: Dict[str, str],
+    concurrency: int,
+    duration_s: int,
+    round_trip_s: float,
+) -> tuple[List[Dict[str, Any]], float, float]:
+    rows: List[Dict[str, Any]] = []
+    start = time.perf_counter()
+    deadline = start + duration_s
+    interval_s = min(round_trip_s, duration_s / 10) / max(concurrency, 1)
+    await asyncio.gather(
+        *(
+            _worker(client, url, headers, start, deadline, rows, start_delay_s=index * interval_s)
+            for index in range(concurrency)
+        )
+    )
+    return rows, time.perf_counter() - start, interval_s
 
 
 def _windows(rows: List[Dict[str, Any]], window_s: int, duration_s: int) -> List[Dict[str, Any]]:
@@ -304,22 +332,12 @@ async def run() -> Dict[str, Any]:
             else:
                 baseline_failures.append(f"baseline {i}: {r.error}")
 
-        # Warm the same concurrent path we measure, for a fixed duration.
-        # Never retry a measured window until it passes or discard its tail.
-        warmup_rows: List[Dict[str, Any]] = []
-        warmup_start = time.perf_counter()
-        await asyncio.gather(
-            *(
-                _worker(client, url, headers, warmup_start, warmup_start + warmup_s, warmup_rows)
-                for _ in range(concurrency)
-            )
-        )
-        rows: List[Dict[str, Any]] = []
+        baseline = summarize(baseline_ms)
+        round_trip_s = baseline.get("p50_ms", probe.total_ms if probe.ok else 0.0) / 1000
+        # Warm the same closed-loop load we measure before opening the DB window.
+        warmup_rows, _, _ = await _run_load(client, url, headers, concurrency, warmup_s, round_trip_s)
         load_since = _db_now()
-        t_start = time.perf_counter()
-        deadline = t_start + duration_s
-        await asyncio.gather(*(_worker(client, url, headers, t_start, deadline, rows) for _ in range(concurrency)))
-        wall_s = time.perf_counter() - t_start
+        rows, wall_s, interval_s = await _run_load(client, url, headers, concurrency, duration_s, round_trip_s)
 
     db_after = budget_query_snapshot(key_id)
     print(f"  [budget] refresh query after load: {db_after}")
@@ -359,6 +377,7 @@ async def run() -> Dict[str, Any]:
     return {
         "skipped": False,
         "concurrency": concurrency,
+        "worker_start_interval_ms": round(interval_s * 1000, 3),
         "duration_s": duration_s,
         "cache_ttl_s": ttl,
         "wall_s": wall_s,
@@ -372,7 +391,7 @@ async def run() -> Dict[str, Any]:
             "requests": len(warmup_rows),
             "failed": sum(not r["ok"] for r in warmup_rows),
         },
-        "baseline": summarize(baseline_ms),
+        "baseline": baseline,
         "baseline_failures": baseline_failures[:10],
         "load": load,
         "in_logos": in_logos,

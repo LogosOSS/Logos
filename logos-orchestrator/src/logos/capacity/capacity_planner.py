@@ -2177,15 +2177,28 @@ class CapacityPlanner:
         overrides,
         timeout_seconds: float = 600.0,
         progress_callback: Callable[[str], None] | None = None,
+        *,
+        baseline_config: dict | None = None,
     ) -> bool:
-        """Reload an idle vLLM lane and wait for its new configuration to be reported."""
+        """Reuse an idle vLLM lane when it already matches, or reload and confirm the requested settings."""
         self._refuse_benchmark_on_locked_worker(provider_id)
-        from logos.benchmarks.guidellm_runner import apply_serving_overrides, benchmark_model_lane
+        from logos.benchmarks.guidellm_runner import (
+            apply_serving_overrides,
+            benchmark_model_lane,
+            lane_serving_configuration,
+        )
         from logos.benchmarks.worker_limits import validate_worker_overrides, worker_limits
 
         pinned = self._require_benchmark_lane_pin(provider_id, model_name)
         validate_worker_overrides(
-            overrides, worker_limits(self._registry.peek_runtime_snapshot(provider_id), model_name, lane_id=pinned)
+            overrides,
+            worker_limits(
+                self._registry.peek_runtime_snapshot(provider_id),
+                model_name,
+                lane_id=pinned,
+                baseline_config=baseline_config,
+            ),
+            nightly=baseline_config is not None,
         )
 
         target = self._pick_request_target_lane(provider_id, model_name)
@@ -2233,9 +2246,23 @@ class CapacityPlanner:
             config = (lane or {}).get("lane_config") or {}
             if not config.get("vllm"):
                 raise RuntimeError("Serving overrides require an existing vLLM lane on this worker")
-            validate_worker_overrides(overrides, worker_limits(snapshot, model_name, lane=lane))
+            validate_worker_overrides(
+                overrides,
+                worker_limits(snapshot, model_name, lane=lane, baseline_config=baseline_config),
+                nightly=baseline_config is not None,
+            )
             current = config.get("vllm_config") or {}
-            updated = apply_serving_overrides(current, overrides)
+            if pinned is not None and not recovering and baseline_config is None:
+                requested = overrides.model_dump(exclude_none=True)
+                live = lane_serving_configuration(lane)
+                # Batching flags may use a different spelling in the saved lane
+                # config. A matching Nightly baseline should keep this process.
+                if requested.keys() <= {"max_num_seqs", "max_num_batched_tokens"} and all(
+                    live.get(key) == value for key, value in requested.items()
+                ):
+                    return True
+            # Nightly candidates are relative to the original lane, including omitted automatic values.
+            updated = apply_serving_overrides(current if baseline_config is None else baseline_config, overrides)
             if updated == current and not recovering:
                 return True
             self._hold_lane_cold(provider_id, target.lane_id)

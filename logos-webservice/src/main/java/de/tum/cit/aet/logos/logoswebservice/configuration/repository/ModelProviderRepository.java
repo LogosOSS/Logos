@@ -54,7 +54,22 @@ public interface ModelProviderRepository extends JpaRepository<ModelProvider, In
                b.configuration::text AS configurationJson,
                b.dataset,
                b.sample_size AS sampleSize,
-               b.metrics::text AS metricsJson,
+               (CASE WHEN :summaryOnly THEN
+                   jsonb_strip_nulls(jsonb_build_object(
+                       'request_totals', b.metrics -> 'request_totals',
+                       'aggregate_output_tokens_per_second', b.metrics -> 'aggregate_output_tokens_per_second'
+                   )) || COALESCE((
+                       SELECT jsonb_object_agg(metric, jsonb_build_object('successful', jsonb_strip_nulls(
+                           jsonb_build_object('mean', stats -> 'mean', 'max', stats -> 'max',
+                                              'percentiles', CASE WHEN jsonb_typeof(stats -> 'percentiles') = 'object'
+                                                  THEN stats -> 'percentiles' ELSE '{}'::jsonb END)
+                       )))
+                       FROM unnest(ARRAY['request_latency_ms', 'request_latency', 'time_to_first_token_ms',
+                                         'time_per_output_token_ms', 'output_tokens_per_second']) AS distributions(metric)
+                       CROSS JOIN LATERAL (SELECT b.metrics #> ARRAY[metric, 'successful'] AS stats) AS summary
+                       WHERE jsonb_typeof(stats) = 'object'
+                   ), '{}'::jsonb)
+               ELSE b.metrics END)::text AS metricsJson,
                b.recorded_at AS recordedAt
         FROM model_provider_benchmarks b
         JOIN model_provider mp ON mp.id = b.model_provider_id
@@ -63,7 +78,9 @@ public interface ModelProviderRepository extends JpaRepository<ModelProvider, In
         WHERE m.id = :modelId
         ORDER BY b.recorded_at DESC, b.id DESC
         """, nativeQuery = true)
-    List<ModelProviderBenchmarkProjection> findBenchmarksForModel(@Param("modelId") int modelId);
+    List<ModelProviderBenchmarkProjection> findBenchmarksForModel(
+        @Param("modelId") int modelId, @Param("summaryOnly") boolean summaryOnly
+    );
 
     @Query(value = """
         SELECT mp.id AS modelProviderId,

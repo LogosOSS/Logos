@@ -9,7 +9,7 @@ import { Model } from '../../shared/models/model.model';
 import { ModelProviderBenchmark } from '../../shared/models/provider.model';
 import { benchmarkProgress, recordConfiguration } from './benchmark-progress';
 import { BenchmarkResults } from './benchmark-results';
-import { ModelErrorReport } from './model-error-report';
+import { ModelDetails } from './model-details';
 
 beforeEach(() => TestBed.configureTestingModule({ providers: [provideRouter([])] }));
 
@@ -190,10 +190,36 @@ function measured(id: number, rate: number, baseline: number, day: number, concu
 }
 
 describe('Benchmark detail navigation', () => {
+  it('renders the model before the compact benchmark history arrives', async () => {
+    TestBed.configureTestingModule({ providers: [
+      provideRouter([{ path: 'models/:id/details', component: ModelDetails }]),
+      provideHttpClient(),
+      provideHttpClientTesting(),
+    ] });
+    const harness = await RouterTestingHarness.create('/models/1/details');
+    const http = TestBed.inject(HttpTestingController);
+    http.expectOne('/api/logosdb/get_model').flush({ id: 1, name: 'Model' });
+    await Promise.resolve();
+    harness.detectChanges();
+
+    const history = http.expectOne('/api/logosdb/model_benchmarks');
+    expect(history.request.body).toEqual({ model_id: 1, summary_only: true });
+    expect(harness.routeNativeElement?.querySelector('h1')?.textContent).toContain('Model');
+    expect(harness.routeNativeElement?.querySelector('[aria-label="Loading performance"] .pi-spinner')).not.toBeNull();
+    expect(harness.routeNativeElement?.textContent).not.toContain('No benchmark results available');
+
+    history.flush({ benchmarks: [], pairs: [], runs: [] });
+    http.expectOne('/api/logosdb/get_model_calibration_logs').flush({ logs: [] });
+    http.expectOne('/api/logosdb/get_model_prices').flush({ providers: [] });
+    await harness.fixture.whenStable();
+    harness.detectChanges();
+    expect(harness.routeNativeElement?.textContent).toContain('No benchmark results available');
+  });
+
   it('opens direct links and preserves the worker, timeline, history and other URL parameters on close', async () => {
     const resultUrl = '/models/1/details?tab=performance&view=fixtures';
     TestBed.configureTestingModule({ providers: [
-      provideRouter([{ path: 'models/:id/details', component: ModelErrorReport }]),
+      provideRouter([{ path: 'models/:id/details', component: ModelDetails }]),
       provideHttpClient(),
       provideHttpClientTesting(),
       { provide: ModelManagementService, useValue: {
@@ -203,7 +229,7 @@ describe('Benchmark detail navigation', () => {
           splits: [{ subset: 'main', split: 'test' }], text_columns: ['question'] }),
       } },
     ] });
-    const fetchModel = vi.spyOn(ModelErrorReport.prototype, 'fetchModel').mockImplementation(async function(this: ModelErrorReport) {
+    const fetchModel = vi.spyOn(ModelDetails.prototype, 'fetchModel').mockImplementation(async function(this: ModelDetails) {
       this.model.set({ id: 1, name: 'Model' } as Model);
       this.performance.set([
         measured(1, 40, 1, 21), measured(2, 50, 1, 22),
