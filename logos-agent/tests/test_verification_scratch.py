@@ -15,7 +15,6 @@ import pytest
 from app import docker_engine, sessions
 from app import verification_scratch as scratch
 
-HOST = "/var/lib/docker/volumes/logos_agent_verifier_scratch/_data"
 VOLUME = "logos_agent_verifier_scratch"
 MOUNTPOINT = f"/var/lib/docker/volumes/{VOLUME}/_data"
 IDENTITY = "a" * 12
@@ -81,30 +80,30 @@ async def test_cancelled_lock_open_closes_the_eventual_descriptor(monkeypatch, t
 
 async def test_reservations_are_exclusive_fresh_and_cleaned(pool):
     async with scratch.reserve(VOLUME, "20", "10", timeout_s=0) as first:
-        local = pool / Path(first.host_path).name
+        local = pool / first.slot
         marker = local / scratch.MARKER
         assert marker.read_text() == first.marker
         assert stat.S_IMODE(local.stat().st_mode) == 0o700
         assert stat.S_IMODE(marker.stat().st_mode) == 0o444
-        assert Path(first.host_path).parent == Path(MOUNTPOINT)
+        assert first.volume == VOLUME
         (local / "prover-output").write_text("private")
         with pytest.raises(RuntimeError, match="slot was still busy"):
             async with scratch.reserve(VOLUME, "20", "10", timeout_s=0):
                 pytest.fail("must not allow another verifier")
     assert not local.exists()
     async with scratch.reserve(VOLUME, "20", "10", timeout_s=0) as second:
-        assert second.host_path != first.host_path
+        assert second.slot != first.slot
         assert second.marker != first.marker
-        assert not (pool / Path(second.host_path).name / "prover-output").exists()
+        assert not (pool / second.slot / "prover-output").exists()
 
 
 @pytest.mark.parametrize("labelled", [False, True])
 async def test_recovery_retains_directories_owned_by_orphaned_docker_helpers(pool, labelled):
     async with scratch.reserve(VOLUME, "20", "10", timeout_s=0) as first:
         scratch.docker_engine.list_managed_containers.return_value = [
-            {"Labels": {scratch.LABEL: "true"}} if labelled else {"Mounts": [{"Source": first.host_path}]}
+            {"Labels": {scratch.LABEL: "true"}} if labelled else {"Mounts": [{"Source": f"{MOUNTPOINT}/{first.slot}"}]}
         ]
-        stale = pool / Path(first.host_path).name
+        stale = pool / first.slot
         (stale / "retained").touch()
 
     assert stale.exists()
@@ -123,7 +122,7 @@ async def test_cleanup_does_not_follow_verifier_symlinks(pool):
     protected = outside / "keep"
     protected.touch()
     async with scratch.reserve(VOLUME, "20", "10", timeout_s=0) as slot:
-        (pool / Path(slot.host_path).name / "malicious").symlink_to(outside)
+        (pool / slot.slot / "malicious").symlink_to(outside)
     assert protected.exists()
 
 
@@ -296,8 +295,9 @@ async def test_runner_verifier_cleans_after_removal_even_on_pressure(monkeypatch
     mounted = []
 
     async def create(**kwargs):
-        path, identity = kwargs["verification_scratch"]
-        local = pool / Path(path).name
+        volume, subpath, identity = kwargs["verification_scratch"]
+        assert volume == VOLUME
+        local = pool / subpath
         assert (local / scratch.MARKER).read_text() == identity
         assert kwargs["network"] == "none"
         mounted.append(local)
@@ -326,6 +326,7 @@ async def test_scratch_is_mounted_only_as_a_private_verifier_tmp(monkeypatch):
     payloads = []
 
     async def request(_method, _path, **kwargs):
+        assert kwargs["verifier_subpath"] is True
         payloads.append(kwargs["json"])
         return SimpleNamespace(json=lambda: {"Id": "verify"})
 
@@ -337,7 +338,7 @@ async def test_scratch_is_mounted_only_as_a_private_verifier_tmp(monkeypatch):
         artifact_host_path="/artifacts/7",
         cache_volume="cache",
         session_id=7,
-        verification_scratch=(f"{HOST}/sample", MARKER),
+        verification_scratch=(VOLUME, "verifier-" + "b" * 32, MARKER),
         memory_mb=3513,
     )
     await docker_engine.create_session_container(env={"LOGOS_SESSION_PHASE": "verify"}, **options)
@@ -353,11 +354,11 @@ async def test_scratch_is_mounted_only_as_a_private_verifier_tmp(monkeypatch):
     assert host_config["LogConfig"] == {"Type": "local", "Config": {"max-size": "10m", "max-file": "2"}}
     assert host_config["Mounts"] == [
         {
-            "Type": "bind",
-            "Source": f"{HOST}/sample",
+            "Type": "volume",
+            "Source": VOLUME,
             "Target": "/logos-verifier-scratch",
             "ReadOnly": False,
-            "BindOptions": {"CreateMountpoint": False, "NonRecursive": True, "Propagation": "rprivate"},
+            "VolumeOptions": {"Subpath": "verifier-" + "b" * 32, "NoCopy": True},
         }
     ]
     assert f"LOGOS_VERIFICATION_SCRATCH_MARKER={MARKER}" in payloads[0]["Env"]
@@ -365,3 +366,20 @@ async def test_scratch_is_mounted_only_as_a_private_verifier_tmp(monkeypatch):
     for phase in ("agent", "prepare", "finalize"):
         with pytest.raises(ValueError, match="only a verifier"):
             await docker_engine.create_session_container(env={"LOGOS_SESSION_PHASE": phase}, **options)
+
+
+@pytest.mark.parametrize("slot", ["", "..", "../other-slot", "/verifier-slot", "verifier-invalid"])
+async def test_docker_verifier_rejects_non_private_volume_subpaths(monkeypatch, slot):
+    request = AsyncMock()
+    monkeypatch.setattr(docker_engine, "_request", request)
+    with pytest.raises(ValueError, match="private slot name"):
+        await docker_engine.create_session_container(
+            name="verify",
+            image="workspace",
+            env={"LOGOS_SESSION_PHASE": "verify"},
+            workspace_volume="workspace",
+            artifact_host_path="/artifacts/7",
+            session_id=7,
+            verification_scratch=(VOLUME, slot, MARKER),
+        )
+    request.assert_not_awaited()

@@ -2084,7 +2084,7 @@ class SessionManager:
                     # credential-bearing helpers never mount it.
                     cache_volume=cache_volume if phase == "verify" else None,
                     memory_mb=memory_mb,
-                    **({"verification_scratch": (scratch.host_path, scratch.marker)} if scratch else {}),
+                    **({"verification_scratch": (scratch.volume, scratch.slot, scratch.marker)} if scratch else {}),
                 )
                 helper.container_id = container_id
             finally:

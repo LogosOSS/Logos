@@ -342,7 +342,7 @@ async def test_verify_container_cannot_modify_candidate_or_access_network(monkey
         artifact_host_path="/artifacts/7",
         session_id=7,
         network="egress",
-        verification_scratch=("/devoted/verifier", "a" * 64),
+        verification_scratch=("test-scratch", "verifier-" + "b" * 32, "a" * 64),
     )
     payload = payloads[0]
     assert payload["HostConfig"]["Binds"] == ["workspace:/workspace:ro", "/artifacts/7:/artifacts:ro"]

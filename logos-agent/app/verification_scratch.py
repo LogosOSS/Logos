@@ -22,7 +22,6 @@ from . import docker_engine
 from .config import settings
 
 ROOT = Path("/var/lib/logos-agent/verification-scratch")
-SLOT_PATTERN = re.compile(r"verifier-[0-9a-f]{32}")
 MARKER = ".logos-verifier-scratch"
 GIB = 1 << 30
 LABEL = "logos.agent.verifier-scratch"
@@ -33,7 +32,8 @@ logger = logging.getLogger("logos.agent.verifier_scratch")
 
 @dataclass(frozen=True)
 class Scratch:
-    host_path: str
+    volume: str
+    slot: str
     marker: str
     min_free_bytes: int
 
@@ -232,7 +232,7 @@ async def reserve(volume: str, max_gib: str, min_free_gib: str, *, timeout_s: fl
         for entry in ROOT.iterdir():
             if entry.name in {".lock", "lost+found"}:
                 continue
-            if not SLOT_PATTERN.fullmatch(entry.name) or not stat.S_ISDIR(entry.lstat().st_mode):
+            if not docker_engine.VERIFIER_SLOT_PATTERN.fullmatch(entry.name) or not stat.S_ISDIR(entry.lstat().st_mode):
                 raise RuntimeError("verification scratch must contain only runner files at the filesystem root")
             slots.append(entry)
         await _wipe_stale(slots, host, lock_fd)
@@ -242,8 +242,8 @@ async def reserve(volume: str, max_gib: str, min_free_gib: str, *, timeout_s: fl
         # Other host writers count toward the limit as well. This is a
         # conservative pressure guard; it cannot enforce per-volume quotas.
         min_free_bytes = max(floor, free_bytes - budget)
-        # Never reuse a bind path after an uncertain Docker create, even if
-        # its unstarted container did not appear in the cleanup listing yet.
+        # Never reuse a slot after an uncertain Docker create, even if the
+        # unstarted container did not appear in the cleanup listing yet.
         slot = ROOT / f"verifier-{secrets.token_hex(16)}"
         slot.mkdir(mode=0o700)
         try:
@@ -251,7 +251,7 @@ async def reserve(volume: str, max_gib: str, min_free_gib: str, *, timeout_s: fl
             (slot / MARKER).write_text(marker, encoding="ascii")
             (slot / MARKER).chmod(0o444)
             os.chown(slot, settings.session_uid, -1)
-            yield Scratch(str(host / slot.name), marker, min_free_bytes)
+            yield Scratch(volume, slot.name, marker, min_free_bytes)
         finally:
             # A removed container is absent (including in the all-states
             # list). If removal couldn't be confirmed, keep the slot.

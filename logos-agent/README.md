@@ -782,6 +782,8 @@ a busy one is refused.
 The bundled Compose configuration automatically creates the plain local Docker
 volume `logos_agent_verifier_scratch` when the `agent` profile is enabled.
 Deploying from Logos does not require a separate disk or host configuration.
+The verifier requires Docker Engine 26 or newer to mount only its individual
+subdirectory; there is no fallback that mounts the whole volume.
 An independently deployed runner must mount that volume at
 `/var/lib/logos-agent/verification-scratch` and set
 `LOGOS_AGENT_VERIFICATION_SCRATCH_VOLUME` to its actual Docker name.

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import struct
 from typing import Any, AsyncIterator
 
@@ -22,6 +23,9 @@ from .config import settings
 # high enough for the fields used here (PidsLimit, NanoCPUs, ReadonlyRootfs).
 _API_VERSION = "v1.43"
 _BASE = f"http://docker/{_API_VERSION}"  # NOSONAR - sent over the local Docker Unix socket, never a network
+# VolumeOptions.Subpath requires Engine API 1.45 (Docker Engine 26).
+_VERIFIER_BASE = "http://docker/v1.45"  # NOSONAR - same Docker Unix socket
+VERIFIER_SLOT_PATTERN = re.compile(r"verifier-[0-9a-f]{32}")
 
 
 class DockerError(RuntimeError):
@@ -36,9 +40,9 @@ def _client(timeout: float = 30.0) -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=transport, base_url=_BASE, timeout=timeout)
 
 
-async def _request(method: str, path: str, **kwargs: Any) -> httpx.Response:
+async def _request(method: str, path: str, *, verifier_subpath: bool = False, **kwargs: Any) -> httpx.Response:
     async with _client() as client:
-        response = await client.request(method, path, **kwargs)
+        response = await client.request(method, f"{_VERIFIER_BASE}{path}" if verifier_subpath else path, **kwargs)
     if response.status_code >= 400:
         try:
             message = response.json().get("message", response.text)
@@ -197,7 +201,7 @@ async def create_session_container(
     network: str | None = None,
     cache_volume: str | None = None,
     memory_mb: int | None = None,
-    verification_scratch: tuple[str, str] | None = None,
+    verification_scratch: tuple[str, str, str] | None = None,
 ) -> str:
     """Create the container an agent session runs in.
 
@@ -289,9 +293,11 @@ async def create_session_container(
         }
 
     if verification_scratch is not None:
-        scratch_path, marker = verification_scratch
-        # The structured bind refuses missing sources and never includes
-        # nested mounts. Only the private per-verification slot is exposed.
+        scratch_volume, scratch_slot, marker = verification_scratch
+        if not VERIFIER_SLOT_PATTERN.fullmatch(scratch_slot):
+            raise ValueError("verification scratch requires a private slot name")
+        # Docker mounts only this pre-existing subdirectory, not the whole
+        # volume. Do not bind-mount paths under the daemon's data root.
         # Docker writes stdout/stderr outside the scratch filesystem. Keep
         # diagnostics without letting build output fill that other disk.
         host_config["LogConfig"] = {"Type": "local", "Config": {"max-size": "10m", "max-file": "2"}}
@@ -301,11 +307,11 @@ async def create_session_container(
         host_config["Ulimits"] = [{"Name": "fsize", "Soft": file_limit, "Hard": file_limit}]
         host_config["Mounts"] = [
             {
-                "Type": "bind",
-                "Source": scratch_path,
+                "Type": "volume",
+                "Source": scratch_volume,
                 "Target": "/logos-verifier-scratch",
                 "ReadOnly": False,
-                "BindOptions": {"CreateMountpoint": False, "NonRecursive": True, "Propagation": "rprivate"},
+                "VolumeOptions": {"Subpath": scratch_slot, "NoCopy": True},
             }
         ]
         env = {**env, "LOGOS_VERIFICATION_SCRATCH_MARKER": marker, "TMPDIR": "/logos-verifier-scratch"}
@@ -328,7 +334,13 @@ async def create_session_container(
     if verifying:
         payload["Entrypoint"] = ["python3", "/usr/local/lib/verify_checkout.py"]
 
-    response = await _request("POST", "/containers/create", params={"name": name}, json=payload)
+    response = await _request(
+        "POST",
+        "/containers/create",
+        params={"name": name},
+        json=payload,
+        **({"verifier_subpath": True} if verifying else {}),
+    )
     return response.json()["Id"]
 
 
