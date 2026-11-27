@@ -933,13 +933,18 @@ For **Local**, select a model served by Logos. The selector does not pin a worke
 Select **Runner default (per-session model)** to keep the model picker in **New session**.
 If you set a model in **Runner controls**, the new session shows this model instead of a picker.
 
-For **Cloud**, choose an allowed provider and model pair. The target must support the Messages API.
+For **Cloud**, choose an allowed provider and model pair. The target must be an approved Logos provider that supports the Messages API.
 This selection pins the exact provider and model and does not use a local worker.
 If the environment has no allowed target, you cannot save a cloud selection.
 The selector never displays or accepts a provider URL, API key, or other secret.
+Use a destination key limited to the intended models and confirm that the repository data may be sent to that gateway.
+A linked repository's team privacy setting still applies and can block the selected cloud provider.
+The destination Logos environment meters calls against that key.
 
 Changes apply to new sessions only. A session keeps the environment where it starts, such as Dev or Test.
 Selecting cloud inference does not move the session or its work to another Logos environment.
+
+![Model inference settings with an approved cloud gateway and model selected](/img/roles/logos-admin-agent-inference.png)
 
 ### Start a Session
 

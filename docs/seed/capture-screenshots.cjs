@@ -669,6 +669,20 @@ const SHOTS = [
     },
   },
   {
+    file: "roles/logos-admin-agent-inference.png",
+    user: ADMIN,
+    full: true,
+    needs: AGENT_API,
+    go: async (p) => {
+      await p.goto(BASE + "/agents");
+      const inference = p.getByRole("group", { name: "Model inference" });
+      await inference.locator("select#agent-inference-location").selectOption("cloud");
+      const approved = inference.locator("select#agent-inference-model option").filter({ hasText: "Docs Logos Gateway" });
+      await inference.locator("select#agent-inference-model").selectOption(await approved.getAttribute("value"));
+      await inference.getByRole("button", { name: "Save inference settings" }).waitFor();
+    },
+  },
+  {
     file: "roles/logos-admin-agents-messages.png",
     user: ADMIN,
     full: true,

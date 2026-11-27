@@ -208,7 +208,7 @@ is on `:18085`, DB on `127.0.0.1:15432`. Tear down with
 when finished.
 
 The screenshots stack does not run the agent runner, so the capture script
-skips the `logos-admin-agents*.png` shots unless you name them. For these
+skips the Agent Sessions shots unless you name them. For these
 shots, serve the `logos-agent` API against `doks-db` (`DB_PORT=15432`)
 without its scheduler, because the scheduler starts the seeded sessions. Add a
 `/api/agent` entry (path rewrite to `/`) before `/api` in the proxy
@@ -217,6 +217,11 @@ reaches only the models of **Docs Local Worker**; otherwise the page shows a
 model policy error. For the expanded message view, copy `docs/seed/agent-messages.json`
 to `<fixture-runner-artifact-root>/<seeded-session-id>/messages.json` for the running
 `docs-role-screenshots` session whose task starts with “Fix the flaky login spec”.
+
+For `logos-admin-agent-inference.png`, apply `seed/agent-inference.sql` on the
+same disposable database after the standard seed, and start the runner with
+`LOGOS_AGENT_REMOTE_ALLOWED_ORIGINS=https://inference-example.invalid`. The
+fixture uses a non-resolving origin and never sends inference.
 
 The ordinary `docker-compose.dev.yaml` + `ng serve` on `:4200` also works; point
 `psql` at that stack's DB instead of `15432`.
@@ -378,6 +383,7 @@ flows use a **concept** name (no role prefix); role-only list pages keep the
 | `logos-admin-security-evidence.png` | `tobias.wasner` | `/agents/security` — Evidence & history expanded; `seed/security-incidents.sql` after the role seed | `roles/logos-admin.md#security-incidents` |
 | `logos-admin-security-confirm.png` | `tobias.wasner` | `/agents/security` — Confirm resolved form; `seed/security-incidents.sql` after the role seed | `roles/logos-admin.md#security-incidents` |
 | `logos-admin-agents.png` | `tobias.wasner` | `/agents` — current RAM, observed peak, and container limit (needs the agent runner API on `/api/agent`) | `roles/logos-admin.md#agent-sessions` |
+| `logos-admin-agent-inference.png` | `tobias.wasner` | `/agents` — **Model inference**, allowed cloud gateway and model selected (separate synthetic seed) | `roles/logos-admin.md#choose-a-model-for-new-sessions` |
 | `logos-admin-agents-messages.png` | `tobias.wasner` | Expanded **Agent messages** with parent and child output, a list and code | `roles/logos-admin.md#agent-sessions` |
 | `logos-admin-agents-new-session.png` | `tobias.wasner` | `/agents` — **New session**, **Repository** `docs-example/sample-app (develop)` selected (needs the agent runner API on `/api/agent`) | `roles/logos-admin.md#start-a-session` |
 | `logos-admin-my-workspace.png` | `tobias.wasner` | `/my-workspace` | `roles/logos-admin.md` |
