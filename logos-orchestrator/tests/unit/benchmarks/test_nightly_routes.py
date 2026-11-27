@@ -1,7 +1,7 @@
 from contextlib import nullcontext
 from datetime import time
 from importlib import import_module
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from fastapi import HTTPException, Request
@@ -11,7 +11,12 @@ from logos.benchmarks.configuration import QWEN_MTP_MODEL
 from logos.benchmarks.guidellm_runner import extract_serving_configuration
 from logos.benchmarks.nightly import CAPACITY_WAITING
 from logos.benchmarks.worker_limits import nightly_tuning_configuration, worker_limits
-from logos.dbutils.dbrequest import NightlySelectionStatusRequest, NightlyUpdateRequest, NightlyWindowRequest
+from logos.dbutils.dbrequest import (
+    NightlyProposerModelRequest,
+    NightlySelectionStatusRequest,
+    NightlyUpdateRequest,
+    NightlyWindowRequest,
+)
 from logos.maintenance_window import MaintenanceWindow
 
 TARGET = {"provider_id": 20, "provider_type": "logosnode", "model_id": 11, "model_name": "model"}
@@ -211,3 +216,48 @@ async def test_window_endpoint_rejects_short_and_stale_updates(routes, monkeypat
 
     assert exc.value.status_code == status
     assert saved.call_count == (1 if status == 409 else 0)
+
+
+async def test_proposer_settings_keeps_local_catalog_when_prod_is_unreachable(routes, monkeypatch):
+    router, request, _, _ = routes
+    config = router.proposer
+    monkeypatch.setattr(config, "selection", Mock(return_value=config.ProposerModel("local", "local/model")))
+    monkeypatch.setattr(config, "local_models", Mock(return_value=["local/model"]))
+    remote = Mock(models=AsyncMock(side_effect=TimeoutError))
+    monkeypatch.setattr(config.LogosProdGateway, "from_env", lambda: remote)
+
+    assert await router.nightly_proposer_settings(request) == {
+        "selection": {"provider": "local", "model": "local/model", "revision": None},
+        "local_models": ["local/model"],
+        "logos_prod": {"available": False, "models": []},
+    }
+
+
+async def test_proposer_update_validates_the_catalog_and_revision(routes, monkeypatch):
+    router, request, _, _ = routes
+    config = router.proposer
+    catalog = AsyncMock(return_value=["prod/model"])
+    save = Mock(return_value=config.ProposerModel("logos_prod", "prod/model", 2))
+    monkeypatch.setattr(config, "catalog", catalog)
+    monkeypatch.setattr(config, "save_selection", save)
+    data = NightlyProposerModelRequest(provider="logos_prod", model="prod/model", revision=1)
+
+    assert await router.configure_nightly_proposer(data, request) == {
+        "provider": "logos_prod",
+        "model": "prod/model",
+        "revision": 2,
+    }
+    catalog.assert_awaited_once_with("logos_prod")
+    save.assert_called_once_with("logos_prod", "prod/model", 1)
+
+    save.return_value = None
+    with pytest.raises(HTTPException) as stale:
+        await router.configure_nightly_proposer(data, request)
+    assert stale.value.status_code == 409
+
+    save.reset_mock()
+    catalog.return_value = []
+    with pytest.raises(HTTPException) as unavailable:
+        await router.configure_nightly_proposer(data, request)
+    assert unavailable.value.status_code == 400
+    save.assert_not_called()

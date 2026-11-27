@@ -87,6 +87,29 @@ class ProviderPerformanceControllerTest {
     }
 
     @Test
+    void nightlyProposer_requiresLogosAdminForReadingAndSaving() throws Exception {
+        String path = "/logosdb/model_benchmarks/nightly/proposer";
+        Map<String, Object> selection = Map.of("provider", "local", "model", "local/model", "revision", 2);
+        when(orchestratorWorkerAdminClient.nightlyBenchmark("proposer", Map.of()))
+            .thenReturn(ResponseEntity.ok(Map.of("selection", selection)));
+        mvc.perform(post(path).with(TestJwt.testUser())).andExpect(status().isForbidden());
+        mvc.perform(post(path).with(TestJwt.logosAdmin()))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.selection.model").value("local/model"));
+
+        Map<String, Object> update = Map.of("provider", "local", "model", "local/model", "revision", 1);
+        when(orchestratorWorkerAdminClient.nightlyBenchmark("proposer/configure", update))
+            .thenReturn(ResponseEntity.ok(selection));
+        String payload = """
+            {"provider":"local","model":"local/model","revision":1}
+            """;
+        mvc.perform(post(path + "/configure").with(TestJwt.testUser())
+                .contentType("application/json").content(payload)).andExpect(status().isForbidden());
+        mvc.perform(post(path + "/configure").with(TestJwt.logosAdmin())
+                .contentType("application/json").content(payload))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.revision").value(2));
+    }
+
+    @Test
     void requestWorkloads_requireLogosAdmin() throws Exception {
         String payload = "{\"name\":\"Pilot\",\"log_ids\":[7],\"provenance\":\"synthetic\"}";
         Map<String, Object> body = Map.of("name", "Pilot", "log_ids", java.util.List.of(7), "provenance", "synthetic");

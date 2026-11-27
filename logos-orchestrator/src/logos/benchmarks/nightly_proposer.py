@@ -1,4 +1,4 @@
-"""Ask a separate Logos worker to select one admissible nightly trial."""
+"""Ask the configured model to select one admissible nightly trial."""
 
 import asyncio
 import importlib
@@ -11,6 +11,7 @@ from starlette.responses import JSONResponse
 
 from logos.agent_credential import issue_agent_credential
 from logos.auth import AuthContext, authenticate_api_key, initialize_rate_limits
+from logos.benchmarks import nightly_proposer_config
 from logos.benchmarks.configuration import NGRAM_CONFIG
 from logos.benchmarks.guidellm_runner import benchmark_model_lane, lane_is_serving
 from logos.benchmarks.reservations import benchmark_reservations
@@ -20,7 +21,6 @@ from logos.dbutils.types import Deployment
 
 logger = logging.getLogger(__name__)
 
-PROPOSER_MODEL = "Qwen/Qwen2.5-Coder-14B-Instruct-AWQ"
 PROPOSAL_TIMEOUT_SECONDS = 10.0
 MAX_CANDIDATES = 24
 MAX_OBSERVATIONS = 16
@@ -104,7 +104,7 @@ def _gpu_ids(snapshot: dict) -> set[str]:
     }
 
 
-def _ready_workers(registry, excluded_worker_id: int) -> set[int]:
+def _ready_workers(registry, excluded_worker_id: int, model: str) -> set[int]:
     providers = registry.active_provider_ids()
     blocked = {excluded_worker_id} | {
         provider_id for provider_id in providers if benchmark_reservations.provider_owner(provider_id) is not None
@@ -127,13 +127,13 @@ def _ready_workers(registry, excluded_worker_id: int) -> set[int]:
             or health.get("healthy", True) is False
         ):
             continue
-        lane = benchmark_model_lane(snapshot, PROPOSER_MODEL)
+        lane = benchmark_model_lane(snapshot, model)
         if lane_is_serving(lane) and not lane.get("transition"):
             ready.add(provider_id)
     return ready
 
 
-def _request(candidates: list[dict], observations: list[dict], limits: dict, seconds: float) -> dict:
+def _request(model: str, candidates: list[dict], observations: list[dict], limits: dict, seconds: float) -> dict:
     context = {
         "candidates": [{"candidate_id": index, "parameters": _parameters(row)} for index, row in enumerate(candidates)],
         "observations": [_observation(row) for row in observations],
@@ -142,7 +142,7 @@ def _request(candidates: list[dict], observations: list[dict], limits: dict, sec
         "remaining_seconds": int(seconds),
     }
     return {
-        "model": PROPOSER_MODEL,
+        "model": model,
         "stream": False,
         "temperature": 0,
         "max_tokens": 32,
@@ -176,11 +176,9 @@ def _request(candidates: list[dict], observations: list[dict], limits: dict, sec
     }
 
 
-def _choice(response: JSONResponse, candidate_count: int) -> int | None:
-    if not isinstance(response, JSONResponse) or response.status_code != 200:
-        return None
+def _choice(payload: dict, candidate_count: int) -> int | None:
     try:
-        content = json.loads(response.body)["choices"][0]["message"]["content"]
+        content = payload["choices"][0]["message"]["content"]
         proposal = json.loads(content)
     except (TypeError, ValueError, KeyError, IndexError):
         return None
@@ -201,7 +199,7 @@ async def propose(
     """Return an index in the supplied options or defer to the scheduler's rule."""
     gateway = importlib.import_module("logos.main")
 
-    if len(candidates) < 2 or remaining_seconds < 1 or gateway._logosnode_registry is None:
+    if len(candidates) < 2 or remaining_seconds < 1:
         return None
 
     options = candidates[:MAX_CANDIDATES]
@@ -213,29 +211,38 @@ async def propose(
     deadline = min(remaining_seconds, PROPOSAL_TIMEOUT_SECONDS)
     try:
         async with asyncio.timeout(deadline) as timeout:
+            selection = await asyncio.to_thread(nightly_proposer_config.selection)
+            model = selection.model
+            body = _request(model, options, history, limits or {}, remaining_seconds)
+            if selection.provider == "logos_prod":
+                remote = nightly_proposer_config.LogosProdGateway.from_env()
+                if remote is None:
+                    return None
+                response = await remote.request("POST", "chat/completions", body=body, timeout=deadline)
+                return _choice(response, len(options))
+
             registry = gateway._logosnode_registry
-            if not _ready_workers(registry, excluded_worker_id):
+            if registry is None or not _ready_workers(registry, excluded_worker_id, model):
                 return None
 
             auth, deployments = await asyncio.to_thread(_agent_access)
             if auth is None:
                 return None
-            ready = _ready_workers(registry, excluded_worker_id)
+            ready = _ready_workers(registry, excluded_worker_id, model)
             local = [
                 row
                 for row in deployments
-                if row["provider_id"] in ready and row["type"] == "logosnode" and row["model_name"] == PROPOSER_MODEL
+                if row["provider_id"] in ready and row["type"] == "logosnode" and row["model_name"] == model
             ]
-            body = _request(options, history, limits or {}, remaining_seconds)
             eligible = await gateway._filter_logosnode_deployments(local, payload=body)
             if not eligible:
                 return None
             selected = eligible[0]
             provider_id = selected["provider_id"]
-            if provider_id not in _ready_workers(registry, excluded_worker_id):
+            if provider_id not in _ready_workers(registry, excluded_worker_id, model):
                 return None
 
-            auth.resolved_proxy_model = selected["model_id"], PROPOSER_MODEL
+            auth.resolved_proxy_model = selected["model_id"], model
             request_id = secrets.token_urlsafe(16)
             # Insert before dispatch so monitoring and terminal usage writes can find the row.
             # Billing-only logs also keep internal tuning traffic out of replay workloads.
@@ -263,11 +270,12 @@ async def propose(
                     request_id=request_id,
                     required_provider_id=provider_id,
                 )
-                try:
-                    return _choice(response, len(options))
-                finally:
-                    if not isinstance(response, JSONResponse):
-                        await gateway._discard_response(response)
+                if not isinstance(response, JSONResponse):
+                    await gateway._discard_response(response)
+                    return None
+                if response.status_code != 200:
+                    return None
+                return _choice(json.loads(response.body), len(options))
             except asyncio.CancelledError:
                 expired = timeout.expired()
                 gateway._record_log_failure(

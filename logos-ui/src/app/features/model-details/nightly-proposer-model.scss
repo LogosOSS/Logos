@@ -1,0 +1,87 @@
+:host {
+  display: block;
+  margin-bottom: 1rem;
+}
+
+.proposer {
+  display: grid;
+  gap: .75rem;
+  padding: .875rem 1rem;
+  border: 1px solid rgb(var(--color-outline-200));
+  border-radius: .75rem;
+}
+
+h4, p {
+  margin: 0;
+}
+
+h4 {
+  font-size: .875rem;
+  font-weight: 650;
+}
+
+p {
+  margin-top: .2rem;
+  font-size: .8rem;
+}
+
+form {
+  display: grid;
+  grid-template-columns: minmax(0, 9rem) minmax(0, 24rem) auto;
+  align-items: end;
+  justify-content: start;
+  gap: .625rem;
+}
+
+label {
+  display: grid;
+  gap: .25rem;
+  font-size: .8rem;
+  font-weight: 600;
+}
+
+select, button {
+  border: 1px solid rgb(var(--color-outline-200));
+  border-radius: .5rem;
+  min-height: 2.25rem;
+  padding: .35rem .65rem;
+  background: rgb(var(--color-surface-0));
+  color: inherit;
+  font: inherit;
+}
+
+select {
+  width: 100%;
+  font-weight: 400;
+  text-overflow: ellipsis;
+}
+
+button {
+  font-size: .8rem;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: default;
+  opacity: .6;
+}
+
+button.retry {
+  border: 0;
+  min-height: 0;
+  padding: .125rem;
+  background: none;
+  text-decoration: underline;
+}
+
+@media (max-width: 600px) {
+  form {
+    grid-template-columns: minmax(0, 1fr);
+    justify-items: stretch;
+  }
+
+  button[type='submit'] {
+    justify-self: start;
+  }
+}

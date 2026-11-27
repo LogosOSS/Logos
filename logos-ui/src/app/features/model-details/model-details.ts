@@ -11,6 +11,7 @@ import {
 } from '@angular/core';
 import { NgClass, NgTemplateOutlet } from '@angular/common';
 import { NightlyBenchmarks } from './nightly-benchmarks';
+import { NightlyProposerModel } from './nightly-proposer-model';
 import { BenchmarkRunFailure, isBenchmarkWindowStop } from './benchmark-run-failure';
 import { BenchmarkResults } from './benchmark-results';
 import { DeployedConfiguration } from './deployed-configuration';
@@ -692,6 +693,7 @@ const GENERIC_CALIBRATION_ERROR_DETAIL_MAX_LINES = 80;
     DeployedConfiguration,
     BenchmarkRunFailure,
     NightlyBenchmarks,
+    NightlyProposerModel,
 
     ModalConfirmComponent,
     ModalFormComponent,

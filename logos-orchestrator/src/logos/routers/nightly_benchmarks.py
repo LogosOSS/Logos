@@ -1,12 +1,16 @@
 """Admin-only nightly benchmark activation and status."""
 
+import asyncio
+from dataclasses import asdict
 from datetime import time
 
+import httpx
 from fastapi import APIRouter, HTTPException, Request
 from sqlalchemy import text
 from starlette.concurrency import run_in_threadpool
 
 import logos.main as main
+from logos.benchmarks import nightly_proposer_config as proposer
 from logos.benchmarks import nightly_store as store
 from logos.benchmarks import optimization, recent_requests, workloads
 from logos.benchmarks.deployment import deployment_snapshot
@@ -17,6 +21,7 @@ from logos.benchmarks.reservations import benchmark_reservations
 from logos.dbutils.dbmanager import DBManager
 from logos.dbutils.dbrequest import (
     BenchmarkWorkloadRequest,
+    NightlyProposerModelRequest,
     NightlySelectionStatusRequest,
     NightlyUpdateRequest,
     NightlyWindowRequest,
@@ -181,3 +186,41 @@ async def nightly_overview(request: Request):
         recovery_pending=store.has_recovery(),
         claimed_count=store.claimed_today(now.date()),
     )
+
+
+async def _logos_prod_catalog() -> dict | None:
+    gateway = proposer.LogosProdGateway.from_env()
+    if gateway is None:
+        return None
+    try:
+        async with asyncio.timeout(proposer.CLOUD_CATALOG_TIMEOUT):
+            return {"models": await gateway.models(), "available": True}
+    except (httpx.HTTPError, ValueError, TimeoutError):
+        return {"models": [], "available": False}
+
+
+@router.post("/proposer")
+async def nightly_proposer_settings(request: Request):
+    _require_internal_secret(request)
+    selection, local, remote = await asyncio.gather(
+        run_in_threadpool(proposer.selection),
+        run_in_threadpool(proposer.local_models),
+        _logos_prod_catalog(),
+    )
+    return {"selection": asdict(selection), "local_models": local, "logos_prod": remote}
+
+
+@router.post("/proposer/configure")
+async def configure_nightly_proposer(data: NightlyProposerModelRequest, request: Request):
+    _require_internal_secret(request)
+    try:
+        async with asyncio.timeout(proposer.CLOUD_CATALOG_TIMEOUT):
+            options = await proposer.catalog(data.provider)
+    except (httpx.HTTPError, ValueError, TimeoutError) as exc:
+        raise HTTPException(status_code=503, detail="Could not load the selected provider's models") from exc
+    if data.model not in options:
+        raise HTTPException(status_code=400, detail="This model is unavailable from the selected provider")
+    saved = await run_in_threadpool(proposer.save_selection, data.provider, data.model, data.revision)
+    if saved is None:
+        raise HTTPException(status_code=409, detail="This selection changed. Reload it and try again.")
+    return asdict(saved)

@@ -246,6 +246,11 @@ describe('Benchmark detail navigation', () => {
     const harness = await RouterTestingHarness.create(`${resultUrl}&benchmark=4#results`);
     fetchModel.mockRestore();
     const http = TestBed.inject(HttpTestingController);
+    http.expectOne('/api/logosdb/model_benchmarks/nightly/proposer').flush({
+      selection: { provider: 'local', model: 'Model', revision: null },
+      local_models: ['Model'],
+      logos_prod: null,
+    });
     for (const request of http.match('/api/logosdb/model_benchmarks/nightly/status')) {
       request.flush({ enabled: false, status: 'disabled', recovery_required: false });
     }

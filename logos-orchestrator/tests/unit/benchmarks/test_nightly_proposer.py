@@ -2,14 +2,17 @@ import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
 from fastapi import HTTPException
 from starlette.responses import JSONResponse
 
 import logos as gateway
 from logos.benchmarks import nightly_proposer as proposer
+from logos.benchmarks import nightly_proposer_config as config
 from logos.benchmarks.configuration import NGRAM_CONFIG
 
+LOCAL_MODEL = "test/local-proposer"
 OPTIONS = [{"max_num_seqs": 4}, {"max_num_seqs": 8}]
 ROUTE_AND_EXECUTE = gateway.route_and_execute
 
@@ -20,6 +23,7 @@ def _reply(content):
 
 @pytest.fixture
 def inference(monkeypatch):
+    monkeypatch.setattr(config, "selection", lambda: config.ProposerModel("local", LOCAL_MODEL))
     registry = MagicMock()
     registry.active_provider_ids.return_value = [1, 2, 3, 4, 6, 5]
     registry.is_provider_online.return_value = True
@@ -32,7 +36,7 @@ def inference(monkeypatch):
             "devices": {"devices": [{"kind": "nvidia", "device_id": "GPU-shared"}]} if provider_id in (1, 6) else {},
             "lanes": [
                 {
-                    "model": proposer.PROPOSER_MODEL,
+                    "model": LOCAL_MODEL,
                     "runtime_state": "running",
                     "sleep_state": "sleeping" if provider_id == 4 else "awake",
                 }
@@ -44,7 +48,7 @@ def inference(monkeypatch):
         proposer.benchmark_reservations, "provider_owner", lambda provider_id: -42 if provider_id == 3 else None
     )
     deployments = [
-        {"model_id": 90, "provider_id": provider_id, "type": "logosnode", "model_name": proposer.PROPOSER_MODEL}
+        {"model_id": 90, "provider_id": provider_id, "type": "logosnode", "model_name": LOCAL_MODEL}
         for provider_id in [1, 2, 3, 4, 6, 5]
     ]
     cloud = {**deployments[-1], "type": "cloud"}
@@ -97,7 +101,7 @@ async def test_uses_only_an_unreserved_separate_local_worker_and_aggregate_data(
     request = inference.await_args.kwargs
     assert request["required_provider_id"] == 5
     assert request["deployments"] == [
-        {"model_id": 90, "provider_id": 5, "type": "logosnode", "model_name": proposer.PROPOSER_MODEL}
+        {"model_id": 90, "provider_id": 5, "type": "logosnode", "model_name": LOCAL_MODEL}
     ]
     assert request["log_id"] == 123
     proposer.DBManager.return_value.log_usage.assert_called_once_with(
@@ -222,3 +226,41 @@ async def test_caller_cancellation_settles_usage_log(inference):
     gateway._record_log_failure.assert_called_once_with(
         request["log_id"], request["request_id"], "Nightly proposal cancelled.", result_status="error"
     )
+
+
+async def test_cloud_model_is_used_without_a_local_worker(inference, monkeypatch):
+    monkeypatch.setattr(gateway, "_logosnode_registry", None)
+    monkeypatch.setattr(config, "selection", lambda: config.ProposerModel("logos_prod", "prod/model"))
+    endpoint = AsyncMock()
+    endpoint.request.return_value = {"choices": [{"message": {"content": '{"candidate_id": 1}'}}]}
+    monkeypatch.setattr(config.LogosProdGateway, "from_env", lambda: endpoint)
+
+    selected = await proposer.propose(
+        excluded_worker_id=1,
+        candidates=OPTIONS,
+        observations=[{"input_payload": "private", "throughput": 123}],
+        remaining_seconds=30,
+    )
+
+    assert selected == 1
+    args = endpoint.request.await_args
+    assert args.args == ("POST", "chat/completions")
+    assert args.kwargs["body"]["model"] == "prod/model"
+    assert "private" not in json.dumps(args.kwargs["body"])
+    inference.assert_not_awaited()
+
+
+@pytest.mark.parametrize("result", [{"choices": []}, httpx.ConnectError("unreachable")])
+async def test_unavailable_cloud_proposal_defers_to_rules(inference, monkeypatch, result):
+    monkeypatch.setattr(config, "selection", lambda: config.ProposerModel("logos_prod", "prod/model"))
+    endpoint = AsyncMock()
+    if isinstance(result, Exception):
+        endpoint.request.side_effect = result
+    else:
+        endpoint.request.return_value = result
+    monkeypatch.setattr(config.LogosProdGateway, "from_env", lambda: endpoint)
+
+    assert (
+        await proposer.propose(excluded_worker_id=1, candidates=OPTIONS, observations=[], remaining_seconds=30) is None
+    )
+    inference.assert_not_awaited()

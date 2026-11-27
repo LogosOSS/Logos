@@ -36,6 +36,13 @@ class NightlyWindowRequest(NightlyStatusRequest):
     expected_end: ClockTime
 
 
+class NightlyProposerModelRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    provider: Literal["local", "logos_prod"]
+    model: str = Field(min_length=1, max_length=255)
+    revision: int | None = Field(ge=1, strict=True)
+
+
 class RecentBenchmarkWorkloadRequest(NightlyStatusRequest):
     lookback_days: Literal[1, 3, 7] | None = None
 

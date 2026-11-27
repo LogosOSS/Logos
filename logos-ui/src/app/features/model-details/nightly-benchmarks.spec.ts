@@ -335,6 +335,12 @@ describe('Nightly worker selection', () => {
     fixture.detectChanges();
     init.mockRestore();
 
+    http.expectOne('/api/logosdb/model_benchmarks/nightly/proposer').flush({
+      selection: { provider: 'local', model: 'Test model', revision: null },
+      local_models: ['Test model'],
+      logos_prod: null,
+    });
+
     const ready = { worker_ready: true, enabled: true, status: 'scheduled', report: [], recovery_required: false,
       window: { start: '05:00', end: '08:00', benchmark_start_cutoff: '08:00', timezone: 'Europe/Berlin' } };
     const incompleteTelemetry = { status: 'active', available: true, maintenance: false, configuration: { max_num_seqs: 5 } };
