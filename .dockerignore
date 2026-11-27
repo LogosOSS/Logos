@@ -27,6 +27,8 @@
 !logos-agent/workspace/verify_checkout.py
 !logos-agent/workspace/screenshot.js
 !logos-agent/workspace/logos_github.py
+!logos-agent/workspace/package.json
+!logos-agent/workspace/package-lock.json
 # Compile caches are resolved at image build time for offline session checks.
 !logos-webservice/pom.xml
 !logos-webservice/install-temurin.sh

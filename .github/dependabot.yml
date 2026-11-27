@@ -49,6 +49,7 @@ updates:
   - package-ecosystem: "npm"
     directories:
       - "logos-ui"
+    versioning-strategy: increase
     schedule:
       interval: "weekly"
     # Angular 22 requires typescript >=6.0 <6.1. TS 7.0 has no stable
@@ -60,6 +61,19 @@ updates:
       npm-dependencies:
         patterns: ["*"]
       ui-security:
+        applies-to: security-updates
+        patterns: ["*"]
+
+  - package-ecosystem: "npm"
+    directory: "/logos-agent/workspace"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 2
+    versioning-strategy: "increase"
+    groups:
+      workspace-npm-dependencies:
+        patterns: ["*"]
+      workspace-npm-security:
         applies-to: security-updates
         patterns: ["*"]
 
@@ -94,6 +108,7 @@ updates:
   # The documentation build has its own lockfile and TypeScript constraints.
   - package-ecosystem: "npm"
     directory: "/docs"
+    versioning-strategy: increase
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 2
