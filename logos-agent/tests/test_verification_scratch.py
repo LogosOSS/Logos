@@ -10,7 +10,6 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-
 from app import docker_engine, sessions
 from app import verification_scratch as scratch
 
@@ -182,7 +181,7 @@ def test_devices_backed_by_a_loop_are_rejected(tmp_path):
     assert not scratch._disk_device("253:1", tmp_path)
 
 
-async def test_opted_in_scratch_errors_fail_the_helper_without_tmpfs_fallback(monkeypatch):
+async def test_bad_provisioning_fails_verification_without_tmpfs_fallback(monkeypatch):
     manager = sessions.SessionManager()
     helper = AsyncMock()
     monkeypatch.setattr(manager, "_run_helper_container", helper)
@@ -200,6 +199,63 @@ async def test_opted_in_scratch_errors_fail_the_helper_without_tmpfs_fallback(mo
     assert code == 1
     assert "disk scratch unavailable: not mounted" in manager._last_helper_output[42]
     helper.assert_not_awaited()
+
+
+async def test_unprovisioned_runner_fails_verification_but_still_runs_normal_helpers(monkeypatch):
+    manager = sessions.SessionManager()
+    helper = AsyncMock(return_value=0)
+    monkeypatch.setattr(manager, "_run_helper_container", helper)
+    monkeypatch.setattr(
+        sessions,
+        "settings",
+        replace(sessions.settings, verification_scratch_host_path="", verification_scratch_volume=""),
+    )
+    options = dict(session_id=42, env={}, workspace_volume="workspace", artifact_host_path="/artifacts/42")
+    assert await manager._run_helper(phase="verify", **options) == 1
+    assert "provision dedicated verification storage" in manager._last_helper_output[42]
+    helper.assert_not_awaited()
+    assert await manager._run_helper(phase="prepare", **options) == 0
+    helper.assert_awaited_once_with(phase="prepare", cache_volume=None, **options)
+
+
+async def test_runner_verifier_starts_with_real_reservation_and_cleans_after_removal(monkeypatch, pool):
+    manager = sessions.SessionManager()
+    monkeypatch.setattr(
+        sessions,
+        "settings",
+        replace(sessions.settings, verification_scratch_host_path=HOST, verification_scratch_volume=VOLUME),
+    )
+    monkeypatch.setattr(sessions.db, "get_session", AsyncMock(return_value={"status": "finalizing"}))
+    monkeypatch.setattr(docker_engine, "start_container", AsyncMock())
+    monkeypatch.setattr(docker_engine, "wait_container", AsyncMock(return_value=0))
+    monkeypatch.setattr(manager, "_what_it_printed", AsyncMock(return_value="verified"))
+    mounted = []
+
+    async def create(**kwargs):
+        path, identity = kwargs["verification_scratch"]
+        local = pool / Path(path).name
+        assert (local / scratch.MARKER).read_text() == identity
+        assert kwargs["network"] == "none"
+        mounted.append(local)
+        return "verifier"
+
+    async def remove(_container):
+        assert mounted[0].is_dir()
+
+    monkeypatch.setattr(docker_engine, "create_session_container", create)
+    monkeypatch.setattr(docker_engine, "remove_container", remove)
+    assert (
+        await manager._run_helper(
+            phase="verify",
+            session_id=42,
+            env={"LOGOS_SESSION_PHASE": "verify"},
+            workspace_volume="workspace",
+            artifact_host_path="/artifacts/42",
+        )
+        == 0
+    )
+    assert len(mounted) == 1 and not mounted[0].exists()
+    assert manager._last_helper_output[42] == "verified"
 
 
 async def test_scratch_is_mounted_only_as_a_private_verifier_tmp(monkeypatch):

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -97,6 +98,30 @@ async def test_checks_receive_no_credentials_and_runner_binds_outcome_to_tree(mo
     proof = json.loads((sessions.state_dir(7) / "verification.json").read_text())
     assert proof["status"] == status
     assert proof["tree"] == TREE
+
+
+async def test_missing_disk_is_recorded_as_failed_verification_for_the_exact_tree(monkeypatch):
+    manager = sessions.SessionManager()
+    baseline()
+    monkeypatch.setattr(
+        sessions,
+        "settings",
+        replace(sessions.settings, verification_scratch_host_path="", verification_scratch_volume=""),
+    )
+    monkeypatch.setattr(
+        manager, "_read_result", lambda _sid: {"candidate_tree": TREE, "candidate_paths": ["logos-ui/a.ts"]}
+    )
+    monkeypatch.setattr(sessions.db, "get_session", active)
+    monkeypatch.setattr(sessions.db, "add_event", no_event)
+    helper = AsyncMock(return_value=0)
+    monkeypatch.setattr(manager, "_run_helper_container", helper)
+    result = await manager._verify_before_push(7, {"volume_name": "workspace"}, {}, "/artifacts/7")
+    assert result["LOGOS_SESSION_VERIFICATION"] == "failed"
+    assert result["LOGOS_SESSION_VERIFIED_TREE"] == TREE
+    assert "provision dedicated verification storage" in result["LOGOS_SESSION_VERIFICATION_OUTPUT"]
+    assert [call.kwargs["phase"] for call in helper.await_args_list] == ["snapshot"]
+    proof = json.loads((sessions.state_dir(7) / "verification.json").read_text())
+    assert proof["tree"] == TREE and proof["exit_code"] == 1 and proof["status"] == "failed"
 
 
 async def test_missing_protected_baseline_never_starts_a_helper(monkeypatch):
@@ -317,6 +342,7 @@ async def test_verify_container_cannot_modify_candidate_or_access_network(monkey
         artifact_host_path="/artifacts/7",
         session_id=7,
         network="egress",
+        verification_scratch=("/devoted/verifier", "a" * 64),
     )
     payload = payloads[0]
     assert payload["HostConfig"]["Binds"] == ["workspace:/workspace:ro", "/artifacts/7:/artifacts:ro"]
@@ -324,6 +350,22 @@ async def test_verify_container_cannot_modify_candidate_or_access_network(monkey
     assert payload["Entrypoint"] == ["python3", "/usr/local/lib/verify_checkout.py"]
     assert payload["HostConfig"]["ReadonlyRootfs"]
     assert payload["HostConfig"]["CapDrop"] == ["ALL"]
+    assert "/tmp" not in payload["HostConfig"]["Tmpfs"]
+
+
+async def test_verify_container_refuses_to_create_without_disk_scratch(monkeypatch):
+    request = AsyncMock()
+    monkeypatch.setattr(docker_engine, "_request", request)
+    with pytest.raises(ValueError, match="dedicated disk scratch reservation"):
+        await docker_engine.create_session_container(
+            name="verify",
+            image="workspace",
+            env={"LOGOS_SESSION_PHASE": "verify"},
+            workspace_volume="workspace",
+            artifact_host_path="/artifacts/7",
+            session_id=7,
+        )
+    request.assert_not_awaited()
 
 
 @pytest.mark.parametrize("extra", [{"GITHUB_TOKEN": "secret"}, {"GH_TOKEN": "secret"}])

@@ -32,6 +32,28 @@ def credential_free(monkeypatch):
         monkeypatch.delenv(name, raising=False)
 
 
+def test_authoritative_entrypoint_requires_disk_scratch(monkeypatch):
+    monkeypatch.setenv("LOGOS_SESSION_PHASE", "verify")
+    monkeypatch.setattr(verify_checkout, "candidate_tree", lambda _: pytest.fail("must not read the candidate"))
+    assert verify_checkout.main(["logos-webservice"]) == 1
+
+
+def test_authoritative_temporary_directory_does_not_fall_back(monkeypatch, tmp_path):
+    reserved = tmp_path / "reserved"
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.setenv("LOGOS_SESSION_PHASE", "verify")
+    monkeypatch.setattr(verify_checkout, "SCRATCH_ROOT", reserved)
+    monkeypatch.setenv("TMPDIR", str(elsewhere))
+    with pytest.raises(FileNotFoundError):
+        verify_checkout._scratch_directory("verify-")
+    assert not list(elsewhere.iterdir())
+    reserved.mkdir()
+    with verify_checkout._scratch_directory("verify-") as scratch:
+        assert Path(scratch).parent == reserved
+    assert verify_checkout._environment(tmp_path)["TMPDIR"] == str(reserved)
+
+
 def test_rejects_a_wrong_daemon_bind_before_reading_the_candidate(monkeypatch, tmp_path):
     monkeypatch.setenv("LOGOS_SESSION_PHASE", "verify")
     monkeypatch.setenv("LOGOS_VERIFICATION_SCRATCH_MARKER", "a" * 64)
@@ -234,6 +256,8 @@ def test_ignored_maven_config_and_working_edits_cannot_change_verified_candidate
 
     monkeypatch.setenv("LOGOS_SESSION_PHASE", "verify")
     monkeypatch.setenv("LOGOS_VERIFICATION_TREE", tree)
+    monkeypatch.setattr(verify_checkout, "require_scratch_identity", lambda: None)
+    monkeypatch.setattr(verify_checkout, "SCRATCH_ROOT", tmp_path)
     monkeypatch.setenv("LOGOS_VERIFICATION_PATHS", '["logos-webservice/source.txt"]')
     monkeypatch.setattr(verify_checkout, "CHECKOUT", checkout)
     monkeypatch.setattr(verify_checkout, "CACHE", cache)
@@ -270,6 +294,8 @@ def test_authoritative_check_requires_an_existing_tree(tmp_path, monkeypatch, tr
     checkout, _, _ = _inputs(tmp_path, "logos-ui")
     monkeypatch.setenv("LOGOS_SESSION_PHASE", "verify")
     monkeypatch.setenv("LOGOS_VERIFICATION_PATHS", '["logos-ui/source.txt"]')
+    monkeypatch.setattr(verify_checkout, "require_scratch_identity", lambda: None)
+    monkeypatch.setattr(verify_checkout, "SCRATCH_ROOT", tmp_path)
     if tree is not None:
         monkeypatch.setenv("LOGOS_VERIFICATION_TREE", tree)
     monkeypatch.setattr(verify_checkout, "CHECKOUT", checkout)

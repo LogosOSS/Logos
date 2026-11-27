@@ -58,9 +58,12 @@ def require_credential_free() -> None:
 def require_scratch_identity() -> None:
     """Refuse to run repository code on an unexpected daemon-side bind."""
     marker = os.environ.get("LOGOS_VERIFICATION_SCRATCH_MARKER")
-    if marker is None:
+    authoritative = os.environ.get("LOGOS_SESSION_PHASE") == "verify"
+    if not authoritative and marker is None:
         return
-    if os.environ.get("LOGOS_SESSION_PHASE") != "verify" or not re.fullmatch("[0-9a-f]{64}", marker):
+    if authoritative and marker is None:
+        raise RuntimeError("authoritative verification requires a dedicated disk scratch identity")
+    if not authoritative or not marker or not re.fullmatch("[0-9a-f]{64}", marker):
         raise RuntimeError("invalid verification scratch identity")
     try:
         fd = os.open(SCRATCH_ROOT / ".logos-verifier-scratch", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
@@ -71,6 +74,13 @@ def require_scratch_identity() -> None:
     except OSError:
         pass
     raise RuntimeError("verification scratch bind does not match the reserved disk filesystem")
+
+
+def _scratch_directory(prefix: str) -> tempfile.TemporaryDirectory[str]:
+    # The authoritative verifier never lets tempfile pick a different
+    # directory if the dedicated mount is unavailable or too full.
+    authoritative = os.environ.get("LOGOS_SESSION_PHASE") == "verify"
+    return tempfile.TemporaryDirectory(prefix=prefix, dir=SCRATCH_ROOT if authoritative else None)
 
 
 def _environment(home: Path) -> dict[str, str]:
@@ -90,6 +100,8 @@ def _environment(home: Path) -> dict[str, str]:
         "npm_config_audit": "false",
         "npm_config_fund": "false",
     }
+    if os.environ.get("LOGOS_SESSION_PHASE") == "verify":
+        environment["TMPDIR"] = str(SCRATCH_ROOT)
     if os.environ.get("JAVA_HOME"):
         environment["JAVA_HOME"] = os.environ["JAVA_HOME"]
     return environment
@@ -136,7 +148,7 @@ def _validate_tree(tree: str) -> None:
 
 def candidate_tree(checkout: Path) -> str:
     """Read the runner's tree, or stage a manual check in a private index."""
-    with tempfile.TemporaryDirectory(prefix="logos-verify-index-") as directory:
+    with _scratch_directory("logos-verify-index-") as directory:
         scratch = Path(directory)
         environment = _environment(scratch)
         environment["GIT_INDEX_FILE"] = str(scratch / "index")
@@ -171,7 +183,7 @@ def export_candidate(checkout: Path, destination: Path, tree: str, scratch: Path
 def verify_service(service: str, checkout: Path, cache: Path, tree: str) -> None:
     if service not in SERVICES:
         raise ValueError(f"unsupported service: {service}")
-    with tempfile.TemporaryDirectory(prefix="logos-verify-") as directory:
+    with _scratch_directory("logos-verify-") as directory:
         scratch = Path(directory)
         home = scratch / "home"
         home.mkdir()
@@ -213,7 +225,7 @@ def verify_repository(command: str, checkout: Path, tree: str) -> None:
     """Run a team's build/test command only on an exported candidate without credentials."""
     if not command.strip() or "\0" in command or len(command) > 4000:
         raise ValueError("repository verification requires a build and test command")
-    with tempfile.TemporaryDirectory(prefix="logos-verify-repository-") as directory:
+    with _scratch_directory("logos-verify-repository-") as directory:
         scratch = Path(directory)
         home = scratch / "home"
         home.mkdir()

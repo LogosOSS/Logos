@@ -237,6 +237,8 @@ async def create_session_container(
         raise ValueError("verification cannot mount credentials or runner state")
     if verifying and any(key in env for key in ("GITHUB_TOKEN", "GH_TOKEN", "GIT_SSH_COMMAND", "ANTHROPIC_AUTH_TOKEN")):
         raise ValueError("verification cannot receive credentials")
+    if verifying and verification_scratch is None:
+        raise ValueError("verification requires a dedicated disk scratch reservation")
     mount_mode = ":ro" if verifying else ""
     binds = [
         f"{workspace_volume}:/workspace{mount_mode}",

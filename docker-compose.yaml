@@ -873,10 +873,11 @@ volumes:
   # child mounts a directory the runner never writes the pause mark into.
   agent_state:
     name: logos_agent_state
-  # The default is an inert, empty volume mounted only by the runner. Disk
-  # verification requires an explicitly provisioned local bind-backed volume.
+  # The empty placeholder lets the runner start before provisioning. It
+  # can never serve as verification scratch; validation needs the dedicated
+  # provisioned local bind-backed volume.
   agent_verification_scratch:
-    name: "${LOGOS_AGENT_VERIFICATION_SCRATCH_VOLUME:-logos_agent_verification_scratch_disabled}"
+    name: "${LOGOS_AGENT_VERIFICATION_SCRATCH_VOLUME:-logos_agent_verification_scratch_unprovisioned}"
 
 networks:
   internal:

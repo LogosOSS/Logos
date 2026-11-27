@@ -1989,7 +1989,7 @@ class SessionManager:
             "artifact_host_path": artifact_host_path,
             "cache_volume": cache_volume,
         }
-        if phase != "verify" or not (settings.verification_scratch_volume or settings.verification_scratch_host_path):
+        if phase != "verify":
             return await self._run_helper_container(**kwargs)
         try:
             async with verification_scratch.reserve(
@@ -2000,8 +2000,8 @@ class SessionManager:
             ) as scratch:
                 return await self._run_helper_container(**kwargs, scratch=scratch)
         except (OSError, RuntimeError) as exc:
-            # Disk mode was explicitly selected; never silently retry on
-            # tmpfs or mark the tree verified if its isolation wasn't proven.
+            # A failed admission is a failed verification, not a tmpfs
+            # retry or permission to mark the tree verified.
             self._last_helper_output[session_id] = f"[verify] disk scratch unavailable: {exc}"
             return 1
 

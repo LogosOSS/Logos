@@ -779,15 +779,18 @@ a busy one is refused.
 
 #### Bounded disk scratch for verification
 
-By default each verifier has a 2 GiB RAM-backed `/tmp`. For larger offline
-builds, the operator can assign a dedicated disk filesystem to verification.
-The filesystem capacity is the hard ceiling, including the copied candidate,
-cache and build output. It is **not** a session RAM increase, a change to the
-workspace cache, or permission to skip verification. Only one disk-backed
-verifier runs at a time; a contender waits up to `LOGOS_AGENT_HELPER_TIMEOUT_S`
+The runner's authoritative verifier always uses a dedicated disk filesystem
+for `/tmp`. Its capacity is the hard ceiling, including the copied candidate,
+cache and build output. This does **not** increase session RAM, modify the
+workspace cache, or bypass verification. Only one verifier can use the
+filesystem at a time; a contender waits up to `LOGOS_AGENT_HELPER_TIMEOUT_S`
 for a slot before failing. Its actual verification timeout starts separately.
-The application fails verification (and permits only a draft PR) if enabled
-disk scratch is misconfigured, full, or inaccessible.
+
+Provision and configure the filesystem before relying on verified publication.
+Missing, invalid, full, or inaccessible scratch fails verification and allows
+only a draft PR. There is no tmpfs fallback. Normal agent containers and manual
+checks run inside them as before, but a manual check cannot replace the
+runner's verification.
 
 1. On the Linux Docker host, provision a dedicated, capacity-reserved
    partition or thick logical volume (for example 20 GiB) and format **only
@@ -841,11 +844,11 @@ credentials or network. Docker rotates the verifier's logs separately.
 The runner removes scratch after Docker confirms no container owns it. On
 restart it reconciles orphaned helpers before retrying; if Docker cannot
 confirm the old helper is gone, scratch stays reserved rather than being
-reused. Do not manually delete it while a verifier is mounted. Clearing both
-the configured volume and host path returns to the 2 GiB tmpfs on the next
-runner recreation. Leave the mounted filesystem intact until the runner and
-every verifier using it are gone. To validate activation, run a linked
-repository verification that needs more than 2 GiB, check the verification
+reused. Do not manually delete it while a verifier is mounted. If the disk
+configuration is removed, the runner can still execute ordinary sessions but
+cannot verify their changes for publication. Leave the mounted filesystem
+intact until the runner and every verifier using it are gone. To validate
+activation, run a linked repository verification, check the verification
 result and diagnostics, then verify that its `verifier-*` directory has been
 removed.
 

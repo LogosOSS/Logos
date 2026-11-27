@@ -168,6 +168,11 @@ def _safe_absolute_path(value: str) -> bool:
 
 
 async def validate_configuration(volume: str, host_path: str, max_gib: str) -> Path:
+    if not volume or not host_path:
+        raise RuntimeError(
+            "provision dedicated verification storage and set LOGOS_AGENT_VERIFICATION_SCRATCH_VOLUME "
+            "and LOGOS_AGENT_VERIFICATION_SCRATCH_HOST_PATH"
+        )
     if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]{1,127}", volume):
         raise RuntimeError("verification scratch requires the name of its dedicated Docker volume")
     if not _safe_absolute_path(host_path):
