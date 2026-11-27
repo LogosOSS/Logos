@@ -19,13 +19,16 @@ class ProviderSpendPricing {
     private static final String WRITE = "billed_input_cache_write";
     private static final String WRITE_1H = "billed_input_cache_write_1h";
     private static final String OUTPUT = "billed_output_text";
+    private static final String INPUT_CHARACTERS = "billed_input_characters";
+    private static final String OUTPUT_CHARACTERS = "billed_output_characters";
     private static final String REASONING = "billed_output_reasoning";
     private static final String REQUEST = "billed_requests";
     private static final Set<String> INPUT_RATES = Set.of(INPUT, READ, WRITE, WRITE_1H);
     private static final Set<String> OUTPUT_RATES = Set.of(OUTPUT, REASONING);
     private static final Set<String> USAGE = Set.of("prompt_tokens", "completion_tokens", "total_tokens",
         "prompt_cached_tokens", "prompt_cache_write_tokens", "prompt_cache_write_1h_tokens",
-        "prompt_cache_miss_tokens", "completion_reasoning_tokens", "usage_shape_disjoint", "billed_requests");
+        "prompt_cache_miss_tokens", "completion_reasoning_tokens", "usage_shape_disjoint", REQUEST,
+        INPUT_CHARACTERS, OUTPUT_CHARACTERS);
 
     private final NamedParameterJdbcTemplate jdbc;
 
@@ -62,7 +65,8 @@ class ProviderSpendPricing {
             .add(BigDecimal.valueOf(request)).movePointLeft(3).setScale(0, RoundingMode.CEILING);
     }
 
-    record Usage(long input, long output, Map<String, Long> byQuantity) {}
+    record Usage(long input, long output, boolean inputCharacterFallback, boolean outputCharacterFallback,
+                 Map<String, Long> byQuantity) {}
 
     static boolean hasUnboundedCharges(Map<String, Long> usage) {
         return usage != null && !usage.containsKey("usage_estimated")
@@ -94,7 +98,8 @@ class ProviderSpendPricing {
                 return null;
             }
             long context = Math.addExact(uncached, Math.addExact(cached, Math.addExact(write, write1)));
-            return new Usage(context, completion, Map.of(INPUT, uncached, READ, cached, WRITE, write,
+            return new Usage(context, completion, usage.getOrDefault(INPUT_CHARACTERS, 0L) > 0,
+                usage.getOrDefault(OUTPUT_CHARACTERS, 0L) > 0, Map.of(INPUT, uncached, READ, cached, WRITE, write,
                 WRITE_1H, write1, OUTPUT, text, REASONING, reasoning, REQUEST, 1L));
         } catch (ArithmeticException e) {
             return null;
@@ -106,6 +111,13 @@ class ProviderSpendPricing {
             return null;
         }
         String tier = serviceTier == null ? "default" : serviceTier;
+        // The orchestrator also derives character counts from ordinary text. Like
+        // the shared billing ledger, ignore them when matching token rates
+        // exist. Character-rate billing is not bounded by this cap.
+        if ((usage.inputCharacterFallback() && resolve(rates, usage.input(), tier, INPUT) == null)
+                || (usage.outputCharacterFallback() && resolve(rates, usage.input(), tier, OUTPUT) == null)) {
+            return null;
+        }
         try {
             BigDecimal total = BigDecimal.ZERO;
             boolean priced = false;

@@ -1,0 +1,19 @@
+{
+  "path": "v1/messages",
+  "request": {
+    "model": "synthetic-20261101",
+    "max_tokens": 100,
+    "messages": [{"role": "user", "content": "Question?"}]
+  },
+  "response": {
+    "content": [{"type": "text", "text": "Answer."}],
+    "usage": {"input_tokens": 10, "output_tokens": 4}
+  },
+  "usage": {
+    "prompt_tokens": 10,
+    "completion_tokens": 4,
+    "billed_requests": 1,
+    "billed_input_characters": 9,
+    "billed_output_characters": 7
+  }
+}

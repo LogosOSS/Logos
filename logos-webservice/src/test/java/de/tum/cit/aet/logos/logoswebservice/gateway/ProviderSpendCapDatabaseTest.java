@@ -134,11 +134,24 @@ class ProviderSpendCapDatabaseTest {
 
         assertThat(ledger.settle(first, Map.of("prompt_tokens", 10L, "completion_tokens", 4L, "usage_estimated", 1L),
             null, false)).isFalse();
-        assertThat(ledger.settle(first, Map.of("prompt_tokens", 10L, "completion_tokens", 4L), null, false)).isTrue();
-        assertThat(ledger.settle(first, Map.of("prompt_tokens", 10L, "completion_tokens", 4L), null, false)).isFalse();
-        assertThat(jdbc.queryForObject("""
-            SELECT charged_micro_cents AS cost FROM provider_spend_months WHERE provider_id = ?
-            """, Long.class, provider)).isEqualTo(18);
+        // This exact shared fixture is produced by finalize_billing_inputs in the Python suite.
+        Map<String, Long> orchestratorUsage;
+        try (var fixture = getClass().getResourceAsStream("/fixtures/provider-spend-orchestrator-usage.json")) {
+            orchestratorUsage = mapper.convertValue(mapper.readTree(fixture).path("usage"),
+                new com.fasterxml.jackson.core.type.TypeReference<>() {});
+        }
+        var withCharacters = ProviderSpendPricing.quantities(orchestratorUsage, true);
+        var tokenRates = new ProviderSpendPricing(named).rates(provider, model, java.time.OffsetDateTime.now());
+        assertThat(ProviderSpendPricing.charge(tokenRates.stream().filter(rate ->
+            !"billed_input_uncached".equals(rate.quantity())).toList(), withCharacters, null)).isNull();
+        assertThat(ProviderSpendPricing.charge(tokenRates.stream().filter(rate ->
+            !"billed_output_text".equals(rate.quantity())).toList(), withCharacters, null)).isNull();
+        assertThat(ledger.settle(first, orchestratorUsage, null, false)).isTrue();
+        assertThat(ledger.settle(first, orchestratorUsage, null, false)).isFalse();
+        assertThat(jdbc.queryForMap("""
+            SELECT charged_micro_cents, held_micro_cents, bound_violation FROM provider_spend_months WHERE provider_id = ?
+            """, provider)).containsEntry("charged_micro_cents", new BigDecimal("18"))
+            .containsEntry("held_micro_cents", BigDecimal.ZERO).containsEntry("bound_violation", false);
 
         UUID previous = UUID.randomUUID();
         jdbc.update("""

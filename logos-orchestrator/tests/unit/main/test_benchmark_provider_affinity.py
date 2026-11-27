@@ -537,3 +537,114 @@ async def test_cancelled_benchmark_cleanup_rejects_new_job_before_database_inser
         db.create_job_record.assert_not_called()
     finally:
         benchmark_reservations.release(9021)
+
+
+def _cloud_admission_fixture(monkeypatch):
+    import threading
+
+    class NonBlockingGuard:
+        # Behaves as a synchronous lock, but a regression fails the test instead
+        # of deadlocking the only thread available to resume the first coroutine.
+        lock = threading.Lock()
+
+        def __enter__(self):
+            assert self.lock.acquire(blocking=False), "A synchronous admission lock was held across I/O"
+            return self
+
+        def __exit__(self, *exc):
+            self.lock.release()
+
+    guard = NonBlockingGuard()
+    target = {
+        "provider_id": 20,
+        "provider_type": "cloud",
+        "model_name": "org/model",
+        "provider_name": "cloud-provider",
+        "model_id": 1,
+        "target": "https://provider.example/v1",
+    }
+    db = MagicMock()
+    db.__enter__.return_value = db
+    db.get_model_provider_benchmark_target.side_effect = lambda _: target.copy()
+    active = {}
+
+    def find(provider_id):
+        assert guard.lock.locked()
+        return active.get(provider_id)
+
+    def create(**kwargs):
+        provider_id = kwargs["payload"]["provider_id"]
+        assert guard.lock.locked()
+        assert provider_id not in active, "Conflict and creation stopped being atomic"
+        active[provider_id] = {"id": 7001, "status": "pending"}
+        return 7001
+
+    db.find_active_model_benchmark_job.side_effect = find
+    db.create_job_record.side_effect = create
+    runner = AsyncMock()
+    registry = MagicMock()
+    registry.active_provider_ids.return_value = []
+    registry.peek_runtime_snapshot.return_value = None
+    monkeypatch.setattr(internal_mod, "DBManager", lambda: db)
+    monkeypatch.setattr(internal_mod, "_benchmark_admission_lock", guard)
+    monkeypatch.setattr(internal_mod, "_INTERNAL_SECRET", "internal-secret")
+    monkeypatch.setattr(internal_mod, "run_benchmark_job", runner)
+    monkeypatch.setattr(main, "_logosnode_registry", registry)
+    monkeypatch.setattr(main, "_calibration_orchestrator", None)
+    monkeypatch.setattr(main, "_maintenance_coordinator", None)
+    return guard, db, target, runner
+
+
+async def test_cloud_admission_io_does_not_hold_the_lock_and_resumes_with_conflict_check(monkeypatch):
+    import json
+
+    guard, db, _, runner = _cloud_admission_fixture(monkeypatch)
+    entered = asyncio.Event()
+    release_first = asyncio.Event()
+    checks = []
+
+    async def check(provider_id):
+        checks.append(provider_id)
+        assert not guard.lock.locked()
+        assert db.__enter__.call_count == db.__exit__.call_count
+        if len(checks) == 1:
+            entered.set()
+            await release_first.wait()
+
+    monkeypatch.setattr(internal_mod.provider_spend, "reserve", check)
+    data = main.InternalBenchmarkRequest(model_provider_id=31, samples=5)
+    request = MagicMock(headers={"authorization": "Bearer internal-secret"})
+    first = asyncio.create_task(internal_mod.internal_run_model_benchmark(data, request))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=2)
+        assert not first.done()
+        second = await asyncio.wait_for(internal_mod.internal_run_model_benchmark(data, request), timeout=2)
+        assert second.status_code == 202
+        assert json.loads(second.body)["job_id"] == 7001
+    finally:
+        release_first.set()
+        loser = await asyncio.wait_for(first, timeout=2)
+    assert loser.status_code == 409
+    assert json.loads(loser.body)["job_id"] == 7001
+    assert checks == [20, 20]
+    db.create_job_record.assert_called_once()
+    runner.assert_awaited_once()
+
+
+async def test_cloud_benchmark_does_not_use_an_admission_for_a_changed_target(monkeypatch):
+    guard, db, target, runner = _cloud_admission_fixture(monkeypatch)
+
+    async def check(provider_id):
+        assert provider_id == 20
+        assert not guard.lock.locked()
+        target["provider_id"] = 21
+
+    monkeypatch.setattr(internal_mod.provider_spend, "reserve", check)
+    data = main.InternalBenchmarkRequest(model_provider_id=31, samples=5)
+    request = MagicMock(headers={"authorization": "Bearer internal-secret"})
+    with pytest.raises(main.HTTPException) as error:
+        await internal_mod.internal_run_model_benchmark(data, request)
+    assert error.value.status_code == 409
+    assert "changed" in error.value.detail
+    db.create_job_record.assert_not_called()
+    runner.assert_not_awaited()

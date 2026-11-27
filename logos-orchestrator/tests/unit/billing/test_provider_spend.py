@@ -1,10 +1,13 @@
+import json
 import uuid
+from pathlib import Path
 
 import httpx
 import pytest
 from fastapi import HTTPException
 
 from logos.billing import provider_spend
+from logos.billing.finalize import finalize_billing_inputs
 from logos.billing.provider_spend import _call as real_call
 
 
@@ -191,3 +194,14 @@ def test_request_shape_fences_nested_or_oversized_unknown_metadata():
     assert response["messages"] == [{"role": "", "content": [{"type": "", "text": ""}]}]
     assert "unsupported" in str(response["stream_options"])
     assert "not carried" not in str(response)
+
+
+def test_gateway_settlement_fixture_uses_real_orchestrator_finalized_usage():
+    fixture = (
+        Path(__file__).resolve().parents[4]
+        / "logos-webservice/src/test/resources/fixtures/provider-spend-orchestrator-usage.json"
+    )
+    data = json.loads(fixture.read_text(encoding="utf-8"))
+    usage, tier = finalize_billing_inputs(data["request"], data["response"], data["path"])
+    assert usage == data["usage"]
+    assert tier is None
