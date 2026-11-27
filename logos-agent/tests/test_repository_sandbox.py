@@ -619,7 +619,7 @@ class TestWorkspaceCache:
             artifact_host_path="/a",
             session_id=1,
             cache_volume="logos_agent_cache_ws",
-            verification_scratch=("/dedicated/verifier", "a" * 64) if phase == "verify" else None,
+            verification_scratch=("verifier-scratch", "verifier-" + "b" * 32, "a" * 64) if phase == "verify" else None,
         )
         return sent[0]["HostConfig"]["Binds"]
 
