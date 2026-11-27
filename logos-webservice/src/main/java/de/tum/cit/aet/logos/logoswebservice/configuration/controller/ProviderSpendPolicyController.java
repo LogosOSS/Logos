@@ -33,6 +33,12 @@ public class ProviderSpendPolicyController {
     }
 
     @PutMapping
+    public Map<String, Object> update(@PathVariable int providerId,
+                                      @RequestBody ProviderSpendPolicyService.Change change) {
+        return service.update(providerId, change);
+    }
+
+    @PutMapping("/scheduled")
     public Map<String, Object> schedule(@PathVariable int providerId,
                                         @RequestBody ProviderSpendPolicyService.Change change) {
         return service.schedule(providerId, change);

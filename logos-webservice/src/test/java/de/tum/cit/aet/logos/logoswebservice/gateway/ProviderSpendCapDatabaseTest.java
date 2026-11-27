@@ -10,12 +10,16 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import java.math.BigDecimal;
 import java.sql.DriverManager;
 import java.time.LocalDate;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -32,6 +36,7 @@ import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.server.ResponseStatusException;
 
 import tools.jackson.databind.PropertyNamingStrategies;
@@ -74,7 +79,8 @@ class ProviderSpendCapDatabaseTest {
         var dataSource = new DriverManagerDataSource(url, user, password);
         var jdbc = new JdbcTemplate(dataSource);
         var named = new NamedParameterJdbcTemplate(jdbc);
-        var ledger = new ProviderSpendLedger(named, new DataSourceTransactionManager(dataSource), new ProviderSpendPricing(named));
+        var transactions = new DataSourceTransactionManager(dataSource);
+        var ledger = new ProviderSpendLedger(named, transactions, new ProviderSpendPricing(named));
         var mapper = new ObjectMapper();
         int provider = jdbc.queryForObject("""
             INSERT INTO providers (name, base_url, provider_type, cloud_provider_type, auth_name, auth_format)
@@ -201,6 +207,7 @@ class ProviderSpendCapDatabaseTest {
         assertThat(ledger.reserve(UUID.randomUUID(), provider, model, messages, request)).isEqualTo(exhausted);
 
         checkAdminPolicy(jdbc, provider, model, ledger);
+        checkImmediateCurrentPolicy(jdbc, new TransactionTemplate(transactions), model, provider, ledger, request, messages);
     }
 
     private static void checkZeroMetering(JdbcTemplate jdbc, ProviderSpendLedger ledger, ObjectMapper mapper,
@@ -235,6 +242,113 @@ class ProviderSpendCapDatabaseTest {
             .containsEntry("held_micro_cents", BigDecimal.ZERO).containsEntry("bound_violation", false);
     }
 
+    private static void checkImmediateCurrentPolicy(JdbcTemplate jdbc, TransactionTemplate tx, int model,
+            int otherProvider, ProviderSpendLedger ledger, JsonNode request, String messages) throws Exception {
+        int provider = jdbc.queryForObject("""
+            INSERT INTO providers (name, base_url, provider_type, cloud_provider_type, auth_name, auth_format)
+            VALUES ('Synthetic immediate cap', 'https://api.anthropic.com', 'cloud', 'anthropic', 'x-api-key', '{}')
+            RETURNING id
+            """, Integer.class);
+        jdbc.update("INSERT INTO model_provider (model_id, provider_id) VALUES (?, ?)", model, provider);
+        jdbc.update("""
+            INSERT INTO token_prices (type_id, model_id, provider_id, valid_from, price_per_k_unit)
+            SELECT type_id, model_id, ?, valid_from, price_per_k_unit
+              FROM token_prices WHERE provider_id = ? AND model_id = ?
+            """, provider, otherProvider, model);
+        ledger.recordReviewedBound(provider, model, new ProviderSpendLedger.BoundReview(messages, MODEL, "max_tokens",
+            1000000, 64000, "https://platform.claude.com/docs/en/models/overview"));
+        assertThat(ledger.reserve(UUID.randomUUID(), provider, model, messages, request))
+            .isEqualTo(ProviderSpendLedger.Decision.UNCAPPED);
+
+        var now = jdbc.queryForObject("SELECT clock_timestamp()", OffsetDateTime.class).withOffsetSameInstant(ZoneOffset.UTC);
+        var month = now.toLocalDate().withDayOfMonth(1);
+        var firstInstant = month.atStartOfDay().atOffset(ZoneOffset.UTC);
+        recordCost(jdbc, provider, firstInstant, "success", true, 350L);
+        recordCost(jdbc, provider, firstInstant, "error", true, 50L);
+        recordCost(jdbc, provider, firstInstant.minusNanos(1000), "success", true, 700L);
+        recordCost(jdbc, provider, now.plusDays(1), "success", true, 800L);
+        recordCost(jdbc, otherProvider, firstInstant, "success", true, 900L);
+        recordCost(jdbc, provider, firstInstant, null, true, 1000L);
+        recordCost(jdbc, provider, firstInstant, "success", false, 2000L);
+        recordCost(jdbc, provider, firstInstant, "success", true, null);
+
+        var audit = mock(AuditLogService.class);
+        var controller = new ProviderSpendPolicyController(
+            new ProviderSpendPolicyService(new NamedParameterJdbcTemplate(jdbc), audit, ledger));
+        jdbc.update("""
+            INSERT INTO provider_spend_policies (provider_id, effective_month, limit_micro_cents)
+            VALUES (?, ?, 4000000)
+            """, provider, month.plusMonths(1));
+        Map<String, Object> scheduled = Map.of(
+            "enabled", true, "limit_usd", "0.04000000", "effective_month", month.plusMonths(1).toString());
+        var original = new Change(true, new BigDecimal("0.010004"));
+        Map<String, Object> initial = tx.execute(state -> {
+            jdbc.execute("SET LOCAL TIME ZONE 'Pacific/Kiritimati'");
+            return controller.update(provider, original);
+        });
+        Map<String, Object> immediate = Map.of(
+            "enabled", true, "limit_usd", "0.01000400", "effective_month", month.toString());
+        assertThat(initial).containsEntry("current", immediate).containsEntry("scheduled", scheduled)
+            .containsEntry("charged_usd", new BigDecimal("0.00000400"));
+        verify(audit).record("provider.monthly_spend_cap_updated", "provider", provider, null, null, immediate);
+        // A request that fits before accounting history no longer fits once
+        // that history is included; nothing goes upstream under the new cap.
+        assertThat(ledger.reserve(UUID.randomUUID(), provider, model, messages, request))
+            .isEqualTo(ProviderSpendLedger.Decision.EXHAUSTED);
+
+        var high = new Change(true, new BigDecimal("0.03"));
+        Map<String, Object> raised = tx.execute(state -> controller.update(provider, high));
+        assertThat(raised).containsEntry("scheduled", scheduled);
+        UUID held = UUID.randomUUID();
+        assertThat(ledger.reserve(held, provider, model, messages, request)).isEqualTo(ProviderSpendLedger.Decision.RESERVED);
+        assertThat(controller.get(provider)).containsEntry("reserved_usd", new BigDecimal("0.01000200"));
+
+        // Hold the exact DB row lock shared with admission. The waiting replica
+        // must see the newly lowered cap after this transaction commits.
+        var starting = new CountDownLatch(1);
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            var pending = tx.execute(state -> {
+                jdbc.queryForObject("SELECT id FROM providers WHERE id = ? FOR UPDATE", Integer.class, provider);
+                var result = executor.submit(() -> {
+                    starting.countDown();
+                    return ledger.reserve(UUID.randomUUID(), provider, model, messages, request);
+                });
+                try {
+                    assertThat(starting.await(1, TimeUnit.SECONDS)).isTrue();
+                } catch (InterruptedException ex) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(ex);
+                }
+                assertThat(result).isNotDone();
+                assertThat(controller.update(provider, original)).containsEntry("scheduled", scheduled)
+                    .containsEntry("reserved_usd", new BigDecimal("0.01000200"));
+                return result;
+            });
+            assertThat(pending.get(5, TimeUnit.SECONDS)).isEqualTo(ProviderSpendLedger.Decision.EXHAUSTED);
+        }
+
+        var removed = tx.execute(state -> controller.update(provider, new Change(false, null)));
+        assertThat(removed).containsEntry("scheduled", scheduled).containsEntry("reserved_usd", new BigDecimal("0.01000200"));
+        assertThat(((Map<?, ?>) removed.get("current")).get("enabled")).isEqualTo(false);
+        assertThat(ledger.reserve(UUID.randomUUID(), provider, model, messages, request)).isEqualTo(ProviderSpendLedger.Decision.UNCAPPED);
+        assertThat(ledger.settle(held, Map.of("prompt_tokens", 10L, "completion_tokens", 4L), null, false)).isTrue();
+        // Settled capped attempts and later uncapped logs are never merged by
+        // guessing which historical rows are duplicates when re-enabling.
+        recordCost(jdbc, provider, now, "success", true, 18L);
+        recordCost(jdbc, provider, now, "success", true, 900L);
+        var restarted = tx.execute(state -> controller.update(provider, high));
+        assertThat(restarted).containsEntry("scheduled", scheduled).containsEntry("charged_usd", new BigDecimal("0.00000418"))
+            .containsEntry("reserved_usd", new BigDecimal("0.00000000"));
+    }
+
+    private static void recordCost(JdbcTemplate jdbc, int provider, OffsetDateTime at, String status, boolean finalized,
+            Long amount) {
+        jdbc.update("""
+            INSERT INTO log_entry (provider_id, timestamp_request, result_status, cost_finalized, settled_cost_micro_cents)
+            VALUES (?, ?, CAST(? AS result_status_enum), ?, ?)
+            """, provider, at, status, finalized, amount);
+    }
+
     private static void checkAdminPolicy(JdbcTemplate jdbc, int provider, int model, ProviderSpendLedger ledger) {
         var audit = mock(AuditLogService.class);
         var service = new ProviderSpendPolicyService(new NamedParameterJdbcTemplate(jdbc), audit, ledger);
@@ -252,7 +366,7 @@ class ProviderSpendCapDatabaseTest {
         for (Change invalid : List.of(new Change(null, null), new Change(true, null),
                 new Change(true, new BigDecimal("-1")), new Change(true, new BigDecimal("0.000000001")),
                 new Change(false, BigDecimal.ONE))) {
-            assertThatThrownBy(() -> controller.schedule(provider, invalid))
+            assertThatThrownBy(() -> controller.update(provider, invalid))
                 .isInstanceOf(ResponseStatusException.class).hasMessageContaining("400");
         }
 
@@ -268,7 +382,7 @@ class ProviderSpendCapDatabaseTest {
         assertThatThrownBy(() -> controller.recordReviewedBound(Integer.MAX_VALUE, model, evidence))
             .isInstanceOf(ResponseStatusException.class).hasMessageContaining("404");
         assertThat(controller.recordReviewedBound(provider, model, evidence)).containsEntry("bounded_deployments", 1);
-        assertThatThrownBy(() -> controller.schedule(Integer.MAX_VALUE, new Change(false, null)))
+        assertThatThrownBy(() -> controller.update(Integer.MAX_VALUE, new Change(false, null)))
             .isInstanceOf(ResponseStatusException.class).hasMessageContaining("404");
 
         boolean nearRollover = Boolean.TRUE.equals(jdbc.queryForObject("""

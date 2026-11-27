@@ -41,10 +41,26 @@ public class ProviderSpendPolicyService {
     }
 
     @Transactional(timeout = 5)
+    public Map<String, Object> update(int providerId, Change change) {
+        Long cap = parseCap(change);
+        // Admissions use this same lock. Read the clock only after taking it:
+        // an edit waiting across UTC midnight belongs to the new month.
+        requireCloudProvider(providerId, true);
+        OffsetDateTime now = utcNow();
+        LocalDate month = now.toLocalDate().withDayOfMonth(1);
+        Map<String, Object> before = readPolicy(providerId, month, false);
+        if (cap != null) {
+            initializeRecordedCosts(providerId, month, now);
+        }
+        writePolicy(providerId, month, cap);
+        audit.record("provider.monthly_spend_cap_updated", "provider", providerId, null, before,
+            readPolicy(providerId, month, true));
+        return snapshot(providerId, month);
+    }
+
+    @Transactional(timeout = 5)
     public Map<String, Object> schedule(int providerId, Change change) {
         Long cap = parseCap(change);
-        // Policy edits and admissions use the same provider lock; take the
-        // time only after the lock so a waiting edit cannot target the past.
         requireCloudProvider(providerId, true);
         OffsetDateTime now = utcNow();
         LocalDate month = now.toLocalDate().withDayOfMonth(1);
@@ -54,15 +70,46 @@ public class ProviderSpendPolicyService {
                 "Wait for UTC month rollover before scheduling a provider spend change");
         }
         Map<String, Object> before = readPolicy(providerId, next, true);
+        writePolicy(providerId, next, cap);
+        Map<String, Object> after = readPolicy(providerId, next, true);
+        audit.record("provider.monthly_spend_cap_scheduled", "provider", providerId, null, before, after);
+        return snapshot(providerId, month);
+    }
+
+    private void writePolicy(int providerId, LocalDate month, Long cap) {
         jdbc.update("""
             INSERT INTO provider_spend_policies (provider_id, effective_month, limit_micro_cents)
             VALUES (:provider, :month, :cap)
             ON CONFLICT (provider_id, effective_month) DO UPDATE
             SET limit_micro_cents = EXCLUDED.limit_micro_cents
-            """, new MapSqlParameterSource().addValue("provider", providerId).addValue("month", next).addValue("cap", cap));
-        Map<String, Object> after = readPolicy(providerId, next, true);
-        audit.record("provider.monthly_spend_cap_scheduled", "provider", providerId, null, before, after);
-        return snapshot(providerId, month);
+            """, new MapSqlParameterSource().addValue("provider", providerId).addValue("month", month).addValue("cap", cap));
+    }
+
+    private void initializeRecordedCosts(int provider, LocalDate month, OffsetDateTime now) {
+        var params = Map.of("provider", provider, "month", month, "start", month.atStartOfDay().atOffset(ZoneOffset.UTC),
+            "cutoff", now);
+        int created = jdbc.update("""
+            INSERT INTO provider_spend_months (provider_id, month_start)
+            VALUES (:provider, :month) ON CONFLICT DO NOTHING
+            """, params);
+        if (created == 0) {
+            // Once attempts can exist, their costs may also appear in the
+            // request log. Do not double count them or overwrite live holds.
+            return;
+        }
+        // Use committed, already recorded Logos costs only. Do not reprice old
+        // usage or import key reservations, unfinalized prices or unknown costs.
+        jdbc.update("""
+            UPDATE provider_spend_months
+               SET charged_micro_cents = (
+                   SELECT COALESCE(SUM(settled_cost_micro_cents), 0)
+                     FROM log_entry
+                    WHERE provider_id = :provider AND timestamp_request >= :start AND timestamp_request < :cutoff
+                      AND cost_finalized AND settled_cost_micro_cents > 0
+                      AND result_status IN ('success', 'error', 'timeout')
+               )
+             WHERE provider_id = :provider AND month_start = :month
+            """, params);
     }
 
     @Transactional(timeout = 5)

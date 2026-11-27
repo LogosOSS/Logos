@@ -56,4 +56,15 @@
             </sql>
         </rollback>
     </changeSet>
+    <changeSet id="110-recorded-provider-cost-index" author="logos" runInTransaction="false">
+        <sql>
+            CREATE INDEX CONCURRENTLY idx_log_entry_provider_finalized_cost
+                ON log_entry (provider_id, timestamp_request) INCLUDE (settled_cost_micro_cents)
+                WHERE provider_id IS NOT NULL AND cost_finalized AND settled_cost_micro_cents > 0
+                  AND result_status IN ('success', 'error', 'timeout');
+        </sql>
+        <rollback>
+            <sql>DROP INDEX CONCURRENTLY IF EXISTS idx_log_entry_provider_finalized_cost;</sql>
+        </rollback>
+    </changeSet>
 </databaseChangeLog>
