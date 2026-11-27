@@ -429,7 +429,9 @@ Expand a provider for its connected models, or for the worker control actions
 
 ![Providers page](/img/roles/logos-admin-providers.png)
 
-### Set a monthly cloud spend cap {#schedule-a-monthly-cloud-spend-cap}
+<span id="schedule-a-monthly-cloud-spend-cap" />
+
+### Set a monthly cloud spend cap
 
 1. Expand a cloud provider in **Providers**.
 2. In **Monthly spend cap**, select **Edit spend cap**.
