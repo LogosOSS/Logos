@@ -13,6 +13,8 @@ script in the repository (tracked files) and rejects:
 - `apt-get install` / `apt install` / `apk add` packages without `=version`.
 - `npm install` / `npm i` (use `npm ci`), and global installs or `npx` calls
   without an exact `@version`.
+- npm manifests with version ranges, tags or non-local sources for direct
+  dependencies, or overrides that do not point to a reviewed exact pin.
 - `brew install` (Homebrew cannot pin versions) and `curl … | sh` installers.
 - `uv python install` without an exact x.y.z version.
 - Dockerfile `FROM` images without a version tag (or with `latest`).
@@ -318,15 +320,40 @@ def check_workflow_steps(text: str) -> list[tuple[int, str]]:
     return problems
 
 
+def check_npm_manifest(manifest: dict, directory: Path) -> list[str]:
+    """Keep npm's direct requirements exact; npm ci verifies the hashed lock."""
+    problems = []
+    direct = {}
+    for section in ("dependencies", "devDependencies", "optionalDependencies"):
+        for name, version in manifest.get(section, {}).items():
+            direct[name] = version
+            if isinstance(version, str):
+                if EXACT_VERSION.fullmatch(version):
+                    continue
+                if version.startswith("file:"):
+                    target = (directory / version.removeprefix("file:")).resolve()
+                    if target.is_relative_to(directory.resolve()) and (target / "package.json").is_file():
+                        continue
+            problems.append(f"npm: {section} {name!r} must use an exact version or checked-in local package")
+    for name, version in manifest.get("overrides", {}).items():
+        if isinstance(version, str):
+            if EXACT_VERSION.fullmatch(version) or (version.startswith("$") and version[1:] in direct):
+                continue
+        problems.append(f"npm: override {name!r} must use an exact version or refer to a direct dependency")
+    return problems
+
+
 def check_file(path: Path, root: Path = ROOT) -> list[tuple[int, str]]:
     rel = path.relative_to(root).as_posix()
     text = path.read_text(encoding="utf-8", errors="replace")
     problems: list[tuple[int, str]] = []
     if path.name == "package.json":
         try:
-            scripts = json.loads(text).get("scripts", {})
+            manifest = json.loads(text)
         except json.JSONDecodeError:
-            scripts = {}
+            manifest = {}
+        problems.extend((0, problem) for problem in check_npm_manifest(manifest, path.parent))
+        scripts = manifest.get("scripts", {})
         for name, command in scripts.items():
             for problem in check_command(command):
                 problems.append((0, f"{problem} (script {name!r})"))

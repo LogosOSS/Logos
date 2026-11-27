@@ -6,7 +6,7 @@
 # Self-built installations can override REGISTRY with their own image source.
 services:
   traefik:
-    image: traefik:v3.7.19
+    image: traefik:v3.8.0
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -372,7 +372,7 @@ services:
     # via `docker compose up -d --remove-orphans --scale logos-webservice=$N`
     # on docker-compose.yaml only (worker compose files skip --scale). See
     # docs/deployment.md#inference-gateway-replicas. Cloud RPM/TPM stay shared
-    # across replicas via Redis (`logos-redis`).
+    # across replicas via Valkey (`logos-redis`).
     # Liquibase serialises schema apply via its database changelog lock.
     restart: unless-stopped
     depends_on:
@@ -578,14 +578,17 @@ services:
 
   # Shared cloud RPM/TPM window for logos-webservice replicas. Ephemeral:
   # a restart clears the sliding window (limits reset for up to 60 s).
+  # Keep the Compose service name and credential keys for in-place upgrades and rollback.
   logos-redis:
-    image: redis:7-alpine
+    image: valkey/valkey:9.2.1-alpine@sha256:3ad5a213cb1bc2fd4a113c89b6248a88655a6bf1dda69519d04e03cd3e3d2742
+    tmpfs:
+      - /data
     container_name: logos-redis
     restart: unless-stopped
     environment:
-      REDISCLI_AUTH: "${LOGOS_REDIS_PASSWORD:?LOGOS_REDIS_PASSWORD must be set}"
+      VALKEYCLI_AUTH: "${LOGOS_REDIS_PASSWORD:?LOGOS_REDIS_PASSWORD must be set}"
     command:
-      - redis-server
+      - valkey-server
       - --save
       - ""
       - --appendonly
@@ -593,7 +596,7 @@ services:
       - --requirepass
       - "${LOGOS_REDIS_PASSWORD:?LOGOS_REDIS_PASSWORD must be set}"
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "valkey-cli", "-e", "ping"]
       interval: 2s
       timeout: 3s
       retries: 10
@@ -723,7 +726,6 @@ services:
       LOGOS_AGENT_SECURITY_ENABLED: "${LOGOS_AGENT_SECURITY_ENABLED:-true}"
       LOGOS_AGENT_SECURITY_FEEDS_ENABLED: "${LOGOS_AGENT_SECURITY_FEEDS_ENABLED:-true}"
       LOGOS_AGENT_TRIGGERS_ENABLED: "${LOGOS_AGENT_TRIGGERS_ENABLED:-true}"
-      LOGOS_AGENT_DEPLOY_ENABLED: "${LOGOS_AGENT_DEPLOY_ENABLED:-false}"
       LOGOS_AGENT_DEV_BASE_URL: "${LOGOS_AGENT_DEV_BASE_URL:-https://logos-dev.aet.cit.tum.de}"
       # The volume that backs the runner's per-session state (the pause mark).
       # It must name the *actual* Docker volume behind the mount below. A
@@ -732,6 +734,9 @@ services:
       # a literal name and this matches it. That is what keeps the child's bind
       # source on the same storage the runner writes the mark into.
       LOGOS_AGENT_STATE_VOLUME: "${LOGOS_AGENT_STATE_VOLUME:-logos_agent_state}"
+      LOGOS_AGENT_VERIFICATION_SCRATCH_VOLUME: "${LOGOS_AGENT_VERIFICATION_SCRATCH_VOLUME:-logos_agent_verifier_scratch}"
+      LOGOS_AGENT_VERIFICATION_SCRATCH_MAX_GIB: "${LOGOS_AGENT_VERIFICATION_SCRATCH_MAX_GIB:-20}"
+      LOGOS_AGENT_VERIFICATION_SCRATCH_MIN_FREE_GIB: "${LOGOS_AGENT_VERIFICATION_SCRATCH_MIN_FREE_GIB:-10}"
     volumes:
       # Needed to create session containers. This is the one privileged thing
       # the runner holds — and precisely what it never passes on: session
@@ -741,6 +746,11 @@ services:
       # Runner-owned session state, shared with the child read-only: a pause
       # mark written here is the mark the agent container reads.
       - agent_state:/var/lib/logos-agent/state
+      - type: volume
+        source: agent_verification_scratch
+        target: /var/lib/logos-agent/verification-scratch
+        volume:
+          nocopy: true
     expose:
       - "8082"
     # On purpose *not* attached to the agent network: the runner controls
@@ -868,6 +878,10 @@ volumes:
   # child mounts a directory the runner never writes the pause mark into.
   agent_state:
     name: logos_agent_state
+  # Compose creates this plain local volume for the verifier on the Docker host.
+  agent_verification_scratch:
+    driver: local
+    name: "${LOGOS_AGENT_VERIFICATION_SCRATCH_VOLUME:-logos_agent_verifier_scratch}"
 
 networks:
   internal:

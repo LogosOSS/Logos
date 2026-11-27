@@ -12,7 +12,7 @@
 # Build context is the `logos/` directory:
 #   docker build -f e2e/harness/nodesim/Dockerfile logos/
 
-FROM python:3.13-slim-trixie@sha256:e48f59cdba69a3cbd9ed2cf0f348d90d45a8d350d98134cf1070bc106ee9ed90
+FROM python:3.13-slim-trixie@sha256:7249d5587b78209a006dc4a3b5340678f84ea729239193aa559962cd8c1fce50
 
 WORKDIR /app
 
@@ -26,7 +26,7 @@ ENV PYTHONUNBUFFERED=1 \
 # apt installs exact versions from a fixed Debian archive snapshot, so every
 # build gets the same packages; bump APT_SNAPSHOT, the pins and the base image
 # digest together.
-ARG APT_SNAPSHOT=20261117T000000Z
+ARG APT_SNAPSHOT=20261123T000000Z
 RUN sed -i -E \
       -e "s#https?://deb\.debian\.org/debian-security/?#https://snapshot.debian.org/archive/debian-security/${APT_SNAPSHOT}/#g" \
       -e "s#https?://deb\.debian\.org/debian/?#https://snapshot.debian.org/archive/debian/${APT_SNAPSHOT}/#g" \

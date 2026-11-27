@@ -5,18 +5,28 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 
+import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import glide.api.models.exceptions.RequestException;
+import io.valkey.springframework.data.valkey.connection.ValkeyConnectionFactory;
+import io.valkey.springframework.data.valkey.core.StringValkeyTemplate;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.env.YamlPropertySourceLoader;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.core.io.ClassPathResource;
+import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.dao.InvalidDataAccessApiUsageException;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
@@ -33,16 +43,19 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
 
 import de.tum.cit.aet.logos.logoswebservice.identity.entity.ApiKeyType;
+import de.tum.cit.aet.logos.logoswebservice.notifications.realtime.NotificationEvent;
+import de.tum.cit.aet.logos.logoswebservice.notifications.realtime.NotificationFanout;
+import de.tum.cit.aet.logos.logoswebservice.notifications.realtime.NotificationSocketHandler;
 
 /**
- * Shared cloud RPM/TPM via Redis — every webservice replica sees the same window.
+ * Shared cloud RPM/TPM via Valkey — every webservice replica sees the same window.
  */
 @SpringBootTest
 @Testcontainers
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 class GatewayCloudRateLimiterTest {
 
-    private static final String REDIS_PASSWORD = "test-only-redis-password";
+    private static final String VALKEY_PASSWORD = "test-only-valkey-password";
 
     @Autowired
     JdbcTemplate jdbc;
@@ -50,8 +63,17 @@ class GatewayCloudRateLimiterTest {
     @Autowired
     GatewayCloudRateLimiter rateLimiter;
 
+    @Autowired
+    NotificationFanout fanout;
+
+    @Autowired
+    ValkeyConnectionFactory connectionFactory;
+
+    @MockitoBean
+    NotificationSocketHandler sockets;
+
     @MockitoSpyBean
-    StringRedisTemplate redis;
+    StringValkeyTemplate valkey;
 
     @MockitoSpyBean
     GatewayDeploymentRepository deployments;
@@ -68,9 +90,24 @@ class GatewayCloudRateLimiterTest {
 
     @Container
     @SuppressWarnings("resource")
-    static GenericContainer<?> redisContainer = new GenericContainer<>(DockerImageName.parse("redis:7-alpine"))
+    static GenericContainer<?> valkeyContainer = new GenericContainer<>(valkeyImage())
             .withExposedPorts(6379)
-            .withCommand("redis-server", "--requirepass", REDIS_PASSWORD);
+            .withCommand("valkey-server", "--save", "", "--appendonly", "no", "--requirepass", VALKEY_PASSWORD);
+
+    private static DockerImageName valkeyImage() {
+        // Use the Compose pin so Dependabot also updates the test runtime.
+        try {
+            return new YamlPropertySourceLoader()
+                .load("e2e", new ClassPathResource("e2e/docker-compose.e2e.yaml")).stream()
+                .map(source -> source.getProperty("services.logos-redis.image"))
+                .filter(String.class::isInstance)
+                .map(String.class::cast)
+                .map(DockerImageName::parse)
+                .findFirst().orElseThrow();
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
 
     @DynamicPropertySource
     @SuppressWarnings("unused")
@@ -82,10 +119,11 @@ class GatewayCloudRateLimiterTest {
         registry.add("spring.liquibase.enabled", () -> "true");
         registry.add("spring.liquibase.change-log", () -> "classpath:liquibase/changelog/master.xml");
         registry.add("spring.jpa.hibernate.ddl-auto", () -> "validate");
-        registry.add("spring.data.redis.password", () -> REDIS_PASSWORD);
-        registry.add("spring.data.redis.host", redisContainer::getHost);
-        registry.add("spring.data.redis.port", () -> redisContainer.getMappedPort(6379));
-        registry.add("spring.data.redis.timeout", () -> "1s");
+        registry.add("spring.data.valkey.password", () -> VALKEY_PASSWORD);
+        registry.add("spring.data.valkey.host", valkeyContainer::getHost);
+        registry.add("spring.data.valkey.port", () -> valkeyContainer.getMappedPort(6379));
+        registry.add("spring.data.valkey.timeout", () -> "1s");
+        registry.add("logos.notifications.fanout", () -> "redis");
         registry.add("logos.gateway.budget-reservation-reconcile-seconds", () -> "3600");
     }
 
@@ -94,15 +132,41 @@ class GatewayCloudRateLimiterTest {
         "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}".getBytes(StandardCharsets.UTF_8);
 
     @BeforeEach
-    void flushRedis() {
-        var factory = redis.getConnectionFactory();
+    void flushValkey() {
+        var factory = valkey.getConnectionFactory();
         if (factory == null) {
             return;
         }
         try (var connection = factory.getConnection()) {
             connection.serverCommands().flushAll();
         }
-        clearInvocations(redis, deployments);
+        clearInvocations(valkey, deployments);
+    }
+
+    @Test
+    void valkeyExceptionTranslationOnlyClaimsGlideFailures() {
+        assertThat(connectionFactory.translateExceptionIfPossible(new IllegalArgumentException("not a store error")))
+            .isNull();
+        assertThat(connectionFactory.translateExceptionIfPossible(new DataIntegrityViolationException("Postgres constraint")))
+            .isNull();
+        assertThat(connectionFactory.translateExceptionIfPossible(new RequestException("WRONGTYPE Operation")))
+            .isInstanceOf(InvalidDataAccessApiUsageException.class);
+    }
+
+    @Test
+    void notificationsPublishedToValkeyReachTheLocalReplica() {
+        var inboundEvent = new NotificationEvent(1L, Map.of("title", "From another replica"));
+        // Publish directly to the shared channel to exercise subscription, not the
+        // local delivery fallback invoked when a publish fails.
+        assertThat(valkey.convertAndSend("logos:notifications",
+            """
+            {"notificationId":1,"notification":{"title":"From another replica"}}
+            """)).isPositive();
+        verify(sockets, timeout(5000)).deliverLocally(inboundEvent);
+
+        var outboundEvent = new NotificationEvent(2L, Map.of("title", "From this replica"));
+        fanout.publish(outboundEvent);
+        verify(sockets, timeout(5000)).deliverLocally(outboundEvent);
     }
 
     @Test
@@ -126,8 +190,8 @@ class GatewayCloudRateLimiterTest {
     void rpmOnly_doesNotRecordTpmClaims() {
         GatewayKey key = seedKey(10, null);
         assertThatCode(() -> rateLimiter.enforce(key, BODY)).doesNotThrowAnyException();
-        assertThat(redis.opsForZSet().zCard("gw:tpm:" + key.id())).isZero();
-        assertThat(redis.opsForValue().get("gw:tpm:sum:" + key.id())).isNull();
+        assertThat(valkey.opsForZSet().zCard("gw:tpm:" + key.id())).isZero();
+        assertThat(valkey.opsForValue().get("gw:tpm:sum:" + key.id())).isNull();
     }
 
     @Test
@@ -138,16 +202,16 @@ class GatewayCloudRateLimiterTest {
         GatewayKey key = seedKey(10, null);
         String tpmKey = "gw:tpm:" + key.id();
         String tpmSumKey = "gw:tpm:sum:" + key.id();
-        redis.opsForZSet().add(tpmKey, "stale-a:400", 1.0);
-        redis.opsForZSet().add(tpmKey, "stale-b:100", 2.0);
-        redis.opsForValue().set(tpmSumKey, "500");
+        valkey.opsForZSet().add(tpmKey, "stale-a:400", 1.0);
+        valkey.opsForZSet().add(tpmKey, "stale-b:100", 2.0);
+        valkey.opsForValue().set(tpmSumKey, "500");
 
         assertThatCode(() -> rateLimiter.enforce(key, BODY)).doesNotThrowAnyException();
 
-        assertThat(redis.opsForZSet().zCard(tpmKey)).isZero();
-        assertThat(redis.opsForValue().get(tpmSumKey)).isEqualTo("0");
+        assertThat(valkey.opsForZSet().zCard(tpmKey)).isZero();
+        assertThat(valkey.opsForValue().get(tpmSumKey)).isEqualTo("0");
         // RPM-only must not write new TPM claims.
-        assertThat(redis.opsForZSet().range(tpmKey, 0, -1)).isNullOrEmpty();
+        assertThat(valkey.opsForZSet().range(tpmKey, 0, -1)).isNullOrEmpty();
     }
 
     @Test
@@ -227,7 +291,7 @@ class GatewayCloudRateLimiterTest {
                 rateLimiter.enforce(key, BODY);
             }
         }
-        verifyNoInteractions(redis);
+        verifyNoInteractions(valkey);
     }
 
     @Test
@@ -290,7 +354,7 @@ class GatewayCloudRateLimiterTest {
             rateLimiter.enforce(key, BODY);
         }
         verify(deployments, never()).findTeamCloudRateLimits(org.mockito.ArgumentMatchers.anyInt());
-        verifyNoInteractions(redis);
+        verifyNoInteractions(valkey);
     }
 
     @Test
@@ -304,20 +368,20 @@ class GatewayCloudRateLimiterTest {
     }
 
     @Test
-    void emptySnapshotSkipsUnavailableRedisAndPositiveSnapshotFailsClosed() {
+    void emptySnapshotSkipsUnavailableValkeyAndPositiveSnapshotFailsClosed() {
         GatewayKey empty = deployments.findActiveKey(seedKey(null, null).keyValue()).orElseThrow();
         GatewayKey legacy = seedKey(null, null);
         setTeamLimits(legacy, 2, null);
         GatewayKey positive = deployments.findActiveKey(legacy.keyValue()).orElseThrow();
-        redisContainer.getDockerClient().pauseContainerCmd(redisContainer.getContainerId()).exec();
+        valkeyContainer.getDockerClient().pauseContainerCmd(valkeyContainer.getContainerId()).exec();
         try {
             rateLimiter.enforce(empty, BODY);
-            verifyNoInteractions(redis);
+            verifyNoInteractions(valkey);
             assertThatThrownBy(() -> rateLimiter.enforce(positive, BODY))
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThatStatus((ResponseStatusException) e, HttpStatus.SERVICE_UNAVAILABLE));
         } finally {
-            redisContainer.getDockerClient().unpauseContainerCmd(redisContainer.getContainerId()).exec();
+            valkeyContainer.getDockerClient().unpauseContainerCmd(valkeyContainer.getContainerId()).exec();
         }
     }
 

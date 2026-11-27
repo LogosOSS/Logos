@@ -7,14 +7,10 @@
       @for (bar of bars; track bar.point.key) {
         <div
           class="trend-slot"
-          [class.marked]="bar.marked"
           [attr.title]="bar.point.label + ': ' + formatCount(bar.point.value)"
           (mouseenter)="hovered.set(bar.point.key)"
           (mouseleave)="hovered.set(null)"
         >
-          @if (bar.marked) {
-            <span class="trend-marker-label">{{ markerLabel }}</span>
-          }
           <span
             class="trend-bar"
             [class.highlighted]="hovered() === bar.point.key"

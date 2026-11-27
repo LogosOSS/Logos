@@ -4,7 +4,7 @@
     <h1 class="page-title">Agent Sessions</h1>
     <p class="page-subtitle">
       Coding agents running in isolated containers on capacity Logos is not otherwise using.
-      Sessions act on the dev environment only, and every change arrives as a pull request.
+      Sessions can keep results in Logos or publish changes for review. Sessions do not deploy changes.
     </p>
     <div class="page-header__actions">
       <button type="button" class="btn-primary" (click)="openForm()" [disabled]="showForm()">
@@ -148,8 +148,8 @@
         <div>
           <h2 class="card__title" id="new-session-title">Start a session</h2>
           <p class="card__subtitle">
-            The agent works unattended in the selected workspace and reports back as a pull
-            request.
+            The agent works in the selected workspace. You can keep the result in Logos
+            without publishing it to GitHub.
           </p>
         </div>
         <button
@@ -254,9 +254,9 @@
             placeholder="/dashboard /models"
             [ngModel]="formScreenshots()"
             (ngModelChange)="formScreenshots.set($event)"
-            [disabled]="linkedRepositorySelected()"
+            [disabled]="linkedRepositorySelected() || formNoPush()"
           />
-          <span class="field__hint">Pages on the dev environment to capture after deploying.</span>
+          <span class="field__hint">Pages on the current Dev instance. Capturing them does not deploy these changes.</span>
         </label>
 
         <label class="field">
@@ -287,24 +287,24 @@
             <label class="checkbox">
               <input
                 type="checkbox"
-                [ngModel]="formOpenPr()"
-                (ngModelChange)="formOpenPr.set($event)"
+                [ngModel]="formNoPush()"
+                (ngModelChange)="formNoPush.set($event)"
               />
-              <span>Open a pull request when finished</span>
+              <span>Private session: no GitHub writes</span>
             </label>
             <label class="checkbox">
               <input
                 type="checkbox"
-                [ngModel]="formDeploy()"
-                (ngModelChange)="formDeploy.set($event)"
-                [disabled]="linkedRepositorySelected()"
+                [ngModel]="!formNoPush() && formOpenPr()"
+                [disabled]="formNoPush()"
+                (ngModelChange)="formOpenPr.set($event)"
               />
-              <span>Deploy to the dev environment afterwards</span>
+              <span>Open a pull request when finished</span>
             </label>
           </div>
           @if (linkedRepositorySelected()) {
             <p class="field__hint">
-              Deploy to dev and screenshots are available only for the platform repository.
+              Dev screenshots are available only for the platform repository.
             </p>
           }
         </div>
@@ -883,51 +883,13 @@
       </div>
     </section>
 
-    <section class="card" aria-labelledby="workspaces-title">
-      <div class="card__head">
-        <h2 class="card__title" id="workspaces-title">
-          Workspaces <span class="section-count">{{ workspaces().length }}</span>
-        </h2>
-      </div>
-      @if (workspaces().length > 0) {
-        <ul class="workspace-list">
-          @for (workspace of workspaces(); track workspace.id) {
-            <li class="workspace">
-              <i class="pi pi-folder workspace__icon" aria-hidden="true"></i>
-              <span class="workspace__name">{{ workspace.name }}</span>
-              <span class="workspace__branch">from {{ workspace.base_branch }}</span>
-              @if (occupantOf(workspace); as busy) {
-                <!-- Which session is in there, not merely that one is: a
-                     workspace runs one session at a time, and "busy" left the
-                     other half of that sentence to be guessed. -->
-                <button
-                  type="button"
-                  class="link-btn workspace__busy"
-                  (click)="select(busy)"
-                  [title]="busy.task"
-                >
-                  session #{{ busy.id }} · {{ taskPreview(busy.task) }}
-                </button>
-              } @else if (workspace.active_sessions > 0) {
-                <span class="workspace__busy">busy</span>
-              } @else {
-                <button
-                  type="button"
-                  class="btn-icon btn-icon--danger"
-                  (click)="deleteWorkspace(workspace)"
-                  [attr.aria-label]="'Delete workspace ' + workspace.name"
-                  title="Delete"
-                >
-                  <i class="pi pi-trash" aria-hidden="true"></i>
-                </button>
-              }
-            </li>
-          }
-        </ul>
-      } @else {
-        <p class="field__hint">No workspaces yet. Create one in the New session form.</p>
-      }
-    </section>
+    <app-agent-workspaces
+      [workspaces]="workspaces()"
+      [storage]="workspaceStorage()"
+      [occupants]="occupants()"
+      (sessionSelected)="select($event)"
+      (workspaceDeleted)="deleteWorkspace($event)"
+    />
   </div>
 
   <!-- ── What every session is told ────────────────────────────────────────── -->

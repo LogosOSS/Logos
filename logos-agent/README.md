@@ -4,9 +4,9 @@ Runs coding agents in isolated containers, on serving capacity Logos is not
 otherwise using, and gives that capacity back the moment a user needs it.
 
 A session is one agent run: it gets a working copy, a task, and a Logos key.
-It works unattended, and what it produces arrives as a pull request that
-a human reviews like any other. Sessions can be told to deploy their result to
-the **dev** environment and screenshot the pages they changed.
+It works unattended, and its results stay in Logos or arrive as a pull request
+that a person reviews. An operator deploys changes separately. A platform
+session can request screenshots of the **Dev** instance already running.
 
 ## Why this exists
 
@@ -101,6 +101,12 @@ bounds the runner's own concurrency is the parallel ceiling, not the load.
 | At least 10 seconds continuously without user backlog, plus a newer relevant engine observation | At most one paused session resumes per new observation |
 | Dispatch budget temporarily exhausted (`awaiting_signal`) | No additional session starts; running sessions continue |
 | Orchestrator unreachable or required engine observations stale/unknown | Nothing starts or resumes; running sessions pause |
+
+Internal benchmark requests count toward engine usage, but their scheduler
+backlog is not user backlog. A benchmark reservation cannot offer dispatch
+headroom. On a reserved deployment the runner excludes only engine waiters
+that the benchmark ledger can account for. It treats other waiters as
+possible user requests.
 
 Concurrent creation-triggered passes share the same observation budget. Worker
 heartbeats and counter-only runtime revisions do not replenish it: the identity
@@ -209,15 +215,20 @@ Enough to work on any part of this repository, and nothing else:
 
 | Tool | Version | Why |
 |---|---|---|
-| Claude Code | 2.1.245 | The agent. Driven headless: `claude -p … --output-format stream-json` |
+| Claude Code | Workspace npm manifest | The agent. Driven headless: `claude -p … --output-format stream-json` |
 | Node | 22 | logos-ui |
 | Python | 3.11 (system) + **3.13 via uv** | Logos targets 3.13; bookworm ships 3.11, and a read-only rootfs cannot download an interpreter at runtime, so it is preinstalled into `/opt/uv-python` |
 | Temurin JDK / Maven | 25 / 3.10 | logos-webservice compilation, with Maven and a warm repository available offline |
-| gh | 2.98 | Opening the pull request |
-| Chromium (Playwright) | 151 | Screenshots of the dev environment |
+| gh | Dockerfile pin | Opening the pull request |
+| Chromium | Revision selected by locked Playwright | Screenshots of the dev environment |
 
-Versions are pinned as build args; bump them deliberately rather than letting a
-session's behaviour drift between builds.
+The workspace's [npm manifest](workspace/package.json) and lockfile pin
+Claude Code and Playwright, including the native CLI package and the matching
+Chromium revision. Dependabot opens weekly update PRs for these packages.
+The weekly platform report still lists candidate versions; for Claude Code it
+checks the vendor's `stable` tag. Review Claude Code proposals against that
+channel before merging. The workspace image installs with `npm ci` and does
+not let Claude Code update itself at runtime.
 
 Java and Angular dependencies are resolved when this image is built. Sessions
 can run `python3 /usr/local/lib/verify_checkout.py logos-webservice logos-ui`
@@ -234,7 +245,7 @@ configuration cannot alter the authoritative build. The finalizer checks the
 same tree ID before pushing. Neither
 the checkout baseline nor the authoritative check outcome comes from an
 agent-written result file. Failed or unavailable checks produce a draft PR with
-diagnostics and a failed session; deployment is not dispatched. Existing PRs
+diagnostics and a failed session. Existing PRs
 are made drafts before such a push. Successful checks do not automatically
 mark an existing draft ready for review. Python and other services still need
 their normal tests; this automatic gate covers Java and Angular.
@@ -286,16 +297,15 @@ content in them. Search results are untrusted external data.
 ## What a session may and may not do
 
 **May:** read and change the working copy, run tests and linters, push a branch
-under `logos/agent/`, open a pull request, and — if enabled — have its result
-deployed to dev and screenshotted. Sessions of a linked repository may, within
+under `logos/agent/`, open a pull request, and request screenshots of the
+currently running Dev instance on the platform repository. Sessions of a linked repository may, within
 the bounds in [Working the way the repository asks](#working-the-way-the-repository-asks),
 reach allowed HTTPS hosts, keep a workspace cache, read issues and — where
 allowed — comment.
 
 **May not:** reach the Docker daemon, run as root, push to `main` or any
-protected branch, dispatch a workflow, or touch production. The deploy is
-dispatched *by this service*, with a token the container never receives, and
-only for `logos_deploy-dev.yml`; any other workflow is refused in code.
+protected branch, dispatch a workflow, deploy, or touch production. Deployment
+is an operator action separate from an agent session.
 
 Branch names are derived from the session id, not chosen by the agent, so two
 sessions cannot collide and no workspace name can steer a push at a protected
@@ -393,7 +403,6 @@ unused and can be removed.
 | `LOGOS_AGENT_SESSION_TIMEOUT_S` | `0` | Wall-clock ceiling per session; `0` is none, which is the default |
 | `LOGOS_AGENT_SESSION_MODEL_URL` | `http://logos-agent-gateway` | Where sessions send model traffic — a gateway that exposes only the orchestrator's `/v1` model surface, so a session never reaches the rest of the internal network |
 | `LOGOS_AGENT_SESSION_GITHUB_TOKEN` | falls back to the token above | Given to containers; best without `workflow` scope |
-| `LOGOS_AGENT_DEPLOY_ENABLED` | `false` | Whether dev deploys may be dispatched at all |
 | `LOGOS_AGENT_EGRESS_PROXY_URL` | `http://logos-agent-egress-proxy:3128` | The allowlisting HTTPS proxy for linked-repository sessions; empty turns internet access off for every session |
 
 ### The GitHub account
@@ -403,11 +412,10 @@ Everything this service does on GitHub happens as one account —
 comments are visibly the platform's own, whose access is withdrawn in one
 place, and which owns nothing a human contributor owns.
 
-A classic personal access token from that account needs exactly two scopes:
-
-- **`repo`** — push branches, open pull requests, read commit status and checks.
-- **`workflow`** — dispatch the dev deploy, and let a session change files
-  under `.github/workflows/` like any other part of the repository.
+A classic personal access token from that account needs **`repo`** to push
+branches, open pull requests, and read commit status and checks. Give the
+publication token **`workflow`** only if it must publish changes to files under
+`.github/workflows/`. The runner does not dispatch deployments.
 
 Nothing else: no `admin:repo_hook` (the runner polls rather than listening for
 webhooks, so it needs no inbound door), no package scopes, no organisation
@@ -653,6 +661,7 @@ pytest              # capacity gating, state machine, branch derivation
 | `GET` | `/triggers` | Whether the runner reacts to the repository, and what it queued |
 | `GET` | `/repositories` | Linked team repositories with the coding agent enabled, for manual sessions |
 | `GET`/`POST` | `/workspaces` | List and create workspaces |
+| `GET` | `/workspace-storage` | Read Docker sizes by workspace ID and capacity of the runner artifact filesystem |
 | `DELETE` | `/workspaces/{id}` | Remove a workspace (refused while occupied) |
 | `GET`/`POST` | `/sessions` | List and queue sessions (`team_repository_id` targets a linked repository) |
 | `GET` | `/sessions/{id}` | One session |
@@ -729,11 +738,10 @@ an `Authorization` header, and the token is what authorises the read.
   no later pass finds that issue, review or question again.
 - **Nothing merges itself.** A person
   approves and merges exactly as they do for human work.
-- **Screenshots follow the deploy.** A session that asks for dev screenshots
-  gets them only after the runner has dispatched its dev deploy and watched
-  the environment serve again — the runner captures the pages in one-shot
-  containers, so the photos show the revision the session just deployed, not
-  the one that was live while the session ran.
+- **Screenshots show the running Dev instance.** Platform sessions that request
+  Dev screenshots capture the current shared instance in one-shot containers.
+  The screenshots do not put the session's changes on Dev or prove that they
+  are deployed.
 
 ### Coding in linked team repositories
 
@@ -776,6 +784,44 @@ gets. Deploys and screenshots stay with the platform repository. An idle
 workspace that last worked on another repository is moved to the link's branch;
 a busy one is refused.
 
+#### Disk scratch for verification
+
+The bundled Compose configuration automatically creates the plain local Docker
+volume `logos_agent_verifier_scratch` when the `agent` profile is enabled.
+Deploying from Logos does not require a separate disk or host configuration.
+The verifier requires Docker Engine 26 or newer to mount only its individual
+subdirectory; there is no fallback that mounts the whole volume.
+An independently deployed runner must mount that volume at
+`/var/lib/logos-agent/verification-scratch` and set
+`LOGOS_AGENT_VERIFICATION_SCRATCH_VOLUME` to its actual Docker name.
+
+The verifier mounts only a private directory on that volume and points
+`TMPDIR` and Java's temporary directory there. Its root, workspace, cache
+and artifacts stay read-only, with no network or credentials. There is no
+RAM-backed fallback. Only one verifier may use the volume at a time; a
+contender waits up to `LOGOS_AGENT_HELPER_TIMEOUT_S` for the slot. The runner
+deletes scratch only after Docker releases its container and reconciles
+orphaned helpers on restart.
+
+A verifier will not start unless its volume's filesystem has more than the
+configured free-space floor plus 1 GiB, and more than 16,384 free inodes.
+While starting and running the verifier, the runner samples space and inodes
+every 250 ms. It force-removes the verifier if available space drops by
+`LOGOS_AGENT_VERIFICATION_SCRATCH_MAX_GIB` (default 20 GiB) from its admission
+sample, hits `LOGOS_AGENT_VERIFICATION_SCRATCH_MIN_FREE_GIB` (default 10 GiB),
+or falls to the inode floor. Individual files are limited to 8 GiB by the
+verifier's kernel file-size limit; Docker rotates logs separately. Missing
+storage, failed checks or exhausted headroom fail verification and allow
+only a draft PR.
+
+Docker local volumes share the host filesystem. These checks are **not a hard
+aggregate quota**: unrelated writers can trigger them, unrelated deletions can
+mask verifier growth, and rapid writes or delayed Docker removal can
+overshoot between samples. If the runner crashes, monitoring depends on
+restarting it and cleaning up its orphaned containers. Monitor host free
+space as usual. Normal agent
+sessions are unaffected; a manual check cannot replace the runner's verification.
+
 #### Working the way the repository asks
 
 Repositories have their own contribution process: claim an issue with a
@@ -793,6 +839,14 @@ an agent steered by text it read cannot turn it against anybody.
 | **Fork** | Automatic when the agent account cannot push | The account's own fork, created on first use; a same-named repository that is not a fork of the target is refused. Leases, workflow refusal and token identity checks are unchanged. |
 | **Closing references** from `closes.txt` | Every linked-repository session | Only open issues assigned to the agent account, i.e. given to it or claimed through the repository's process. |
 
+For a manual private session, set `no_push` to `true` and `open_pull_request` to `false`
+in `POST /sessions`. Leave `screenshot_paths` empty. The legacy
+`deploy_to_dev` field can be omitted or set to `false`; `true` returns 400 for
+all sessions.
+The session keeps linked repository issue reads but cannot post comments, create a fork,
+push a branch, or open a pull request. The caller can review the result in **Agent messages**.
+This option does not change repository-triggered sessions.
+
 The request files are the whole protocol of `logos-github`: the agent writes
 JSON into `/artifacts/github-requests/`, the runner answers into the session's
 read-only state directory within seconds (`app/github_broker.py`). A planted
@@ -803,6 +857,11 @@ Verification of a linked repository still runs with no network. Toolchains
 and prebuilt dependencies the build and test command needs belong in
 `$LOGOS_CACHE_DIR`, which the command can read; a command that needs more than
 the default ten minutes needs a larger `LOGOS_AGENT_HELPER_TIMEOUT_S`.
+
+A fresh branch whose trusted candidate tree exactly matches its prepared base
+has nothing to publish. The runner records verification as skipped, without
+running the build command, pushing a branch, or changing the workspace's base.
+Existing branch retries still verify the complete pull request diff.
 
 #### Model disclosure
 

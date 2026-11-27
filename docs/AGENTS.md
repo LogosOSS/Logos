@@ -249,7 +249,8 @@ capturing.
 
    The seed creates: team **Logos** with the three users as members; developer
    + application keys with rate-limit settings; cloud + local-looking
-   providers and three models (capabilities, aliases, prices); policies;
+   providers and three models (capabilities, aliases, prices), plus one model
+   automatically allowed through Azure only; policies;
    priced `log_entry` rows (billing + statistics + My Workspace usage bars);
    one `in_progress` and one `completed` batch; agent workspaces/sessions;
    the linked repository `docs-example/sample-app` with the coding agent,
@@ -298,6 +299,14 @@ This flag adds a status row only. It does not execute inference.
 After capture, delete jobs whose `request_payload->>'purpose'` equals `docs-performance-status`.
 Disable the schedule after capture and stop the example worker with Ctrl+C.
 Then stop the screenshots stack.
+
+### Public hourly load example
+
+Use the disposable screenshot stack. Apply `seed/public-hourly-request-load.sql`
+to its database after the role seed. This adds three example teams and
+requests in the latest publication period. Allow the public stats cache to
+refresh before capture. Open `/usage` without signing in. Capture **Typical hourly
+request load** after the chart appears.
 
 ### Shot matrix
 
@@ -371,13 +380,14 @@ flows use a **concept** name (no role prefix); role-only list pages keep the
 | `logos-admin-agents-messages.png` | `tobias.wasner` | Expanded **Agent messages** with parent and child output, a list and code | `roles/logos-admin.md#agent-sessions` |
 | `logos-admin-agents-new-session.png` | `tobias.wasner` | `/agents` — **New session**, **Repository** `docs-example/sample-app (develop)` selected (needs the agent runner API on `/api/agent`) | `roles/logos-admin.md#start-a-session` |
 | `logos-admin-my-workspace.png` | `tobias.wasner` | `/my-workspace` | `roles/logos-admin.md` |
+| `public-stats-hourly-load.png` | no sign-in | `/usage` — **Typical hourly request load**, with `seed/public-hourly-request-load.sql` applied | `roles/app-admin.md#settings` |
 | `app-admin-models.png` | `alexandra.szuminska` | `/models` | `roles/app-admin.md` |
 | `app-admin-user-management.png` | `alexandra.szuminska` | `/user-management` | `roles/app-admin.md` |
 | `app-admin-team-management.png` | `alexandra.szuminska` | `/team-management` | `roles/app-admin.md` |
 | `team-detail-overview.png` | owner or `logos_admin` | `/teams/<id>` — **Overview** | `roles/app-admin.md#teams` |
 | `team-members-csv.png` | `alexandra.szuminska` | **Members → Import CSV**, file mapped and existing team selected | `roles/app-admin.md#members` |
 | `team-detail-members.png` | same | `/teams/<id>` — **Members** | same |
-| `team-detail-application-keys.png` | owner or `logos_admin` | `/teams/<id>` — **Application Keys** | same |
+| `team-detail-application-keys.png` | owner or `logos_admin` | `/teams/<id>` — **Application Keys**, **Show permissions** for a default key | same |
 | `team-detail-repositories.png` | owner or `logos_admin` | `/teams/<id>` — **Repositories** | same |
 | `team-detail-repository-agent.png` | same | `/teams/<id>` — **Repositories → Edit**, coding agent enabled and automatic workflow analysis off | `roles/app-admin.md#enable-the-coding-agent` |
 | `team-detail-workflows.png` | owner or `logos_admin` | `/teams/<id>` — **Workflows** | same |
@@ -386,8 +396,9 @@ flows use a **concept** name (no role prefix); role-only list pages keep the
 | `team-detail-cloud-usage.png` | owner or `logos_admin` | `/teams/<id>` — **Cloud Usage** | same |
 | `team-detail-settings.png` | owner or `logos_admin` | `/teams/<id>` — **Settings** | same |
 | `team-detail-providers.png` | `tobias.wasner` (`logos_admin` only) | `/teams/<id>` — **Providers** | `roles/logos-admin.md#teams` |
+| `logos-admin-model-details-access.png` | `tobias.wasner` (`logos_admin` only) | `/models/<id>/details?tab=access` — **Access**, with the Azure auto provider label | `roles/logos-admin.md#access` |
 | `app-admin-my-workspace.png` | `alexandra.szuminska` | `/my-workspace` | `roles/app-admin.md` |
-| `batches.png` | any admin role | `/batches` | `roles/app-admin.md#batches` (Logos Admin links) |
+| `batches.png` | `alexandra.szuminska` | `/batches` — sample file loaded, cost estimates and warning visible | `roles/app-admin.md#batches` (Logos Admin links) |
 | `app-developer-models.png` | `henriette.huhn` | `/models` | `roles/app-developer.md` |
 | `app-developer-my-workspace.png` | `henriette.huhn` | `/my-workspace` | `roles/app-developer.md` |
 | `my-workspace-logging-choice.png` | `henriette.huhn` | `/my-workspace` — **Expand models** on the **Logos** developer key, before a logging choice | `roles/app-developer.md#choose-a-logging-level` |

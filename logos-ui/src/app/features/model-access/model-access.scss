@@ -94,6 +94,11 @@
   &--no { color: rgb(var(--color-typography-700)); opacity: 0.55; }
 }
 
+.provider-cell {
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
 // One-click grant / revocation in the team matrix: the provider cell is a
 // checkbox — checked means the team has the hosting-provider grant.
 .grant-checkbox {

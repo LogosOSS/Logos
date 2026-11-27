@@ -319,19 +319,23 @@ class PriorityQueueManager:
             )
 
     def get_queued_by_api_key(self, model_id: int) -> Dict[int, int]:
-        """How many queued entries for ``model_id`` belong to each caller key.
+        """How many queued entries for ``model_id`` belong to each caller key."""
+        return self.get_queue_ownership(model_id)[1]
 
-        Entries enqueued without a key are omitted: the split is a slice of
-        the depth, never something that must sum to it.
+    def get_queue_ownership(self, model_id: int) -> tuple[int, Dict[int, int]]:
+        """Read total depth and the keyed subset under one lock.
+
+        Entries without a key still count in the total.
         """
         with self._lock:
+            total = 0
             counts: Dict[int, int] = {}
-            for priority in (Priority.LOW, Priority.NORMAL, Priority.HIGH):
-                for *_ordering, entry in self._queues[model_id][priority]:
-                    if entry.api_key_id is None:
-                        continue
-                    counts[entry.api_key_id] = counts.get(entry.api_key_id, 0) + 1
-            return counts
+            for queue in self._queues.get(model_id, {}).values():
+                total += len(queue)
+                for *_ordering, entry in queue:
+                    if entry.api_key_id is not None:
+                        counts[entry.api_key_id] = counts.get(entry.api_key_id, 0) + 1
+            return total, counts
 
     def get_entries_for_priority(
         self,

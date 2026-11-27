@@ -26,6 +26,21 @@ export const DEFAULT_PUBLIC_STATS_DAYS: PublicStatsDays = '30';
  * The aggregate picture of opted-in teams, as GET /api/public/stats reports
  * it. Every request figure counts settled successes inside the selected window.
  */
+export interface PublicHourlySlot {
+  hour: number;
+  /** Lower bound of a coarse band, or null when no band is published. */
+  band_start: number | null;
+  zero: boolean;
+}
+
+export interface PublicHourlyLoad {
+  time_zone: string;
+  from: string;
+  until: string;
+  band_size: number;
+  hours: PublicHourlySlot[];
+}
+
 export interface PublicStats {
   /** Echo of the requested window (default 30). */
   days: PublicStatsDays;
@@ -78,6 +93,8 @@ export interface PublicStats {
   /** Independent of the window: every month since the first request. */
   monthly: PublicMonthStats[];
   agent: PublicAgentStats;
+  /** One delayed four-week release; unrelated to the rolling page window. */
+  hourly_request_load?: PublicHourlyLoad;
 }
 
 /** Median and 90th percentile of one figure across active people or teams. */

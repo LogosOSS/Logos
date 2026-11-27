@@ -41,14 +41,14 @@ repos:
         entry: check-yaml
         language: system
         types: [yaml]
-        exclude: '^e2e/harness/stack/docker-compose[.]simulation-migration[.]yaml$'
+        exclude: '^e2e/harness/stack/docker-compose[.](simulation-migration|ci-images)[.]yaml$'
       - id: check-compose-overlay-yaml
         name: check Compose overlay YAML syntax
         entry: check-yaml
         language: system
         types: [yaml]
         args: [--unsafe]
-        files: '^e2e/harness/stack/docker-compose[.]simulation-migration[.]yaml$'
+        files: '^e2e/harness/stack/docker-compose[.](simulation-migration|ci-images)[.]yaml$'
       - id: check-vcs-permalinks
         name: check vcs permalinks
         entry: check-vcs-permalinks

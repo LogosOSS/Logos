@@ -15,6 +15,7 @@ admission do the real gating.
 
 import pytest
 
+from logos.benchmarks.reservations import benchmark_reservations
 from logos.queue import PriorityQueueManager
 from logos.sdi.logosnode_facade import LogosNodeSchedulingDataFacade
 
@@ -318,6 +319,43 @@ def test_queued_ownership_is_split_by_caller_key(monkeypatch):
     state = provider.get_debug_state()[1]
     assert state["queue_depth"] == 4
     assert state["queued_by_api_key"] == {"7": 2, "9": 1}
+
+
+def test_debug_state_keeps_benchmark_ownership_separate_from_other_requests(monkeypatch):
+    facade, provider = _facade_and_provider(monkeypatch, [_lane("m", 8)])
+    job_id = 4403
+    provider.queue_manager.enqueue(object(), model_id=1, api_key_id=7)
+    provider.queue_manager.enqueue(object(), model_id=1)
+    entry = provider.queue_manager.enqueue(object(), model_id=1, api_key_id=-job_id, provider_affinity=13)
+    facade.on_request_start("user", 1, 13, api_key_id=7)
+    facade.on_request_begin_processing("user")
+
+    def debug():
+        return facade.debug_state()["providers"]["13"]["models"][1]
+
+    assert debug()["benchmark_reserved"] is False
+    benchmark_reservations.reserve(13, "m", job_id)
+    try:
+        benchmark_reservations.register_request(13, "m", job_id, "sample")
+        facade.on_request_start("sample", 1, 13, api_key_id=-job_id)
+        facade.on_request_begin_processing("sample")
+        state = debug()
+        assert state["benchmark_reserved"] is True
+        assert state["active"] == 2
+        assert state["benchmark_active"] == 1
+        assert state["queue_depth"] == 3
+        assert state["benchmark_queue_depth"] == 1
+
+        assert provider.queue_manager.remove(entry)
+        facade.on_request_complete("sample", was_cold_start=False, duration_ms=10)
+        assert debug()["active"] == 1
+        assert debug()["benchmark_active"] == 0
+        assert debug()["queue_depth"] == 2
+        assert debug()["benchmark_queue_depth"] == 0
+    finally:
+        benchmark_reservations.release(job_id)
+
+    assert debug()["benchmark_reserved"] is False
 
 
 def test_removing_a_model_drops_its_split(monkeypatch):

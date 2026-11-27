@@ -46,7 +46,8 @@
         Team access <span class="section-count">{{ a.teams.length }}</span>
       </h2>
       <p class="section-hint">
-        Effective access needs the model grant and a grant for at least one hosting provider.
+        Effective access needs a hosting-provider grant plus a manual model grant or automatic Azure access.
+        The Model column shows manual grants only.
         <span class="hint-flag hint-flag--orphaned">Orphaned</span> = model grant without any
         host provider (can never route); <span class="hint-flag hint-flag--provider-only">provider only</span>
         = host provider grant without the model grant. Toggle a provider grant directly in
@@ -79,11 +80,11 @@
                 class="pi {{ t.model_grant ? 'pi-check' : 'pi-times' }}"
                 [class.check--yes]="t.model_grant"
                 [class.check--no]="!t.model_grant"
-                [attr.aria-label]="'Model grant: ' + (t.model_grant ? 'yes' : 'no')"
+                [attr.aria-label]="'Manual model grant: ' + (t.model_grant ? 'yes' : 'no')"
               ></i>
             </div>
             @for (g of t.provider_grants; track g.provider_id; let gi = $index) {
-              <div role="cell" [attr.data-label]="a.providers[gi]?.name ?? 'Provider'">
+              <div class="provider-cell" role="cell" [attr.data-label]="a.providers[gi]?.name ?? 'Provider'">
                 <input
                   type="checkbox"
                   class="grant-checkbox"
@@ -93,6 +94,9 @@
                   [attr.aria-label]="(g.granted ? 'Revoke ' : 'Grant ') + (a.providers[gi]?.name ?? 'provider') + ' for ' + t.team_name"
                   (change)="toggleProviderGrant(t.team_id, g.provider_id, g.granted)"
                 />
+                @if (t.automatic_provider_ids.includes(g.provider_id)) {
+                  <span class="status-badge status-badge--ok">Azure auto</span>
+                }
               </div>
             }
             <div class="col-status" role="cell" data-label="Status">

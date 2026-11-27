@@ -1009,6 +1009,34 @@ async def last_session_branch(workspace_id: int, *, before_session_id: int) -> s
         ).scalar_one_or_none()
 
 
+async def published_checkout_fork(
+    workspace_id: int, repo_slug: str, branch: str, *, has_publication_receipt: bool = False
+) -> str | None:
+    """Find the fork of the workspace's published base, not its latest session."""
+    async with sessionmaker()() as db:
+        return (
+            await db.execute(
+                text("""
+                    SELECT push_repo_slug
+                      FROM agent_sessions
+                     WHERE workspace_id = :workspace_id
+                       AND lower(repo_slug) = lower(:repo_slug)
+                       AND branch_name = :branch
+                       AND no_push IS FALSE
+                       AND (status = 'succeeded' OR (:has_receipt AND status = 'failed'))
+                     ORDER BY finished_at DESC NULLS LAST, id DESC
+                     LIMIT 1
+                    """),
+                {
+                    "workspace_id": workspace_id,
+                    "repo_slug": repo_slug,
+                    "branch": branch,
+                    "has_receipt": has_publication_receipt,
+                },
+            )
+        ).scalar_one_or_none()
+
+
 async def update_session_usage(session_id: int, *, tokens_in: int, tokens_out: int) -> None:
     """Record what a running session has spent so far.
 

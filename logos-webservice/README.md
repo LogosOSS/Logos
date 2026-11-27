@@ -166,9 +166,10 @@ Example changeset:
 
 ## Public stats (`GET /public/stats`)
 
-Unauthenticated aggregates for the `/stats` page. Rate-limited per source IP, and
-cached per window for `logos.public-stats.cache-ttl` (default `PT5M`, `0s` turns
-the cache off), so figures can be a few minutes old.
+Unauthenticated aggregates for the `/usage` page. Rate-limited per source IP, and
+cached per window for `logos.public-stats.cache-ttl` (default `PT30M`, `0s`
+turns the cache off). The hourly chart uses one delayed four-week release
+for all windows.
 
 Query parameter `days` (default `30`): `7`, `30`, `90`, `365`, or `all`. Applied to
 every request-derived figure (per-team, key type, lane, active students, average).

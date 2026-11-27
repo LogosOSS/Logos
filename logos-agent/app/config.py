@@ -269,17 +269,6 @@ class Settings:
     session_github_token: str = os.getenv("LOGOS_AGENT_SESSION_GITHUB_TOKEN", "") or os.getenv(
         "LOGOS_AGENT_GITHUB_TOKEN", ""
     )
-    # Deploys are triggered by this service, never from inside a session
-    # container: the container never holds a token that can reach production.
-    deploy_workflow: str = os.getenv("LOGOS_AGENT_DEPLOY_WORKFLOW", "logos_deploy-dev.yml")
-    # Builds and publishes the service images. It runs on pull requests (and
-    # main/release) but never on plain branch pushes, and PR builds publish
-    # pr-<number> tags, never latest — so a deploy of a session branch must
-    # wait for this workflow's run and use the PR tag it published.
-    build_workflow: str = os.getenv("LOGOS_AGENT_BUILD_WORKFLOW", "logos_build-and-push-docker.yml")
-    deploy_enabled: bool = _bool("LOGOS_AGENT_DEPLOY_ENABLED", False)
-    # The only environment a session is ever allowed to affect.
-    allowed_environment: str = os.getenv("LOGOS_AGENT_ALLOWED_ENVIRONMENT", "logos-dev")
     dev_base_url: str = os.getenv("LOGOS_AGENT_DEV_BASE_URL", "https://logos-dev.aet.cit.tum.de")
 
     # The prefix of branches this runner *creates*. Everything in this
@@ -314,6 +303,10 @@ class Settings:
     analysis_nightly_hour_utc: int = _int("LOGOS_AGENT_ANALYSIS_NIGHTLY_HOUR_UTC", 0)
 
     # --- storage ----------------------------------------------------------
+    verification_scratch_volume: str = os.getenv("LOGOS_AGENT_VERIFICATION_SCRATCH_VOLUME", "")
+    # Shared-filesystem pressure guard, not a kernel disk quota.
+    verification_scratch_max_gib: str = os.getenv("LOGOS_AGENT_VERIFICATION_SCRATCH_MAX_GIB", "20")
+    verification_scratch_min_free_gib: str = os.getenv("LOGOS_AGENT_VERIFICATION_SCRATCH_MIN_FREE_GIB", "10")
     # Where session artefacts (logs, screenshots) are kept, on a volume shared
     # with the session containers.
     artifact_root: str = os.getenv("LOGOS_AGENT_ARTIFACT_ROOT", "/var/lib/logos-agent/artifacts")

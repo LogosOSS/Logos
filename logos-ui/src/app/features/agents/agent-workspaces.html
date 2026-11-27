@@ -1,0 +1,74 @@
+<section class="card" aria-labelledby="workspaces-title">
+  <div class="card__head">
+    <h2 class="card__title" id="workspaces-title">
+      Workspaces <span class="section-count">{{ workspaces().length }}</span>
+    </h2>
+  </div>
+  <div class="workspace-storage" aria-label="Workspace storage">
+    @if (filesystemAvailability(); as storage) {
+      <div
+        class="workspace-storage__meter"
+        [class.workspace-storage__meter--low]="storage.level === 'low'"
+        [class.workspace-storage__meter--critical]="storage.level === 'critical'"
+      >
+        <i class="pi" [class.pi-database]="storage.level === 'ok'"
+          [class.pi-exclamation-triangle]="storage.level !== 'ok'" aria-hidden="true"></i>
+        <span>Runner artifact disk: <strong>{{ formatDisk(storage.available_bytes) }}</strong>
+          free of {{ formatDisk(storage.total_bytes) }}</span>
+        <span class="workspace-storage__track" role="meter" aria-label="Artifact disk available"
+          aria-valuemin="0" aria-valuemax="100" [attr.aria-valuenow]="storage.freePercent | number: '1.0-0'">
+          <span [style.width.%]="storage.freePercent"></span>
+        </span>
+      </div>
+    } @else {
+      <span class="workspace-storage__unavailable">
+        <i class="pi pi-database" aria-hidden="true"></i>
+        Runner artifact disk: unavailable
+      </span>
+    }
+    <p class="field__hint">Workspace usage includes its checkout and cache. This view does not set a disk limit.</p>
+  </div>
+  @if (workspaces().length > 0) {
+    <ul class="workspace-list">
+      @for (workspace of workspaces(); track workspace.id) {
+        <li class="workspace">
+          <i class="pi pi-folder workspace__icon" aria-hidden="true"></i>
+          <span class="workspace__name">{{ workspace.name }}</span>
+          <span class="workspace__branch">from {{ workspace.base_branch }}</span>
+          <span class="workspace__disk">
+            <i class="pi pi-database" aria-hidden="true"></i>
+            @let used = storage()?.workspace_used_bytes?.[workspace.id];
+            {{ used != null ? formatDisk(used) + ' used' : 'Usage unavailable' }}
+          </span>
+          @if (occupants().get(workspace.id); as busy) {
+            <!-- Which session is in there, not merely that one is: a
+                 workspace runs one session at a time, and "busy" left the
+                 other half of that sentence to be guessed. -->
+            <button
+              type="button"
+              class="link-btn workspace__busy"
+              (click)="sessionSelected.emit(busy)"
+              [title]="busy.task"
+            >
+              session #{{ busy.id }} · {{ taskPreview(busy.task) }}
+            </button>
+          } @else if (workspace.active_sessions > 0) {
+            <span class="workspace__busy">busy</span>
+          } @else {
+            <button
+              type="button"
+              class="btn-icon btn-icon--danger"
+              (click)="workspaceDeleted.emit(workspace)"
+              [attr.aria-label]="'Delete workspace ' + workspace.name"
+              title="Delete"
+            >
+              <i class="pi pi-trash" aria-hidden="true"></i>
+            </button>
+          }
+        </li>
+      }
+    </ul>
+  } @else {
+    <p class="field__hint">No workspaces yet. Create one in the New session form.</p>
+  }
+</section>

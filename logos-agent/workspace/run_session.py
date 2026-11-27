@@ -375,12 +375,16 @@ def _add_push_remote() -> None:
 
 
 def _base_remote(base_branch: str, branch: str) -> str:
-    """Where the base branch lives: on the fork for continued agent work, else the repository.
+    """Where to fetch the base: a fork for prior agent work, else the repository.
 
     Continued work starts from the session's own branch, or — as the runner
     says — from an earlier agent branch the workspace published; with a fork
     both live there rather than on the repository.
     """
+    checkout_fork = os.environ.get("LOGOS_CHECKOUT_FORK_URL", "").strip()
+    if checkout_fork:
+        # Fetch by URL so a private checkout never configures a fork push remote.
+        return checkout_fork
     if _push_remote() == "push" and (base_branch == branch or _flag("LOGOS_SESSION_BASE_ON_FORK")):
         return "push"
     return "origin"
@@ -514,7 +518,7 @@ def prepare_checkout(repo_url: str, base_branch: str, branch: str, token: str) -
     # push back to.
     reading = base_branch.startswith("refs/")
     base_remote = _base_remote(base_branch, branch)
-    forked_base = base_remote == "push"
+    forked_base = base_remote != "origin"
     cloned = not (CHECKOUT / ".git").is_dir()
     if cloned:
         log(f"cloning {repo_url} at {base_branch}")
@@ -1561,7 +1565,7 @@ def _checkout_comparison(base_branch: str, branch: str, branch_sha: str) -> tupl
     """
     target = ""
     if not branch_sha:
-        if _base_remote(base_branch, branch) != "push":
+        if _base_remote(base_branch, branch) == "origin":
             return require_checkout_ref("HEAD"), base_branch
         # New work started from an earlier agent branch that exists only on
         # the fork: the pull request cannot target that branch on the
@@ -1700,6 +1704,8 @@ def run_snapshot(result: Result) -> None:
     )
     result.data["candidate_paths"] = [path for path in process.stdout.split("\0") if path]
     result.data["candidate_tree"] = run(["git", "write-tree"], cwd=CHECKOUT, quiet=True).stdout.strip()
+    if not result.data["candidate_paths"]:
+        result.data["comparison_tree"] = _ref_sha(f"{comparison}^{{tree}}")
 
 
 def _draft_existing_pull_request(branch: str) -> None:

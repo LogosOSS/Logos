@@ -4,14 +4,14 @@
 
 .vram-donut {
   display: flex;
-  flex-direction: column;
+  flex-direction: var(--vram-donut-direction, column);
   align-items: center;
-  gap: 1rem;
+  gap: var(--vram-donut-gap, 1rem);
 
   &__chart-wrapper {
     position: relative;
-    width: 200px;
-    height: 200px;
+    width: var(--vram-donut-size, 200px);
+    height: var(--vram-donut-size, 200px);
     flex-shrink: 0;
   }
 
@@ -48,7 +48,7 @@
     justify-content: center;
     text-align: center;
     pointer-events: none;
-    padding: 0 2rem;
+    padding: 0 var(--vram-donut-center-padding, 2rem);
   }
 
   &__center-top {
@@ -82,6 +82,7 @@
     flex-direction: column;
     gap: 0.35rem;
     width: 100%;
+    min-width: var(--vram-donut-legend-min, auto);
     max-width: 280px;
   }
 

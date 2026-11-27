@@ -25,14 +25,18 @@ import {
   SessionMessages,
   AgentTriggers,
   AgentWorkspace,
+  AgentWorkspaceStorage,
   isActive,
 } from '../../shared/models/agent.model';
 import { SelectComponent, AppSelectOption } from '../../shared/components/select/select';
 import { ErrorMessageComponent } from '../../shared/components/error-message/error-message';
 import { SessionMessagesComponent } from './session-messages';
+import { AgentWorkspaces } from './agent-workspaces';
+import { taskPreview } from './agent-task';
 
 /** How often the list and the open session are refreshed while work is live. */
 const POLL_MS = 4000;
+const STORAGE_POLL_MS = 60_000;
 
 /** Cap on rendered slot cells so a misreported ceiling cannot flood the page. */
 const SLOT_CELL_LIMIT = 64;
@@ -76,7 +80,10 @@ export function scaleSlotCounts(parts: number[], limit: number): number[] {
 @Component({
   selector: 'app-agents',
   standalone: true,
-  imports: [CommonModule, FormsModule, SelectComponent, ErrorMessageComponent, RouterLink, SessionMessagesComponent],
+  imports: [
+    CommonModule, FormsModule, SelectComponent, ErrorMessageComponent, RouterLink,
+    SessionMessagesComponent, AgentWorkspaces,
+  ],
   templateUrl: './agents.html',
   changeDetection: ChangeDetectionStrategy.Eager,
   styleUrl: './agents.scss',
@@ -92,9 +99,11 @@ export class Agents implements OnInit {
   /** The template binds a numeric workspace id to the select's string value. */
   readonly String = String;
   readonly isActive = isActive;
+  readonly taskPreview = taskPreview;
   private lastSessionRequest = signal(0);
   private refreshSequence = 0;
   private appliedSequence = 0;
+  private storagePending = false;
   private readonly mib = new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 });
 
   formatRam(bytes: number | null | undefined): string {
@@ -111,6 +120,7 @@ export class Agents implements OnInit {
   // ── data ─────────────────────────────────────────────────────────────────
   sessions = signal<AgentSession[]>([]);
   workspaces = signal<AgentWorkspace[]>([]);
+  workspaceStorage = signal<AgentWorkspaceStorage | null>(null);
   repositories = signal<AgentRepository[]>([]);
   capacity = signal<AgentCapacity | null>(null);
   models = signal<AgentModels | null>(null);
@@ -146,7 +156,7 @@ export class Agents implements OnInit {
   readonly formRam = signal('');
   formModel = signal<string | null>(null);
   formOpenPr = signal(true);
-  formDeploy = signal(false);
+  formNoPush = signal(false);
   formScreenshots = signal('');
   submitting = signal(false);
   formError = signal<string | null>(null);
@@ -306,7 +316,7 @@ export class Agents implements OnInit {
    * ceiling a count of workspaces — so the list can say which one rather
    * than only that it is taken.
    */
-  private readonly occupants = computed(() => {
+  readonly occupants = computed(() => {
     const byWorkspace = new Map<number, AgentSession>();
     for (const session of this.activeSessions()) {
       if (!byWorkspace.has(session.workspace_id)) byWorkspace.set(session.workspace_id, session);
@@ -314,18 +324,16 @@ export class Agents implements OnInit {
     return byWorkspace;
   });
 
-  occupantOf(workspace: AgentWorkspace): AgentSession | undefined {
-    return this.occupants().get(workspace.id);
-  }
-
   // ── lifecycle ────────────────────────────────────────────────────────────
   async ngOnInit(): Promise<void> {
     this.now.set(Date.now());
     const clock = setInterval(() => this.now.set(Date.now()), 1000);
     const timer = setInterval(() => void this.tick(), POLL_MS);
+    const storageTimer = setInterval(() => void this.loadWorkspaceStorage(), STORAGE_POLL_MS);
     this.destroyRef.onDestroy(() => {
       clearInterval(clock);
       clearInterval(timer);
+      clearInterval(storageTimer);
       this.stopStream();
       this.resetScreenshots();
     });
@@ -356,7 +364,10 @@ export class Agents implements OnInit {
   }
 
   async refresh(options: { quiet?: boolean } = {}): Promise<void> {
-    if (!options.quiet) this.loading.set(true);
+    if (!options.quiet) {
+      this.loading.set(true);
+      void this.loadWorkspaceStorage();
+    }
     try {
       const sequence = ++this.refreshSequence;
       const requestedAt = Date.now();
@@ -380,6 +391,18 @@ export class Agents implements OnInit {
       this.error.set('Could not reach the agent runner.');
     } finally {
       this.loading.set(false);
+    }
+  }
+
+  private async loadWorkspaceStorage(): Promise<void> {
+    if (this.storagePending) return;
+    this.storagePending = true;
+    try {
+      this.workspaceStorage.set(await this.agentService.getWorkspaceStorage());
+    } catch {
+      this.workspaceStorage.set(null);
+    } finally {
+      this.storagePending = false;
     }
   }
 
@@ -923,7 +946,8 @@ export class Agents implements OnInit {
     try {
       const repositoryId = this.formRepositoryId();
       const linked = repositoryId !== null;
-      const paths = linked
+      const privateSession = this.formNoPush();
+      const paths = linked || privateSession
         ? []
         : this.formScreenshots()
             .split(/[\s,]+/)
@@ -936,8 +960,8 @@ export class Agents implements OnInit {
         // Left null when nothing was picked: the runner then uses its own
         // default, which is the single local model where there is only one.
         model: this.formModel(),
-        open_pull_request: this.formOpenPr(),
-        deploy_to_dev: linked ? false : this.formDeploy(),
+        open_pull_request: !privateSession && this.formOpenPr(),
+        no_push: privateSession,
         screenshot_paths: paths,
         team_repository_id: repositoryId,
         ...(this.formRam().trim() ? { memory_override_mb: Number(this.formRam()) } : {}),
@@ -969,7 +993,6 @@ export class Agents implements OnInit {
     const repositoryId = id ? Number(id) : null;
     this.formRepositoryId.set(repositoryId);
     if (repositoryId !== null) {
-      this.formDeploy.set(false);
       this.formScreenshots.set('');
     }
   }
@@ -1064,11 +1087,6 @@ export class Agents implements OnInit {
     if (seconds < 60) return `${seconds}s`;
     if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
     return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
-  }
-
-  taskPreview(task: string): string {
-    const firstLine = task.split('\n')[0].trim();
-    return firstLine.length > 110 ? `${firstLine.slice(0, 110)}…` : firstLine;
   }
 
   private messageOf(err: unknown, fallback: string): string {

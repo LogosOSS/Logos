@@ -28,7 +28,7 @@ import jakarta.servlet.http.HttpServletRequest;
  *
  * <p>
  * State is process-local. logos-webservice runs as a single instance, so this needs no distributed backing store;
- * if that ever changes, this is the place to swap in a shared store (e.g. Redis) behind the same interface.
+ * if that ever changes, this is the place to swap in a shared store (e.g. Valkey) behind the same interface.
  *
  * <p>
  * Both categories key their window by source address, and {@code /info} takes no credential, so distinct callers

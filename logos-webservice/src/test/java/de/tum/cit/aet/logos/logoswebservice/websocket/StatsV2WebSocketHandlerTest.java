@@ -111,16 +111,14 @@ class StatsV2WebSocketHandlerTest {
         handler.afterConnectionEstablished(session);
         handler.handleMessage(session, new TextMessage("{\"action\":\"init\"}"));
 
-        // The unfiltered init push carries every row and no total — the page
-        // borrows the statistics aggregate for its "of N" figure.
+        // Recent reports its own count even with no state filter, since its
+        // population can include benchmarks that the KPIs exclude.
         List<TextMessage> sent = captureRequestsPushes(session);
         JsonNode first = requestsPayload(sent);
         assertThat(first.get("requests").size()).isEqualTo(6);
-        assertThat(first.has("total")).isFalse();
+        assertThat(first.path("total").asLong()).isEqualTo(6L);
 
-        // Narrowing the feed re-pushes only the bucket and counts it: the
-        // aggregate the page borrows is only as narrow as the team/user scope,
-        // so a filtered feed must say how big its own bucket is.
+        // The status applies to the entire Requests view.
         handler.handleMessage(session, new TextMessage("{\"action\":\"set_feed_status\",\"status\":\"queued\"}"));
         sent = captureRequestsPushes(session);
         JsonNode queued = requestsPayload(sent);
@@ -134,13 +132,12 @@ class StatsV2WebSocketHandlerTest {
         assertThat(finished.get("requests").size()).isEqualTo(3);
         assertThat(finished.get("total").asLong()).isEqualTo(3L);
 
-        // Clearing the filter goes back to the full feed and drops the total,
-        // handing the "of N" figure back to the statistics aggregate.
+        // Clearing the filter restores the full population and its own total.
         handler.handleMessage(session, new TextMessage("{\"action\":\"set_feed_status\",\"status\":null}"));
         sent = captureRequestsPushes(session);
         JsonNode cleared = requestsPayload(sent);
         assertThat(cleared.get("requests").size()).isEqualTo(6);
-        assertThat(cleared.has("total")).isFalse();
+        assertThat(cleared.path("total").asLong()).isEqualTo(6L);
 
         handler.afterConnectionClosed(session, CloseStatus.NORMAL);
     }

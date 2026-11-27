@@ -1,6 +1,7 @@
 package de.tum.cit.aet.logos.logoswebservice.operations.service;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -50,7 +51,7 @@ public class PublicStatsCache {
     public Map<String, Object> get(String days) {
         String window = StatsService.normalizePublicStatsDays(days);
         if (ttlNanos <= 0) {
-            return statsService.publicStats(window);
+            return withHourlyLoad(statsService.publicStats(window), tryHourlyLoad());
         }
         Entry current = entry.get();
         if (current == null) {
@@ -79,11 +80,29 @@ public class PublicStatsCache {
 
     private Entry computeAllWindows() {
         Map<String, Map<String, Object>> windows = new LinkedHashMap<>();
+        // The historical release never follows the rolling page window. Compute
+        // it once per warmup, and use the identical release in all responses.
+        PublicHourlyRequestLoad hourlyLoad = tryHourlyLoad();
         for (String window : StatsService.PUBLIC_STATS_DAY_OPTIONS) {
-            windows.put(window, Collections.unmodifiableMap(new LinkedHashMap<>(statsService.publicStats(window))));
+            windows.put(window, withHourlyLoad(statsService.publicStats(window), hourlyLoad));
         }
         Entry computed = new Entry(nanoClock.getAsLong(), Collections.unmodifiableMap(windows));
         entry.set(computed);
         return computed;
+    }
+
+    private PublicHourlyRequestLoad tryHourlyLoad() {
+        try {
+            return statsService.publicHourlyRequestLoad(Instant.now());
+        } catch (RuntimeException ex) {
+            log.warn("Could not compute the public hourly request load", ex);
+            return null;
+        }
+    }
+
+    private static Map<String, Object> withHourlyLoad(Map<String, Object> stats, PublicHourlyRequestLoad hourlyLoad) {
+        var enriched = new LinkedHashMap<>(stats);
+        if (hourlyLoad != null) enriched.put("hourly_request_load", hourlyLoad);
+        return Collections.unmodifiableMap(enriched);
     }
 }

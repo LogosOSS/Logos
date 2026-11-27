@@ -298,7 +298,7 @@ describe('Statistics scope options', () => {
   });
 });
 
-describe('recent request model and state filters', () => {
+describe('shared request model and state filters', () => {
   let fixture: ComponentFixture<Statistics>;
   afterEach(() => {
     fixture?.destroy();
@@ -317,11 +317,11 @@ describe('recent request model and state filters', () => {
     expect(page.ws.setFeedFilters).toHaveBeenLastCalledWith(null, [5001, 5002], []);
     expect(page.component.statsPending()).toBe(true);
     page.component.statsPending.set(false);
-    // The state bucket narrows the request list alone.
-    page.component.setFeedStatusFilter('running');
-    expect(page.ws.setFeedFilters).toHaveBeenLastCalledWith('running', [5001, 5002], []);
+    // The state changes the totals and charts as well as the live list.
+    page.component.setFeedStatusFilter('error');
+    expect(page.ws.setFeedFilters).toHaveBeenLastCalledWith('error', [5001, 5002], []);
     expect(page.ws.setScope).not.toHaveBeenCalled();
-    expect(page.component.statsPending()).toBe(false);
+    expect(page.component.statsPending()).toBe(true);
     expect(page.component.requestsPending()).toBe(true);
     const opts = page.ws.connect.mock.calls[0][0];
     opts.handlers.onRequestsData({ requests: [], total: 4 });
@@ -333,6 +333,39 @@ describe('recent request model and state filters', () => {
     page.component.clearFilters();
     expect(page.ws.setFeedFilters).toHaveBeenLastCalledWith(null, [], []);
     expect(page.component.feedFilterActive()).toBe(false);
+  });
+
+  it('uses the feed count without borrowing the benchmark-free KPI even across clearing a state', async () => {
+    const page = await pageAt();
+    fixture = page.fx;
+    const opts = page.ws.connect.mock.calls[0][0];
+    page.component.stats.set({
+      totals: {
+        requests: 7, cloudRequests: 3, localRequests: 4, coldStarts: 0, warmStarts: 4,
+        avgQueueSeconds: null, avgRunSeconds: null, totalTokens: null, cloudCostMicroCents: null,
+      },
+      statusCounts: { error: 3, timeout: 1, success: 3 },
+      modelBreakdown: [],
+      timeSeries: [],
+    });
+    expect(page.component.requestFeedTotal()).toBeNull();
+    opts.handlers.onRequestsData({ requests: [], total: 8 });
+    expect(page.component.requestFeedTotal()).toBe(8);
+    expect(page.component.totalRequests()).toBe(7);
+    opts.handlers.onRequestsData({ requests: [] });
+    expect(page.component.requestFeedTotal()).toBe(8);
+
+    page.component.setFeedStatusFilter('error');
+    expect(page.component.requestFeedTotal()).toBeNull();
+    opts.handlers.onRequestsData({ requests: [], total: 0 });
+    expect(page.component.requestFeedTotal()).toBe(0);
+    page.component.statsPending.set(false);
+    page.component.clearFilters();
+    expect(page.component.statsPending()).toBe(true);
+    expect(page.component.requestsPending()).toBe(true);
+    expect(page.component.requestFeedTotal()).toBeNull();
+    opts.handlers.onRequestsData({ requests: [], total: 8 });
+    expect(page.component.requestFeedTotal()).toBe(8);
   });
 
   it('offers models from scope options', async () => {
@@ -640,5 +673,95 @@ describe('local providers: failed GPUs and offline workers', () => {
     expect(full.querySelector('.stats-disk-meter')?.classList).toContain('stats-disk-meter--critical');
     // An offline worker's last reading may be long out of date.
     expect(offline.querySelector('.stats-disk-meter')).toBeNull();
+  });
+});
+
+describe('Statistics benchmark-free volume distributions', () => {
+  it('shows the same benchmark-free share in the provider donut and headline', async () => {
+    const page = await pageAt();
+    try {
+      page.component.activeTab.set('requests');
+      page.component.stats.set({
+        totals: {
+          requests: 24, cloudRequests: 6, localRequests: 18, coldStarts: 0, warmStarts: 18,
+          avgQueueSeconds: null, avgRunSeconds: null, totalTokens: null, cloudCostMicroCents: null,
+        },
+        statusCounts: { success: 24 },
+        modelBreakdown: [],
+        timeSeries: [
+          { timestamp: 1, label: '', total: 6, cloud: 6, local: 0, avgRunSeconds: null },
+          { timestamp: 2, label: '', total: 18, cloud: 0, local: 18, avgRunSeconds: null },
+        ],
+        modelTimeSeries: [],
+      });
+      page.component.statsPending.set(false);
+      page.fx.detectChanges();
+
+      expect(page.component.providerPieData().map(({ text, value }) => [text, value]))
+        .toEqual([['Cloud', 6], ['Local', 18]]);
+      const content: HTMLElement = page.fx.nativeElement;
+      const panel = [...content.querySelectorAll('app-stats-chart-panel')]
+        .find((element) => element.textContent.includes('Request type'));
+      expect(panel?.querySelector('.vram-donut__center-middle')?.textContent?.trim()).toBe('25%');
+      const headline = [...content.querySelectorAll('app-stats-kpi-card')]
+        .find((element) => element.querySelector('.kpi-label')?.textContent?.trim() === 'CLOUD SHARE');
+      expect(headline?.querySelector('.kpi-value')?.textContent?.trim()).toBe('25%');
+    } finally {
+      page.fx.destroy();
+    }
+  });
+
+  it('does not show the deleted marker for unresolved requests', async () => {
+    const page = await pageAt();
+    try {
+      const base = {
+        modelId: null, requestCount: 1, avgQueueSeconds: null, avgRunSeconds: null,
+        coldStarts: 0, warmStarts: 1, errorCount: 1,
+      };
+      page.component.stats.set({
+        totals: {
+          requests: 2, cloudRequests: 0, localRequests: 2, coldStarts: 0, warmStarts: 2,
+          avgQueueSeconds: null, avgRunSeconds: null, totalTokens: null, cloudCostMicroCents: null,
+        },
+        statusCounts: { error: 2 },
+        modelBreakdown: [
+          { ...base, modelName: 'Unresolved model', modelDeleted: false },
+          { ...base, modelName: 'Retired model' },
+        ],
+        timeSeries: [{ timestamp: 1, label: '', total: 2, cloud: 0, local: 2, avgRunSeconds: null }],
+        modelTimeSeries: [
+          { timestamp: 1, modelId: null, modelName: 'Unresolved model', count: 1 },
+          { timestamp: 1, modelId: null, modelName: 'Retired model', count: 1 },
+        ],
+      });
+      expect(page.component.modelPieData().map(({ text }) => text))
+        .toEqual(['Unresolved model', 'Retired model (deleted)']);
+    } finally {
+      page.fx.destroy();
+    }
+  });
+
+  it('does not restore benchmark-only models from the headline breakdown', async () => {
+    const page = await pageAt();
+    try {
+      page.component.stats.set({
+        totals: {
+          requests: 3, cloudRequests: 0, localRequests: 3, coldStarts: 0, warmStarts: 3,
+          avgQueueSeconds: null, avgRunSeconds: null, totalTokens: null, cloudCostMicroCents: null,
+        },
+        statusCounts: { success: 3 },
+        modelBreakdown: [{
+          modelId: 10, modelName: 'Benchmark only', requestCount: 3,
+          avgQueueSeconds: null, avgRunSeconds: null, coldStarts: 0, warmStarts: 3, errorCount: 0,
+        }],
+        timeSeries: [{ timestamp: 1, label: '', total: 0, cloud: 0, local: 0, avgRunSeconds: null }],
+        modelTimeSeries: [],
+      });
+
+      expect(page.component.providerPieData()).toEqual([]);
+      expect(page.component.modelPieData()).toEqual([]);
+    } finally {
+      page.fx.destroy();
+    }
   });
 });

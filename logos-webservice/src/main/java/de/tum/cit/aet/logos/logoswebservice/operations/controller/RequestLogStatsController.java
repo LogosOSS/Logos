@@ -58,7 +58,8 @@ public class RequestLogStatsController {
             return ResponseEntity.ok(
                     requestLogStatsService.getRequestLogStats(
                         startDate, endDate, targetBuckets, userId, teamId, providerId, apiKeyId, errorsOnly,
-                        RequestLogService.readFeedIds(body, "model_ids")));
+                        RequestLogService.readFeedIds(body, "model_ids"), RequestLogService.readRequestStatus(body),
+                        RequestLogService.readFeedIds(body, "provider_ids")));
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         }
@@ -87,7 +88,8 @@ public class RequestLogStatsController {
         try {
             return ResponseEntity.ok(requestLogStatsService.getRequestLatencyStats(
                 startDate, endDate, userId, teamId, providerId, apiKeyId, errorsOnly,
-                RequestLogService.readFeedIds(body, "model_ids")));
+                RequestLogService.readFeedIds(body, "model_ids"), RequestLogService.readRequestStatus(body),
+                        RequestLogService.readFeedIds(body, "provider_ids")));
         } catch (IllegalArgumentException | java.time.format.DateTimeParseException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         }

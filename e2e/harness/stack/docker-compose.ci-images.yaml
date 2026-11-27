@@ -1,0 +1,11 @@
+# Only the E2E workflow selects these images. Clear the build definitions so
+# "up --build" still builds other services but cannot rebuild either image.
+services:
+  migrate:
+    build: !reset null
+    image: logos-e2e-migrate:${E2E_CI_IMAGES_SHA:?Load the E2E migration image first}
+    pull_policy: never
+  logos-webservice:
+    build: !reset null
+    image: logos-e2e-webservice:${E2E_CI_IMAGES_SHA:?Load the E2E webservice image first}
+    pull_policy: never

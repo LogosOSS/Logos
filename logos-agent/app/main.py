@@ -34,6 +34,7 @@ from . import (
     security_scans,
     security_store,
     triggers,
+    workspace_storage,
 )
 from .artifacts import read_artifact
 from .auth import Principal, require_agent_operator
@@ -55,6 +56,7 @@ from .schemas import (
     SessionSummary,
     Workspace,
     WorkspaceCreate,
+    WorkspaceStorage,
 )
 from .security_models import AssessmentAction, IncidentInput, RepositoryInput
 from .sessions import artifact_dir, cache_volume_for, manager, memory_admission_block
@@ -409,6 +411,11 @@ async def list_workspaces(_: Principal = Depends(require_agent_operator)) -> lis
     return [Workspace(**row) for row in await db.list_workspaces()]
 
 
+@app.get("/workspace-storage", response_model=WorkspaceStorage, tags=["workspaces"])
+async def get_workspace_storage(_: Principal = Depends(require_agent_operator)) -> WorkspaceStorage:
+    return await workspace_storage.read(await db.list_workspaces())
+
+
 @app.post(
     "/workspaces",
     response_model=Workspace,
@@ -477,14 +484,19 @@ def _validate_memory_override(memory_mb: int | None) -> None:
     tags=["sessions"],
 )
 async def create_session(body: SessionCreate, principal: Principal = Depends(require_agent_operator)) -> SessionSummary:
+    if body.deploy_to_dev:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Agent sessions no longer deploy to Dev automatically. Use the separate Dev deployment workflow.",
+        )
     _validate_memory_override(body.memory_override_mb)
     workspace = await db.get_workspace(body.workspace_id)
     if workspace is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workspace not found")
-    if body.deploy_to_dev and not settings.deploy_enabled:
+    if body.no_push and (body.open_pull_request or body.screenshot_paths):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Deploys are disabled on this runner (LOGOS_AGENT_DEPLOY_ENABLED)",
+            detail="Private sessions cannot open a pull request or capture Dev screenshots",
         )
     # Refuse a model that is not served locally at the point where a person
     # asks for it, rather than accepting the session and failing it later:
@@ -503,12 +515,11 @@ async def create_session(body: SessionCreate, principal: Principal = Depends(req
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="No linked repository with the coding agent enabled has this id",
             )
-        if body.deploy_to_dev or body.screenshot_paths:
-            # The dev deployment and its screenshots belong to the platform's
-            # own repository; a linked repository has neither.
+        if body.screenshot_paths:
+            # The shared Dev instance belongs to the platform repository.
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Deploys and screenshots are only available for the platform repository",
+                detail="Dev screenshots are only available for the platform repository",
             )
         # The same task a triggered session for this repository gets: the
         # request, followed by the repository's build command and the
@@ -529,7 +540,8 @@ async def create_session(body: SessionCreate, principal: Principal = Depends(req
             model=body.model,
             created_by=principal.username,
             open_pull_request=body.open_pull_request,
-            deploy_to_dev=body.deploy_to_dev,
+            no_push=body.no_push,
+            deploy_to_dev=False,
             screenshot_paths=body.screenshot_paths,
             memory_override_mb=body.memory_override_mb,
             # An idle workspace that last worked on another repository moves
@@ -615,7 +627,7 @@ async def retry_session(session_id: int, principal: Principal = Depends(require_
             # Read-only is a property of the work, not the attempt: a
             # retried answer still must not push.
             no_push=bool(row.get("no_push")),
-            # Deploying is a decision per attempt, not a property of the work.
+            # Keep the historical field false on every new attempt.
             deploy_to_dev=False,
             screenshot_paths=[],
             trigger_kind=row.get("trigger_kind"),

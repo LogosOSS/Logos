@@ -17,6 +17,7 @@ from unittest.mock import MagicMock
 import pytest
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
+from starlette.requests import ClientDisconnect
 
 import logos as main
 
@@ -515,3 +516,70 @@ async def test_non_streaming_requests_stay_on_the_sync_path(monkeypatch):
 
     assert result == "guarded"
     assert len(guarded) == 1
+
+
+@pytest.mark.parametrize("disconnect_at", ["http.response.start", "http.response.body"])
+async def test_asgi_send_failure_before_routing_finishes_settles_unforwarded_log(monkeypatch, disconnect_at):
+    events = []
+    db_factory = MagicMock()
+    db = db_factory.return_value.__enter__.return_value
+    db.close_unforwarded_request_log.side_effect = lambda *args: events.append(("finish-log", *args)) or True
+
+    async def pending_route(**kwargs):
+        events.append(("routing-started",))
+        try:
+            await asyncio.Event().wait()
+        finally:
+            events.append(("routing-cleaned-up",))
+
+    async def receive():
+        await asyncio.Event().wait()
+
+    async def send(message):
+        if message["type"] == disconnect_at:
+            if disconnect_at == "http.response.body":
+                assert message["body"] == KEEPALIVE
+            raise OSError("Broken pipe")
+
+    monkeypatch.setattr(main, "route_and_execute", pending_route)
+    monkeypatch.setattr(main, "DBManager", db_factory)
+    response = await main._keepalive_streaming_response(
+        _Client(leaves=False), log_id=42, request_id="req-interrupted", path="chat/completions"
+    )
+    with pytest.raises(ClientDisconnect):
+        await asyncio.wait_for(response({"type": "http", "asgi": {"spec_version": "2.4"}}, receive, send), 1)
+
+    expected = [("routing-started",), ("routing-cleaned-up",)] if disconnect_at == "http.response.body" else []
+    assert events == [*expected, ("finish-log", 42, "Request interrupted before it was forwarded.")]
+    db.set_response_payload.assert_not_called()
+    db.finalize_billing_row.assert_not_called()
+
+
+async def test_asgi_disconnect_listener_cancels_routing_and_settles_unforwarded_log(monkeypatch):
+    events = []
+    routing_started = asyncio.Event()
+    db_factory = MagicMock()
+    db = db_factory.return_value.__enter__.return_value
+    db.close_unforwarded_request_log.side_effect = lambda *args: events.append(("finish-log", *args)) or True
+
+    async def pending_route(**kwargs):
+        routing_started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            events.append(("routing-cleaned-up",))
+
+    async def receive():
+        await routing_started.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        assert message["type"] == "http.response.start"
+
+    monkeypatch.setattr(main, "route_and_execute", pending_route)
+    monkeypatch.setattr(main, "DBManager", db_factory)
+    response = await main._keepalive_streaming_response(
+        _Client(leaves=False), log_id=42, request_id="req-interrupted", path="chat/completions"
+    )
+    await asyncio.wait_for(response({"type": "http", "asgi": {"spec_version": "2.3"}}, receive, send), 1)
+    assert events == [("routing-cleaned-up",), ("finish-log", 42, "Request interrupted before it was forwarded.")]

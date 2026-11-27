@@ -93,12 +93,7 @@ public class StatsV2WebSocketHandler extends TextWebSocketHandler {
         volatile Integer scopeApiKeyId = null;
         volatile boolean scopeErrorsOnly = false;
 
-        // One lifecycle bucket the request feed is narrowed to (queued, running,
-        // error, finished); null shows all states. Deliberately not part of the
-        // scope above: the scope is who the whole page looks at, and it narrows
-        // the aggregates and the volume chart too. A state filter only makes
-        // sense for the request feed, so it must not drag the KPI cards and
-        // charts into a slice of the log they are meant to summarise in full.
+        // Lifecycle, models and provider lists narrow both Recent and aggregates.
         volatile String feedStatus = null;
         volatile List<Integer> feedModelIds = List.of();
         volatile List<Integer> feedProviderIds = List.of();
@@ -355,39 +350,19 @@ public class StatsV2WebSocketHandler extends TextWebSocketHandler {
      * admin-only feed to the whole platform.
      */
     private static void applyFeedStatus(SessionState state, Map<String, Object> msg) {
-        state.feedStatus = msg.get("status") instanceof String s && !s.isBlank() ? s : null;
+        state.feedStatus = RequestLogService.readRequestStatus(msg);
     }
 
-    /**
-     * Narrow the request feed to one lifecycle bucket.
-     *
-     * Unlike {@link #handleSetScope} this re-pushes only the feed, not the
-     * aggregates: the KPI cards and the volume chart summarise the whole scope,
-     * and a state filter does not change what they describe. A forced feed push
-     * is enough — no delta turns the unfiltered rows into the filtered ones.
-     */
-    /**
-     * The state bucket narrows the feed alone; the model selection narrows the
-     * whole page, aggregates included, so a changed model set is handled like
-     * a scope change: the aggregates are re-pushed for it, not just the rows.
-     */
     private void handleSetFeedFilters(WebSocketSession session, SessionState state, Map<String, Object> msg) {
-        List<Integer> previousModels = state.feedModelIds;
         applyFeedIds(state, msg);
-        if (previousModels.equals(state.feedModelIds)) {
-            handleSetFeedStatus(session, state, msg);
-            return;
-        }
-        applyFeedStatus(state, msg);
-        if (!state.wantsRequests()) return;
-        state.prevScopeSig = "";
-        pushTimelineInit(session, state);
-        pushRequests(session, state, true);
+        handleSetFeedStatus(session, state, msg);
     }
 
     private void handleSetFeedStatus(WebSocketSession session, SessionState state, Map<String, Object> msg) {
         applyFeedStatus(state, msg);
         if (!state.wantsRequests()) return;
+        state.prevScopeSig = "";
+        pushTimelineInit(session, state);
         pushRequests(session, state, true);
     }
 
@@ -475,7 +450,7 @@ public class StatsV2WebSocketHandler extends TextWebSocketHandler {
 
             try {
                 if (state.wantsRequests() && t % 2 == 0) {
-                    pushRequests(session, state, false);
+                    pushRequests(session, state, t % 60 == 0);
                 }
                 // VRAM deltas ride every tick: a lane the worker just loaded
                 // reaches the UI within one second of its status report
@@ -505,7 +480,7 @@ public class StatsV2WebSocketHandler extends TextWebSocketHandler {
                 // this flag. Without this the page's counters never moved
                 // after load: stats only ever came with timeline_init, i.e. on
                 // connect and on a range change.
-                if (state.wantsRequests() && t % 10 == 0 && state.statsDirty) {
+                if (state.wantsRequests() && t % 10 == 0 && (state.statsDirty || t % 60 == 0)) {
                     state.statsDirty = false;
                     pushStats(session, state);
                 }
@@ -653,7 +628,7 @@ public class StatsV2WebSocketHandler extends TextWebSocketHandler {
             Map<String, Object> stats = statsService.getRequestLogStats(
                 state.timelineStart, liveEnd(state), state.targetBuckets,
                 state.scopeUserId, state.scopeTeamId, state.scopeProviderId, state.scopeApiKeyId,
-                state.scopeErrorsOnly, state.feedModelIds);
+                state.scopeErrorsOnly, state.feedModelIds, state.feedStatus, state.feedProviderIds);
             state.bucketSeconds = stats.get("bucketSeconds") instanceof Number n ? n.intValue() : 60;
 
             send(session, Map.of("type", "timeline_init", "payload", stats));
@@ -678,7 +653,7 @@ public class StatsV2WebSocketHandler extends TextWebSocketHandler {
             Map<String, Object> stats = statsService.getRequestLogStats(
                 state.timelineStart, liveEnd(state), state.targetBuckets,
                 state.scopeUserId, state.scopeTeamId, state.scopeProviderId, state.scopeApiKeyId,
-                state.scopeErrorsOnly, state.feedModelIds);
+                state.scopeErrorsOnly, state.feedModelIds, state.feedStatus, state.feedProviderIds);
             synchronized (state.statsLock) {
                 // Range or scope moved while the query ran: the init that moved
                 // it already carries the current aggregates.
@@ -712,24 +687,19 @@ public class StatsV2WebSocketHandler extends TextWebSocketHandler {
             // here would pin the list to the instant the range was set and no
             // request enqueued after page load would ever show up.
             String end = liveEnd(state);
-            Map<String, Object> payload;
-            payload = requestLogService.getLatestRequests(
+            Map<String, Object> payload = new java.util.LinkedHashMap<>(requestLogService.getLatestRequests(
                 state.timelineStart, end, state.scopeUserId, state.scopeTeamId,
                 state.scopeProviderId, state.scopeApiKeyId, state.scopeErrorsOnly,
                 state.feedStatus, null, null, LATEST_REQUESTS_PUSH_SIZE, false,
-                state.feedModelIds, state.feedProviderIds);
+                state.feedModelIds, state.feedProviderIds));
             mergeLiveStreams(payload);
             String sig = requestsSig(payload);
             String idsSig = requestIdsSig(payload);
             boolean changed = !sig.equals(state.prevReqSig);
             boolean rowsChanged = !idsSig.equals(state.prevFeedIdsSig);
 
-            // The aggregates summarise the whole user/team scope, and the page
-            // above only shows what its state filter lets through. So a
-            // filtered feed's signature changes when its bucket moves — and
-            // says nothing when the rest of the scope does. The scope-wide
-            // probe below answers that second question: one aggregate over
-            // the exact set the aggregates count, no row materialisation.
+            // A lifecycle transition can move a row outside the current
+            // Recent page. Watch the identity scope to catch those changes.
             boolean scopeMoved = false;
             if (state.hasFeedFilter()) {
                 String scopeSig = requestLogService.scopeMovementSig(
@@ -744,26 +714,14 @@ public class StatsV2WebSocketHandler extends TextWebSocketHandler {
                 }
             }
             if (changed || scopeMoved) {
-                // A request arrived, was scheduled, finished, or grew its
-                // usage — whatever the aggregates summarise has moved with
-                // it. With a state filter on, `changed` only sees that one
-                // bucket, so `scopeMoved` carries the signal for the rest of
-                // the scope the aggregates still cover.
+                // Changes may move a row into or out of a selected state,
+                // including rows deeper than the current page.
                 state.statsDirty = true;
             }
-            // Rows deeper than the first page can change the selected total
-            // without changing that page. Recount selections on scope movement.
-            boolean selectionCountMoved = scopeMoved && (!state.feedModelIds.isEmpty() || !state.feedProviderIds.isEmpty());
-            if (force || changed || selectionCountMoved) {
-                // A status-filtered feed counts itself: the total an unfiltered
-                // page borrows from the statistics aggregates is only as narrow
-                // as the user/team scope, not the state bucket, so the "of N"
-                // would promise rows the filter has hidden. Counting is a range
-                // scan, so it runs only when the row set it counts can have
-                // moved: a forced push, or a page whose request ids changed.
-                // Token values grow without the ids or the count moving, so
-                // the figure the last push carried stays valid in between.
-                if (state.hasFeedFilter() && (force || rowsChanged || selectionCountMoved)) {
+            if (force || changed || scopeMoved) {
+                // The exact Recent total includes benchmarks, unlike the
+                // headline. Reuse it for token-only frames with the same rows.
+                if (force || rowsChanged || scopeMoved) {
                     long total = requestLogService.countFeedRows(
                         state.timelineStart, end, state.scopeUserId, state.scopeTeamId,
                         state.scopeProviderId, state.scopeApiKeyId, state.scopeErrorsOnly, state.feedStatus,
@@ -833,7 +791,7 @@ public class StatsV2WebSocketHandler extends TextWebSocketHandler {
         // finished requests — the common case for any range but "now" — must not
         // cost a call per push.
         boolean anyUnfinished = requests.stream()
-            .anyMatch(r -> r.get("request_complete_ts") == null || r.get("total_tokens") == null);
+            .anyMatch(r -> activeRequest(r) && r.get("total_tokens") == null);
         if (!anyUnfinished) return;
 
         Map<String, OrchestratorLiveStreamClient.LiveStream> live = liveStreamClient.getLiveStreams();
@@ -843,7 +801,7 @@ public class StatsV2WebSocketHandler extends TextWebSocketHandler {
             if (!(request.get("request_id") instanceof String requestId)) continue;
             var stream = live.get(requestId);
             if (stream == null) continue;
-            if (request.get("total_tokens") != null) continue;  // already settled
+            if (!activeRequest(request) || request.get("total_tokens") != null) continue;
             request.put("prompt_tokens", stream.promptTokens());
             request.put("completion_tokens", stream.completionTokens());
             request.put("total_tokens", stream.promptTokens() + stream.completionTokens());
@@ -856,6 +814,13 @@ public class StatsV2WebSocketHandler extends TextWebSocketHandler {
             // present them as moving rather than final.
             request.put("streaming", true);
         }
+    }
+
+    private static boolean activeRequest(Map<String, Object> request) {
+        if (request.get("lifecycle_state") instanceof String state) {
+            return "queued".equals(state) || "running".equals(state);
+        }
+        return request.get("request_complete_ts") == null;
     }
 
     // Content-only signature: the live window slide advances the range on
@@ -878,6 +843,8 @@ public class StatsV2WebSocketHandler extends TextWebSocketHandler {
         for (var r : reqs) {
             sb.append(r.getOrDefault("request_id", "")).append(':')
               .append(r.getOrDefault("status", "")).append(':')
+              .append(r.getOrDefault("lifecycle_state", "")).append(':')
+              .append(r.getOrDefault("provider_call_ts", "")).append(':')
               .append(r.getOrDefault("provider_name", "")).append(':')
               // Re-resolved in the same statement as the provider once the
               // execution context lands, so a re-routed request changes its

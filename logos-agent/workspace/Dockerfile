@@ -133,18 +133,23 @@ COPY --from=ghcr.io/astral-sh/uv:0.13.9 /uv /usr/local/bin/uv
 ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python
 RUN uv python install 3.13.18 3.12.16 && chmod -R a+rX /opt/uv-python
 
-# The coding agent itself — this image exists to run Claude Code — and
-# Playwright for screenshots. Both pinned so a session's behaviour does not
-# change under us between builds; bump them deliberately.
-ARG CLAUDE_CODE_VERSION=2.1.245
-ARG PLAYWRIGHT_VERSION=1.62.1
-RUN npm install -g \
-      "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
-      "playwright@${PLAYWRIGHT_VERSION}" \
-  && npm cache clean --force
-
-RUN npx --yes playwright@${PLAYWRIGHT_VERSION} install chromium \
+# Dependabot updates the exact workspace CLI versions and their lockfile.
+# Install Chromium with the same Playwright that the screenshot helper loads.
+ENV PATH=/opt/logos-workspace-tools/node_modules/.bin:$PATH \
+    NODE_PATH=/opt/logos-workspace-tools/node_modules \
+    DISABLE_AUTOUPDATER=1
+COPY logos-agent/workspace/package.json logos-agent/workspace/package-lock.json /opt/logos-workspace-tools/
+# Do not run dependency lifecycle hooks automatically. Claude's locked
+# wrapper explicitly links the native binary from its locked platform package.
+RUN npm ci --prefix /opt/logos-workspace-tools --omit=dev --include=optional --ignore-scripts --no-audit --no-fund \
+  && node /opt/logos-workspace-tools/node_modules/@anthropic-ai/claude-code/install.cjs \
+  && npm cache clean --force \
+  && playwright install chromium \
   && chmod -R a+rX /opt/playwright
+# Fail the image build if npm omitted the native CLI or the locked browser is absent.
+RUN --network=none claude --version \
+  && playwright --version \
+  && node -e 'const fs = require("node:fs"); fs.accessSync(require("playwright").chromium.executablePath(), fs.constants.X_OK)'
 
 # The repository's own linters, installed at build time because a session has
 # no network to install them with. Without this an agent cannot run what the
@@ -188,8 +193,9 @@ RUN chmod -R a+rX /usr/share/maven /opt/logos-verification
 # /cache is the mount point of a linked repository's workspace cache. Docker
 # fills an empty named volume from the image directory it is mounted over,
 # ownership included, so a fresh cache volume belongs to the session user.
+# The verifier mounts a separately reserved private scratch directory.
 RUN useradd --create-home --shell /bin/bash --uid 10001 agent \
-  && mkdir -p /workspace /artifacts /cache \
+  && mkdir -p /workspace /artifacts /cache /logos-verifier-scratch \
   && chown -R agent:agent /workspace /artifacts /cache /home/agent
 
 COPY logos-agent/workspace/session_activity.py /usr/local/lib/session_activity.py
@@ -218,7 +224,6 @@ WORKDIR /workspace
 # seeded database, whose rows point back at the hook environments in /opt —
 # reading those is all pre-commit does with them once they are installed.
 ENV HOME=/workspace/.home \
-    PRE_COMMIT_HOME=/workspace/.home/pre-commit \
-    NODE_PATH=/usr/local/lib/node_modules
+    PRE_COMMIT_HOME=/workspace/.home/pre-commit
 
 ENTRYPOINT ["python3", "/usr/local/lib/run_session.py"]

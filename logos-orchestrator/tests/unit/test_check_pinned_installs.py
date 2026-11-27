@@ -1,5 +1,6 @@
 """The repository-wide guard against installs without exact versions."""
 
+import json
 import runpy
 import subprocess
 from pathlib import Path
@@ -174,6 +175,25 @@ def test_package_json_scripts_are_checked(tmp_path: Path) -> None:
     problems = check_file(package, tmp_path)
     assert rules(problems) == [(0, "npm"), (0, "apt")]
     assert "(script 'setup')" in problems[0][1] and "(script 'e2e')" in problems[1][1]
+
+
+def test_package_json_requires_exact_dependency_pins(tmp_path: Path) -> None:
+    write(tmp_path, "ui/vendor/shim/package.json", '{"name":"shim","version":"4.3.2"}')
+    package = write(
+        tmp_path,
+        "ui/package.json",
+        json.dumps(
+            {
+                "dependencies": {"agent": "2.1.326", "shim": "file:vendor/shim", "web": "^4.0.0"},
+                "devDependencies": {"runner": "latest"},
+                "optionalDependencies": {"outside": "file:../other"},
+                "overrides": {"agent": "$agent", "dependency": "3.2.1", "missing": "$missing"},
+            }
+        ),
+    )
+    problems = check_file(package, tmp_path)
+    assert rules(problems) == [(0, "npm")] * 4
+    assert all(name in problems[i][1] for i, name in enumerate(("web", "runner", "outside", "missing")))
 
 
 def test_invalid_package_json_is_ignored(tmp_path: Path) -> None:

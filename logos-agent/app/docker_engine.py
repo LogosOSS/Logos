@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import struct
 from typing import Any, AsyncIterator
 
@@ -22,6 +23,9 @@ from .config import settings
 # high enough for the fields used here (PidsLimit, NanoCPUs, ReadonlyRootfs).
 _API_VERSION = "v1.43"
 _BASE = f"http://docker/{_API_VERSION}"  # NOSONAR - sent over the local Docker Unix socket, never a network
+# VolumeOptions.Subpath requires Engine API 1.45 (Docker Engine 26).
+_VERIFIER_BASE = "http://docker/v1.45"  # NOSONAR - same Docker Unix socket
+VERIFIER_SLOT_PATTERN = re.compile(r"verifier-[0-9a-f]{32}")
 
 
 class DockerError(RuntimeError):
@@ -36,9 +40,9 @@ def _client(timeout: float = 30.0) -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=transport, base_url=_BASE, timeout=timeout)
 
 
-async def _request(method: str, path: str, **kwargs: Any) -> httpx.Response:
+async def _request(method: str, path: str, *, verifier_subpath: bool = False, **kwargs: Any) -> httpx.Response:
     async with _client() as client:
-        response = await client.request(method, path, **kwargs)
+        response = await client.request(method, f"{_VERIFIER_BASE}{path}" if verifier_subpath else path, **kwargs)
     if response.status_code >= 400:
         try:
             message = response.json().get("message", response.text)
@@ -76,6 +80,10 @@ async def ensure_volume(name: str, labels: dict[str, str] | None = None) -> None
     )
 
 
+async def inspect_volume(name: str) -> dict[str, Any]:
+    return (await _request("GET", f"/volumes/{name}")).json()
+
+
 async def volume_mountpoint(name: str) -> str:
     """The host path of a named volume (local driver only).
 
@@ -87,12 +95,28 @@ async def volume_mountpoint(name: str) -> str:
     `GET /volumes/{name}` returns the volume object itself — `Mountpoint` is
     a top-level field, not nested under the volume's name.
     """
-    response = await _request("GET", f"/volumes/{name}")
-    info = response.json()
+    info = await inspect_volume(name)
     mountpoint = info.get("Mountpoint")
     if not mountpoint:
         raise DockerError(500, f"volume {name} has no host mountpoint (driver: {info.get('Driver')})")
     return mountpoint
+
+
+async def volume_usage_bytes() -> dict[str, int | None]:
+    """Return Docker's logical volume sizes, with unknown entries kept as None."""
+    response = await _request("GET", "/system/df", params={"type": "volume"})
+    payload = response.json()
+    rows = payload.get("Volumes") if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        return {}
+    sizes: dict[str, int | None] = {}
+    for row in rows:
+        if not isinstance(row, dict) or not isinstance(row.get("Name"), str):
+            continue
+        data = row.get("UsageData")
+        size = data.get("Size") if isinstance(data, dict) else None
+        sizes[row["Name"]] = size if type(size) is int and size >= 0 else None
+    return sizes
 
 
 async def remove_volume(name: str, *, force: bool = False) -> None:
@@ -177,6 +201,7 @@ async def create_session_container(
     network: str | None = None,
     cache_volume: str | None = None,
     memory_mb: int | None = None,
+    verification_scratch: tuple[str, str, str] | None = None,
 ) -> str:
     """Create the container an agent session runs in.
 
@@ -210,10 +235,14 @@ async def create_session_container(
     the trusted helper containers pass the egress network explicitly.
     """
     verifying = env.get("LOGOS_SESSION_PHASE") == "verify"
+    if verification_scratch is not None and not verifying:
+        raise ValueError("only a verifier may mount verification scratch")
     if verifying and (ssh_key_host_path or ssh_known_hosts_host_path or state_host_path):
         raise ValueError("verification cannot mount credentials or runner state")
     if verifying and any(key in env for key in ("GITHUB_TOKEN", "GH_TOKEN", "GIT_SSH_COMMAND", "ANTHROPIC_AUTH_TOKEN")):
         raise ValueError("verification cannot receive credentials")
+    if verifying and verification_scratch is None:
+        raise ValueError("verification requires a private disk scratch reservation")
     mount_mode = ":ro" if verifying else ""
     binds = [
         f"{workspace_volume}:/workspace{mount_mode}",
@@ -245,12 +274,6 @@ async def create_session_container(
         "Binds": binds,
         "NetworkMode": "none" if verifying else network or settings.session_network,
         "ReadonlyRootfs": True,
-        # The agent needs scratch space; give it tmpfs rather than a writable
-        # root so nothing it writes outside /workspace survives the session.
-        "Tmpfs": {
-            "/tmp": "rw,exec,nosuid,size=2g",  # NOSONAR - a private tmpfs inside the container, not a host directory
-            "/home/agent/.cache": "rw,nosuid,size=2g",
-        },
         "CapDrop": ["ALL"],
         "SecurityOpt": ["no-new-privileges:true"],
         "Memory": _memory_bytes(memory_mb),
@@ -260,6 +283,38 @@ async def create_session_container(
         "AutoRemove": False,  # keep exit status readable after the run
         "RestartPolicy": {"Name": "no"},
     }
+
+    if not verifying:
+        # Keep the ordinary agent and trusted helpers' isolated temporary
+        # storage. The verifier only gets a private disk mount.
+        host_config["Tmpfs"] = {
+            "/tmp": "rw,exec,nosuid,size=2g",  # NOSONAR - a private tmpfs inside the container, not a host directory
+            "/home/agent/.cache": "rw,nosuid,size=2g",
+        }
+
+    if verification_scratch is not None:
+        scratch_volume, scratch_slot, marker = verification_scratch
+        if not VERIFIER_SLOT_PATTERN.fullmatch(scratch_slot):
+            raise ValueError("verification scratch requires a private slot name")
+        # Docker mounts only this pre-existing subdirectory, not the whole
+        # volume. Do not bind-mount paths under the daemon's data root.
+        # Docker writes stdout/stderr outside the scratch filesystem. Keep
+        # diagnostics without letting build output fill that other disk.
+        host_config["LogConfig"] = {"Type": "local", "Config": {"max-size": "10m", "max-file": "2"}}
+        # A hard per-file limit complements (but cannot replace) the host
+        # pressure guard: multiple files still consume the same filesystem.
+        file_limit = 8 * 1024**3
+        host_config["Ulimits"] = [{"Name": "fsize", "Soft": file_limit, "Hard": file_limit}]
+        host_config["Mounts"] = [
+            {
+                "Type": "volume",
+                "Source": scratch_volume,
+                "Target": "/logos-verifier-scratch",
+                "ReadOnly": False,
+                "VolumeOptions": {"Subpath": scratch_slot, "NoCopy": True},
+            }
+        ]
+        env = {**env, "LOGOS_VERIFICATION_SCRATCH_MARKER": marker, "TMPDIR": "/logos-verifier-scratch"}
 
     payload: dict[str, Any] = {
         "Image": image,
@@ -279,7 +334,13 @@ async def create_session_container(
     if verifying:
         payload["Entrypoint"] = ["python3", "/usr/local/lib/verify_checkout.py"]
 
-    response = await _request("POST", "/containers/create", params={"name": name}, json=payload)
+    response = await _request(
+        "POST",
+        "/containers/create",
+        params={"name": name},
+        json=payload,
+        **({"verifier_subpath": True} if verifying else {}),
+    )
     return response.json()["Id"]
 
 
@@ -295,7 +356,7 @@ async def create_screenshot_container(
 ) -> str:
     """Create a one-shot container that renders one page to a PNG.
 
-    Screenshots run *outside* the session, after any dev deploy has finished,
+    Screenshots run *outside* the session against the Dev instance already running,
     so this is a small dedicated container rather than part of a session: it
     runs the same workspace image's browser tooling on the same isolation
     footing — no socket, no capabilities, read-only rootfs, capped resources —

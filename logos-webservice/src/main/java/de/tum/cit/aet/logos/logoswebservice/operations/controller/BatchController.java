@@ -18,6 +18,7 @@ import de.tum.cit.aet.logos.logoswebservice.auth.AuthContext;
 import de.tum.cit.aet.logos.logoswebservice.identity.entity.Role;
 import de.tum.cit.aet.logos.logoswebservice.operations.service.BatchService;
 import de.tum.cit.aet.logos.logoswebservice.operations.service.BatchPriceService;
+import de.tum.cit.aet.logos.logoswebservice.operations.service.BatchHistoricalCostService;
 
 /**
  * The batch page: upload a file, watch it run, download the results.
@@ -28,9 +29,8 @@ import de.tum.cit.aet.logos.logoswebservice.operations.service.BatchPriceService
  * API, called as the key the user picked, so the permission, ownership and
  * budget rules are the ones that apply to every other batch.
  *
- * The page is an admin facility, so only app admins and logos admins may use
- * it; app developers keep the script path, which talks to the orchestrator's
- * Batch API directly and does not go through here.
+ * Only App Admins and Logos Admins may use the page. The orchestrator applies
+ * the same role rule to batch creation through the page or the direct API.
  */
 @RestController
 public class BatchController {
@@ -38,10 +38,13 @@ public class BatchController {
     private final BatchService batchService;
 
     private final BatchPriceService batchPriceService;
+    private final BatchHistoricalCostService historicalCosts;
 
-    public BatchController(BatchService batchService, BatchPriceService batchPriceService) {
+    public BatchController(BatchService batchService, BatchPriceService batchPriceService,
+                           BatchHistoricalCostService historicalCosts) {
         this.batchService = batchService;
         this.batchPriceService = batchPriceService;
+        this.historicalCosts = historicalCosts;
     }
 
     @GetMapping("/logosdb/batches/prices")
@@ -50,6 +53,17 @@ public class BatchController {
                                     @RequestAttribute("authContext") AuthContext auth) {
         try {
             return ResponseEntity.ok(batchPriceService.pricesForKey(requireUser(auth), apiKeyId));
+        } catch (BatchService.KeyNotOwnedException exc) {
+            return ResponseEntity.status(403).body(Map.of("detail", exc.getMessage()));
+        }
+    }
+
+    @GetMapping("/logosdb/batches/historical-costs")
+    @PreAuthorize("hasAnyAuthority('" + Role.Names.LOGOS_ADMIN + "', '" + Role.Names.APP_ADMIN + "')")
+    public ResponseEntity<?> historicalCosts(@RequestParam("apiKeyId") int apiKeyId,
+                                            @RequestAttribute("authContext") AuthContext auth) {
+        try {
+            return ResponseEntity.ok(historicalCosts.historicalCostsForKey(requireUser(auth), apiKeyId));
         } catch (BatchService.KeyNotOwnedException exc) {
             return ResponseEntity.status(403).body(Map.of("detail", exc.getMessage()));
         }

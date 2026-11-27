@@ -55,47 +55,26 @@ _METADATA_REFLECTED = False
 _ENGINE_LOCK = threading.Lock()
 _METADATA_LOCK = threading.Lock()
 
-# Effective model and provider permissions of one active api key, as the CTEs
-# ``key_info``, ``effective_providers`` and ``effective_models``. A key with
-# custom permissions uses its own grants, any other key its team's. The
-# managed agent identity ignores explicit grants and may reach exactly the
-# locally served (``logosnode``) models and providers.
+# Effective deployment pairs for one active API key. Keep the agent service
+# key on its own local-only path; team Azure settings never affect it.
 _EFFECTIVE_PERMISSIONS_CTE = """
     key_info AS (
         SELECT ak.id AS aki,
-               ak.team_id AS tid,
                COALESCE(u.role, '') AS user_role,
-               ak.internal_service,
-               ak.use_custom_permissions AS custom
+               ak.internal_service
         FROM api_keys ak
             LEFT JOIN users u ON ak.user_id = u.id
-        WHERE ak.id = :api_key_id
-            AND ak.is_active = true
+        WHERE ak.id = :api_key_id AND ak.is_active = true
     ),
-    effective_providers AS (
-        SELECT akpp.provider_id
-        FROM allowed_key_provider_grants akpp, key_info ki
-        WHERE akpp.api_key_id = ki.aki AND ki.custom = true AND ki.internal_service IS NULL
-        UNION
-        SELECT p.id FROM providers p, key_info ki
-        WHERE ki.internal_service = 'agent' AND p.provider_type = 'logosnode'
-        UNION
-        SELECT tpp.provider_id
-        FROM allowed_team_provider_grants tpp, key_info ki
-        WHERE tpp.team_id = ki.tid AND ki.custom = false
-    ),
-    effective_models AS (
-        SELECT akmp.model_id
-        FROM api_key_model_permissions akmp, key_info ki
-        WHERE akmp.api_key_id = ki.aki AND ki.custom = true AND ki.internal_service IS NULL
-        UNION
-        SELECT mp.model_id FROM model_provider mp
+    effective_deployments AS (
+        SELECT d.model_id, d.provider_id
+        FROM allowed_key_model_deployments d JOIN key_info ki ON ki.aki = d.api_key_id
+        WHERE ki.internal_service IS NULL
+        UNION ALL
+        SELECT mp.model_id, mp.provider_id
+        FROM model_provider mp
         JOIN providers p ON p.id = mp.provider_id, key_info ki
         WHERE ki.internal_service = 'agent' AND p.provider_type = 'logosnode'
-        UNION
-        SELECT tmp.model_id
-        FROM team_model_permissions tmp, key_info ki
-        WHERE tmp.team_id = ki.tid AND ki.custom = false
     )
 """
 
@@ -707,6 +686,25 @@ class DBManager:
         """
         self.update_log_entry_metrics(log_id=log_id, request_id=request_id, **fields)
 
+    def close_unforwarded_request_log(self, log_id: int, error_message: str) -> bool:
+        """Close a request whose caller still owns pre-execution settlement."""
+        result = self.session.execute(
+            text("""
+                UPDATE log_entry
+                   SET result_status = 'error',
+                       timestamp_response = NOW(),
+                       error_message = COALESCE(error_message, :error_message)
+                 WHERE id = :log_id
+                   AND result_status IS NULL
+                   AND timestamp_response IS NULL
+                   AND timestamp_provider_call IS NULL
+                   AND timestamp_provider_response IS NULL
+                """),
+            {"log_id": log_id, "error_message": error_message},
+        )
+        self.session.commit()
+        return bool(result.rowcount and result.rowcount > 0)
+
     def close_orphaned_request_logs(self, error_message: str) -> int:
         """Finalise log rows left open by a previous orchestrator process.
 
@@ -1227,7 +1225,9 @@ class DBManager:
             for r in rows
         ]
 
-    def sync_azure_deployments(self, provider_id: int, deployments: list[Dict[str, str]]) -> Dict[str, Any]:
+    def sync_azure_deployments(
+        self, provider_id: int, deployments: list[Dict[str, str]], *, provider_base_url: str
+    ) -> Dict[str, Any]:
         """Auto-sync the live Azure deployment list into the DB.
 
         ``deployments`` is a list of ``{"model_name": str, "endpoint": str}`` —
@@ -1243,8 +1243,8 @@ class DBManager:
 
         ``model_provider`` links for this Azure provider whose model is no longer
         in the live list are pruned, so the DB mirrors the resource. Team
-        permissions are NOT granted automatically — an admin assigns access per
-        team via the models tab.
+        permissions stay manual unless a Logos admin enables automatic access
+        for a team on this provider.
 
         Returns ``{"new_models": [names], "new_model_ids": [ids],
         "changed": bool}``. ``changed`` is True when anything that affects
@@ -1260,7 +1260,7 @@ class DBManager:
 
         existing_rows = self.session.execute(
             text("""
-                SELECT mp.model_id, m.name, mp.endpoint
+                SELECT mp.model_id, m.name, mp.endpoint, mp.azure_synced_endpoint, mp.azure_synced_provider_url
                 FROM model_provider mp
                 JOIN models m ON m.id = mp.model_id
                 WHERE mp.provider_id = :pid
@@ -1268,7 +1268,9 @@ class DBManager:
             {"pid": pid},
         ).fetchall()
         existing_by_name = {row.name: row.model_id for row in existing_rows}
-        existing_endpoint = {row.name: row.endpoint for row in existing_rows}
+        existing_endpoint = {
+            row.name: (row.endpoint, row.azure_synced_endpoint, row.azure_synced_provider_url) for row in existing_rows
+        }
 
         changed = False
 
@@ -1311,7 +1313,7 @@ class DBManager:
             # linked model — even one whose row already existed globally —
             # needs a price/capability refresh on the webservice side.
             new_link = model_name not in existing_by_name
-            if new_link or existing_endpoint.get(model_name) != endpoint:
+            if new_link or existing_endpoint.get(model_name) != (endpoint, endpoint, provider_base_url):
                 changed = True
             if new_link:
                 newly_linked_ids.append(mid)
@@ -1319,12 +1321,15 @@ class DBManager:
             # Upsert the link and refresh the endpoint; preserve any api_key override.
             self.session.execute(
                 text("""
-                    INSERT INTO model_provider (provider_id, model_id, endpoint)
-                    VALUES (:pid, :mid, :endpoint)
+                    INSERT INTO model_provider
+                        (provider_id, model_id, endpoint, azure_synced_endpoint, azure_synced_provider_url)
+                    VALUES (:pid, :mid, :endpoint, :endpoint, :provider_url)
                     ON CONFLICT (model_id, provider_id)
-                    DO UPDATE SET endpoint = EXCLUDED.endpoint
+                    DO UPDATE SET endpoint = EXCLUDED.endpoint,
+                                  azure_synced_endpoint = EXCLUDED.azure_synced_endpoint,
+                                  azure_synced_provider_url = EXCLUDED.azure_synced_provider_url
                     """),
-                {"pid": pid, "mid": mid, "endpoint": endpoint},
+                {"pid": pid, "mid": mid, "endpoint": endpoint, "provider_url": provider_base_url},
             )
 
         self._queue_discovery_notifications(newly_linked_ids)
@@ -3108,8 +3113,7 @@ class DBManager:
             params["api_key_id"] = int(api_key_id)
             permission_cte = f"WITH {_EFFECTIVE_PERMISSIONS_CTE}"
             permission_join = """
-                JOIN effective_providers ep ON ep.provider_id = p.id
-                JOIN effective_models em ON em.model_id = m.id
+                JOIN effective_deployments ed ON ed.provider_id = p.id AND ed.model_id = m.id
             """
 
         sql = text(f"""
@@ -3170,8 +3174,7 @@ class DBManager:
                         JOIN model_provider mp ON m.id = mp.model_id
                         JOIN providers p ON mp.provider_id = p.id
                         JOIN provider_processing_privacy region ON region.provider_id = p.id
-                        JOIN effective_models em ON m.id = em.model_id
-                        JOIN effective_providers ep ON p.id = ep.provider_id
+                        JOIN effective_deployments ed ON ed.model_id = m.id AND ed.provider_id = p.id
                    ORDER BY model_id, provider_id
                    """)
         rows = self.session.execute(sql, {"api_key_id": api_key_id}).mappings().all()
@@ -3425,33 +3428,8 @@ class DBManager:
 
         Passing ``provider_id`` narrows the answer to one provider.
         """
-        scope = "WHERE mp.provider_id = :provider_id" if provider_id is not None else ""
+        scope = "AND mp.provider_id = :provider_id" if provider_id is not None else ""
         sql = text(f"""
-                   WITH key_info AS (
-                            SELECT ak.id AS aki,
-                                   ak.team_id AS tid,
-                                   ak.use_custom_permissions AS custom
-                            FROM api_keys ak
-                            WHERE ak.id = :api_key_id AND ak.is_active = true
-                        ),
-                        effective_models AS (
-                            SELECT akmp.model_id
-                            FROM api_key_model_permissions akmp, key_info ki
-                            WHERE akmp.api_key_id = ki.aki AND ki.custom = true
-                            UNION
-                            SELECT tmp.model_id
-                            FROM team_model_permissions tmp, key_info ki
-                            WHERE tmp.team_id = ki.tid AND ki.custom = false
-                        ),
-                        effective_providers AS (
-                            SELECT akpp.provider_id
-                            FROM allowed_key_provider_grants akpp, key_info ki
-                            WHERE akpp.api_key_id = ki.aki AND ki.custom = true
-                            UNION
-                            SELECT tpp.provider_id
-                            FROM allowed_team_provider_grants tpp, key_info ki
-                            WHERE tpp.team_id = ki.tid AND ki.custom = false
-                        )
                    SELECT m.id AS model_id,
                           m.name AS model_name,
                           mp.endpoint AS endpoint,
@@ -3462,10 +3440,10 @@ class DBManager:
                    FROM models m
                         JOIN model_provider mp ON mp.model_id = m.id
                         JOIN providers p ON p.id = mp.provider_id
-                        JOIN effective_models em ON em.model_id = m.id
-                        JOIN effective_providers ep ON ep.provider_id = p.id
+                        JOIN allowed_key_model_deployments ed ON ed.model_id = m.id AND ed.provider_id = p.id
                         LEFT JOIN provider_model_batch_eligibility be
                                ON be.provider_id = p.id AND be.model_id = m.id
+                   WHERE ed.api_key_id = :api_key_id
                    {scope}
                    ORDER BY m.name, p.id
                    """)
@@ -4197,6 +4175,27 @@ class DBManager:
         )
         return dict(row) if row else None
 
+    def can_create_batch(self, api_key_id: int) -> bool:
+        """Check the active key owner's current role, without the API key cache."""
+        return bool(
+            self.session.execute(
+                text("""
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM api_keys ak
+                        JOIN users u ON u.id = ak.user_id
+                        WHERE ak.id = :api_key_id
+                          AND ak.is_active = true
+                          AND ak.key_type = 'developer'
+                          AND ak.internal_service IS NULL
+                          AND u.is_active = true
+                          AND u.role IN ('app_admin', 'logos_admin')
+                    )
+                """),
+                {"api_key_id": int(api_key_id)},
+            ).scalar_one()
+        )
+
     def get_api_key_logging_context(self, api_key_id: int) -> Dict[str, Any]:
         """The environment and privacy level a key's log rows are written with.
 
@@ -4527,9 +4526,7 @@ class DBManager:
             WHERE a.model_id = m.id
            ) AS aliases
            FROM models m
-           JOIN effective_models em ON m.id = em.model_id
-           JOIN model_provider mp ON m.id = mp.model_id
-           JOIN effective_providers ep ON mp.provider_id = ep.provider_id
+           JOIN effective_deployments ed ON ed.model_id = m.id
            ORDER BY m.id
        """)
         rows = self.session.execute(sql, {"api_key_id": int(api_key_id)}).mappings().all()
@@ -4558,9 +4555,7 @@ class DBManager:
            WITH {_EFFECTIVE_PERMISSIONS_CTE}
             SELECT DISTINCT m.id, m.name, m.description
             FROM models m
-            JOIN effective_models em ON m.id = em.model_id
-            JOIN model_provider mp ON m.id = mp.model_id
-            JOIN effective_providers ep ON mp.provider_id = ep.provider_id
+            JOIN effective_deployments ed ON ed.model_id = m.id
             WHERE m.name = :name
             ORDER BY m.id LIMIT 1
         """)
@@ -4698,31 +4693,11 @@ class DBManager:
             params = {}
         else:
             sql = text("""
-                WITH key_info AS (
-                    SELECT ak.id AS aki,
-                           ak.team_id AS tid,
-                           ak.use_custom_permissions AS custom
-                    FROM api_keys ak
+                WITH effective_deployments AS (
+                    SELECT d.model_id
+                    FROM allowed_key_model_deployments d
+                    JOIN api_keys ak ON ak.id = d.api_key_id
                     WHERE ak.key_value = :logos_key
-                      AND ak.is_active = true
-                ),
-                effective_providers AS (
-                    SELECT akpp.provider_id
-                    FROM allowed_key_provider_grants akpp, key_info ki
-                    WHERE akpp.api_key_id = ki.aki AND ki.custom = true
-                    UNION
-                    SELECT tpp.provider_id
-                    FROM allowed_team_provider_grants tpp, key_info ki
-                    WHERE tpp.team_id = ki.tid AND ki.custom = false
-                ),
-                effective_models AS (
-                    SELECT akmp.model_id
-                    FROM api_key_model_permissions akmp, key_info ki
-                    WHERE akmp.api_key_id = ki.aki AND ki.custom = true
-                    UNION
-                    SELECT tmp.model_id
-                    FROM team_model_permissions tmp, key_info ki
-                    WHERE tmp.team_id = ki.tid AND ki.custom = false
                 )
                 SELECT DISTINCT m.id,
                                 m.name,
@@ -4766,9 +4741,7 @@ class DBManager:
                             LIMIT 1
                         ) AS output_usd_per_million
                 FROM models m
-                JOIN effective_models em ON m.id = em.model_id
-                JOIN model_provider mp ON m.id = mp.model_id
-                JOIN effective_providers ep ON mp.provider_id = ep.provider_id
+                JOIN effective_deployments ed ON ed.model_id = m.id
                 ORDER BY m.id
             """)
             params = {"logos_key": logos_key}
@@ -4801,10 +4774,8 @@ class DBManager:
         only the models this key may address.
 
         Single query, same access semantics as get_models_info: logos_admin /
-        app_admin keys see every model, all other keys see the intersection of
-        their effective model and provider permissions (per-key permissions
-        when the key opts into custom permissions, the team's otherwise). The
-        name matching is delegated to the shared resolver so proxy mode and
+        app_admin keys see every model; all other keys must have at least one
+        permitted deployment. The name matching is delegated to the shared resolver so proxy mode and
         the user-facing endpoints cannot drift apart.
         """
         # Imported here: logosnode_snapshot imports dbmanager at module scope,
@@ -4822,15 +4793,7 @@ class DBManager:
                           ) AS aliases
                    FROM models m
                    WHERE EXISTS (SELECT 1 FROM key_info ki WHERE ki.user_role IN ('logos_admin', 'app_admin'))
-                      OR (
-                          m.id IN (SELECT model_id FROM effective_models)
-                          AND EXISTS (
-                              SELECT 1
-                              FROM model_provider mp
-                                   JOIN effective_providers ep ON ep.provider_id = mp.provider_id
-                              WHERE mp.model_id = m.id
-                          )
-                      )
+                      OR m.id IN (SELECT model_id FROM effective_deployments)
                    ORDER BY m.id
                    """)
         rows = self.session.execute(sql, {"api_key_id": api_key_id}).fetchall()
@@ -5016,19 +4979,25 @@ class DBManager:
         request_id: Optional[str] = None,
         timeout_s: Optional[float] = None,
         timestamp_request: Optional[datetime.datetime] = None,
+        *,
+        benchmark_job_id: Optional[int] = None,
     ) -> tuple[dict, int]:
         # Deferred inserts retain arrival time, before scheduling/provider events.
         timestamp = (timestamp_request or datetime.datetime.now(datetime.timezone.utc)).isoformat()
         payload_str = _json_for_jsonb(input_payload) if log_level == "FULL" and input_payload else None
         headers_str = _json_for_jsonb(dict(headers)) if log_level == "FULL" and headers else None
 
+        # Only the signed internal benchmark endpoint sets this marker. Keep
+        # ordinary inserts independent of the newly added benchmark column.
+        benchmark_column = ", benchmark_job_id" if benchmark_job_id is not None else ""
+        benchmark_value = ", :benchmark_job_id" if benchmark_job_id is not None else ""
         row = self.session.execute(
-            text("""
+            text(f"""
                  INSERT INTO log_entry (timestamp_request, api_key_id, team_id, user_id,
                                         environment, client_ip,
-                                        input_payload, headers, privacy_level, request_id, timeout_s)
+                                        input_payload, headers, privacy_level, request_id, timeout_s{benchmark_column})
                  VALUES (:ts, :aki, :tid, :uid, :env,
-                         :ip, :payload, :headers, CAST(:privacy AS logging_enum), :rid, :timeout_s)
+                         :ip, :payload, :headers, CAST(:privacy AS logging_enum), :rid, :timeout_s{benchmark_value})
                  RETURNING id
                  """),
             {
@@ -5043,6 +5012,7 @@ class DBManager:
                 "privacy": log_level,
                 "rid": request_id,
                 "timeout_s": timeout_s,
+                **({"benchmark_job_id": benchmark_job_id} if benchmark_job_id is not None else {}),
             },
         ).fetchone()
         self.session.commit()

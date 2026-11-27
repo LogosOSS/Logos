@@ -14,6 +14,7 @@ import {
   AgentSession,
   AgentTriggers,
   AgentWorkspace,
+  AgentWorkspaceStorage,
   CreateSessionRequest,
   SessionMessages,
   isActive,
@@ -79,6 +80,7 @@ class FakeAgentService {
   repositories: AgentRepository[] = [];
   repositoriesFail = false;
   workspaces: AgentWorkspace[] = [];
+  storage: AgentWorkspaceStorage = { artifact_filesystem: null, workspace_used_bytes: {} };
   createBodies: CreateSessionRequest[] = [];
 
   async getRepositories(): Promise<AgentRepository[]> {
@@ -131,6 +133,10 @@ class FakeAgentService {
 
   async getWorkspaces(): Promise<AgentWorkspace[]> {
     return this.workspaces;
+  }
+
+  async getWorkspaceStorage(): Promise<AgentWorkspaceStorage> {
+    return this.storage;
   }
 
   async getCapacity(): Promise<AgentCapacity> {
@@ -287,6 +293,73 @@ describe('Agents', () => {
     fixture.detectChanges();
     expect(fixture.nativeElement.querySelector('.agent-message')).toBeNull();
     expect(fixture.nativeElement.querySelector('.diagnostics pre').textContent).toContain('legacy stdout');
+  });
+
+  it('reports free artifact space and distinguishes measured zero from missing workspace sizes', async () => {
+    agentService.workspaces = [1, 2, 3].map((id) => ({
+      id,
+      name: `fixture-${id}`,
+      volume_name: `volume-${id}`,
+      base_branch: 'main',
+      created_by: 'tester',
+      created_at: '2026-09-02T10:00:00Z',
+      active_sessions: 0,
+    }));
+    const gib = 1024 ** 3;
+    agentService.storage = {
+      artifact_filesystem: { total_bytes: 250 * gib, available_bytes: 10 * gib },
+      workspace_used_bytes: { 1: 2.5 * gib, 2: 0 },
+    };
+    await component.refresh();
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    const root = fixture.nativeElement as HTMLElement;
+    expect(root.querySelector('.workspace-storage')?.textContent).toContain('10 GiB free of 250 GiB');
+    expect(root.querySelector('.workspace-storage .pi-exclamation-triangle')).not.toBeNull();
+    expect(root.querySelector('[aria-label="Artifact disk available"]')?.getAttribute('aria-valuenow')).toBe('4');
+    expect([...root.querySelectorAll('.workspace__disk')].map((el) => el.textContent?.trim())).toEqual([
+      '2.5 GiB used',
+      '0 B used',
+      'Usage unavailable',
+    ]);
+    expect(root.querySelector('.workspace-storage input')).toBeNull();
+  });
+
+  it('keeps session selection and workspace removal wired through the storage panel', async () => {
+    const workspace = {
+      id: 1,
+      name: 'fixture',
+      volume_name: 'fixture-storage',
+      base_branch: 'main',
+      created_by: 'tester',
+      created_at: '2026-09-02T10:00:00Z',
+      active_sessions: 1,
+    };
+    const busy = makeSession({ workspace_id: 1, status: 'running' });
+    agentService.workspaces = [workspace, { ...workspace, id: 2, name: 'empty-workspace', active_sessions: 0 }];
+    agentService.sessions = [busy];
+    const select = vi.spyOn(component, 'select').mockResolvedValue();
+    const remove = vi.spyOn(component, 'deleteWorkspace').mockResolvedValue();
+    await component.refresh();
+    fixture.detectChanges();
+
+    const panel = fixture.nativeElement.querySelector('app-agent-workspaces') as HTMLElement;
+    panel.querySelector<HTMLButtonElement>('button.workspace__busy')?.click();
+    panel.querySelector<HTMLButtonElement>('button[aria-label="Delete workspace empty-workspace"]')?.click();
+    expect(select).toHaveBeenCalledExactlyOnceWith(busy);
+    expect(remove).toHaveBeenCalledExactlyOnceWith(agentService.workspaces[1]);
+  });
+
+  it('does not make the agent page unavailable if disk telemetry fails', async () => {
+    vi.spyOn(agentService, 'getWorkspaceStorage').mockRejectedValue(new Error('telemetry unavailable'));
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    const root = fixture.nativeElement as HTMLElement;
+    expect(root.querySelector('.workspace-storage')?.textContent).toContain('Runner artifact disk: unavailable');
+    expect(component.error()).toBeNull();
   });
 
   describe('session timings', () => {
@@ -590,6 +663,16 @@ describe('Agents', () => {
       expect(component.formRepositoryId()).toBeNull();
     });
 
+    it('does not expose a deployment choice in the session form', () => {
+      component.openForm();
+      fixture.detectChanges();
+      const form: HTMLElement = fixture.nativeElement.querySelector('.form-card');
+      expect(form.textContent).toContain('Private session: no GitHub writes');
+      expect(form.textContent).toContain('Capturing them does not deploy these changes');
+      expect(form.textContent).not.toContain('Deploy to the dev environment afterwards');
+    });
+
+
     it('keeps only the platform repository when the list cannot be read', async () => {
       agentService.repositoriesFail = true;
       await component.refresh();
@@ -599,29 +682,39 @@ describe('Agents', () => {
       expect(component.error()).toBeNull();
     });
 
+    it('suppresses publishing and Dev screenshots for a private session', async () => {
+      component.formNoPush.set(true);
+      component.formOpenPr.set(true);
+      component.formScreenshots.set('/dashboard');
+      await component.submit();
+      expect(agentService.createBodies[0]).toEqual(
+        expect.objectContaining({
+          no_push: true,
+          open_pull_request: false,
+          screenshot_paths: [],
+        }),
+      );
+    });
+
     it('sends no linked repository for the platform repository', async () => {
-      component.formDeploy.set(true);
       component.formScreenshots.set('/dashboard /models');
       await component.submit();
+      expect(agentService.createBodies[0]).not.toHaveProperty('deploy_to_dev');
       expect(agentService.createBodies[0]).toEqual(expect.objectContaining({
         workspace_id: 3,
         team_repository_id: null,
-        deploy_to_dev: true,
         screenshot_paths: ['/dashboard', '/models'],
       }));
     });
 
-    it('turns off deploy and screenshots for a linked repository', async () => {
-      component.formDeploy.set(true);
+    it('turns off Dev screenshots for a linked repository', async () => {
       component.formScreenshots.set('/dashboard');
       component.selectRepositoryById('5');
       expect(component.linkedRepositorySelected()).toBe(true);
-      expect(component.formDeploy()).toBe(false);
       expect(component.formScreenshots()).toBe('');
       await component.submit();
       expect(agentService.createBodies[0]).toEqual(expect.objectContaining({
         team_repository_id: 5,
-        deploy_to_dev: false,
         screenshot_paths: [],
       }));
     });

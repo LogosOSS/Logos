@@ -27,6 +27,7 @@ import httpx
 COMPOSE_FILE = Path(__file__).parent / "docker-compose.e2e.yaml"
 BENCHMARK_TOPOLOGY_FILE = Path(__file__).parent / "docker-compose.benchmark-topology.yaml"
 
+CI_IMAGES_FILE = Path(__file__).parent / "docker-compose.ci-images.yaml"
 SIMULATION_MIGRATION_FILE = Path(__file__).parent / "docker-compose.simulation-migration.yaml"
 
 ADMIN_KEY = "lg-e2e-admin-key"
@@ -106,6 +107,8 @@ def _compose(
     if use_bench and (run_env if run_env is not None else os.environ).get("E2E_SIM_MIGRATE_IMAGE"):
         # Apply last so the performance overlay cannot re-select a project tag.
         files.extend(["-f", str(SIMULATION_MIGRATION_FILE)])
+    if (run_env if run_env is not None else os.environ).get("E2E_CI_IMAGES_SHA"):
+        files.extend(["-f", str(CI_IMAGES_FILE)])
     cmd = ["docker", "compose", *files, "-p", project_name(), *profile, *args]
     return subprocess.run(cmd, check=check, text=True, capture_output=capture, env=run_env)
 
