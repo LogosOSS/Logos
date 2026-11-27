@@ -139,8 +139,12 @@ async def agent_cloud_deployments() -> list[dict[str, Any]]:
                 FROM model_provider mp
                 JOIN models m ON m.id = mp.model_id
                 JOIN providers p ON p.id = mp.provider_id
+                CROSS JOIN LATERAL (
+                    SELECT COALESCE(NULLIF(mp.api_key, ''), p.api_key, '') AS raw_key
+                ) credential
                 WHERE p.provider_type = 'cloud' AND p.cloud_provider_type = 'logos'
-                  AND COALESCE(NULLIF(btrim(mp.api_key), ''), NULLIF(btrim(p.api_key), '')) IS NOT NULL
+                  AND length(credential.raw_key) BETWEEN 1 AND 512
+                  AND credential.raw_key ~ '^[A-Za-z0-9._~+/=-]+$'
                   AND (
                       (COALESCE(btrim(p.auth_name), '') = '' AND COALESCE(p.auth_format, '') = '')
                       OR (

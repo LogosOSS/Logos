@@ -40,6 +40,28 @@ async def test_remote_catalog_filters_origins_and_does_not_expose_endpoints(monk
     assert not await inference_settings.permits_pin({**PIN, "inference_provider_id": None})
 
 
+@pytest.mark.parametrize(
+    "bad_origin",
+    [
+        "not-a-url",
+        "https://bad.example/path",
+        "https://bad_host.example",
+        "https://bad.example?",
+        "https://bad.example:0",
+    ],
+)
+async def test_any_malformed_configured_origin_disables_all_remote_options(monkeypatch, remote_settings, bad_origin):
+    monkeypatch.setattr(
+        inference_settings,
+        "settings",
+        replace(inference_settings.settings, remote_allowed_origins=("https://approved.example", bad_origin)),
+    )
+    deployments = AsyncMock()
+    monkeypatch.setattr(db, "agent_cloud_deployments", deployments)
+    assert await inference_settings.cloud_options() == []
+    deployments.assert_not_awaited()
+
+
 async def test_wrong_network_cannot_enable_remote_models(monkeypatch, remote_settings):
     monkeypatch.setattr(
         inference_settings,

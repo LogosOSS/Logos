@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import secrets
+from ipaddress import ip_address
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -11,12 +13,13 @@ from . import db, model_policy
 from .config import settings
 
 REMOTE_GATEWAY = "http://logos-agent-remote-gateway"
+_DNS_LABEL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
 
 
 def _https_origin(value: str) -> tuple[str, int] | None:
     # Reject malformed network coordinates rather than interpreting them as a
     # different origin to the one the provider's relay will dial.
-    if not value or value != value.strip() or any(ord(ch) < 33 or ch == "\\" for ch in value):
+    if not value or value != value.strip() or any(ord(ch) < 33 or ch in "\\?#" for ch in value):
         return None
     try:
         url = urlsplit(value)
@@ -32,7 +35,12 @@ def _https_origin(value: str) -> tuple[str, int] | None:
             or url.path not in ("", "/")
         ):
             return None
-        return url.hostname, url.port or 443
+        host = url.hostname
+        if ":" in host or host.replace(".", "").isdigit():
+            ip_address(host)
+        elif not all(_DNS_LABEL.fullmatch(label) for label in host.rstrip(".").split(".")):
+            return None
+        return host, url.port or 443
     except ValueError:
         return None
 
@@ -55,8 +63,8 @@ def session_network(session: dict[str, Any]) -> str:
 
 
 async def cloud_options() -> list[dict[str, Any]]:
-    allowed = {_https_origin(value) for value in settings.remote_allowed_origins} - {None}
-    if not allowed:
+    allowed = {_https_origin(value) for value in settings.remote_allowed_origins}
+    if not allowed or None in allowed:
         return []
     try:
         remote_network()
