@@ -98,7 +98,10 @@ public class ProviderSpendCapService {
 
     Status status() {
         Snapshot snapshot = last;
-        long remaining = snapshot == null ? 0 : snapshot.expiresAt() - nanoTime.getAsLong();
+        if (snapshot == null) {
+            throw unavailable();
+        }
+        long remaining = snapshot.expiresAt() - nanoTime.getAsLong();
         long validForMs = TimeUnit.NANOSECONDS.toMillis(remaining);
         if (validForMs <= 0) {
             throw unavailable();

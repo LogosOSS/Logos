@@ -56,6 +56,21 @@ class ProviderSpendCapServiceTest {
     }
 
     @Test
+    void statusRejectsAnAbsentSnapshotAndNeverAdvertisesAnExpiredLease() {
+        assertThatThrownBy(service::status).isInstanceOfSatisfying(ResponseStatusException.class,
+            error -> assertThat(error.getStatusCode().value()).isEqualTo(503));
+
+        configureClock("2026-11-27T22:00:00Z");
+        configureLimits(Map.of());
+        service.refresh();
+        clock.set(TimeUnit.SECONDS.toNanos(5) - TimeUnit.MILLISECONDS.toNanos(1));
+        assertThat(service.status().validForMs()).isEqualTo(1);
+        clock.incrementAndGet();
+        assertThatThrownBy(service::status).isInstanceOfSatisfying(ResponseStatusException.class,
+            error -> assertThat(error.getStatusCode().value()).isEqualTo(503));
+    }
+
+    @Test
     void capsFailClosedOnMissingTotalsButFreshPolicyOnlyFallbackAllowsUncapped() {
         configureClock("2026-11-27T22:00:00Z");
         configureLimits(Map.of(2, 100L));
