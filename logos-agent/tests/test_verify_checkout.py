@@ -51,7 +51,9 @@ def test_authoritative_temporary_directory_does_not_fall_back(monkeypatch, tmp_p
     reserved.mkdir()
     with verify_checkout._scratch_directory("verify-") as scratch:
         assert Path(scratch).parent == reserved
-    assert verify_checkout._environment(tmp_path)["TMPDIR"] == str(reserved)
+    environment = verify_checkout._environment(tmp_path)
+    assert environment["TMPDIR"] == str(reserved)
+    assert environment["JAVA_TOOL_OPTIONS"] == f"-Djava.io.tmpdir={reserved}"
 
 
 def test_rejects_a_wrong_daemon_bind_before_reading_the_candidate(monkeypatch, tmp_path):
@@ -306,6 +308,7 @@ def test_authoritative_check_requires_an_existing_tree(tmp_path, monkeypatch, tr
 def test_commit_object_is_not_accepted_as_a_tree(tmp_path, monkeypatch):
     checkout, _, _ = _inputs(tmp_path, "logos-ui")
     monkeypatch.setenv("LOGOS_SESSION_PHASE", "verify")
+    monkeypatch.setattr(verify_checkout, "SCRATCH_ROOT", tmp_path)
     monkeypatch.setenv("LOGOS_VERIFICATION_TREE", _git(checkout, "rev-parse", "HEAD"))
     with pytest.raises(ValueError, match="tree object"):
         verify_checkout.candidate_tree(checkout)

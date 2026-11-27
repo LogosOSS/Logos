@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import stat
 from dataclasses import replace
 from pathlib import Path
+from threading import Event
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -34,6 +36,10 @@ def pool(monkeypatch, tmp_path):
             return getattr(real_os, name)
 
         @staticmethod
+        def chown(*_args):
+            pass
+
+        @staticmethod
         def fstat(fd):
             info = real_os.fstat(fd)
             return SimpleNamespace(st_mode=info.st_mode, st_nlink=info.st_nlink, st_uid=0)
@@ -42,12 +48,42 @@ def pool(monkeypatch, tmp_path):
     return tmp_path
 
 
+async def test_cancelled_lock_open_closes_the_eventual_descriptor(monkeypatch, tmp_path):
+    started = Event()
+    finish = Event()
+    fd = os.open(tmp_path / "lock", os.O_RDONLY | os.O_CREAT, 0o600)
+
+    def open_slowly():
+        started.set()
+        finish.wait(timeout=2)
+        return fd
+
+    monkeypatch.setattr(scratch, "_open_lock_file", open_slowly)
+    waiter = asyncio.create_task(scratch._open_lock())
+    try:
+        assert await asyncio.to_thread(started.wait, 2)
+        waiter.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+    finally:
+        finish.set()
+    for _ in range(100):
+        try:
+            os.fstat(fd)
+        except OSError:
+            break
+        await asyncio.sleep(0.01)
+    else:
+        os.close(fd)
+        pytest.fail("cancelled lock opening leaked a descriptor")
+
+
 async def test_reservations_are_exclusive_fresh_and_cleaned(pool):
     async with scratch.reserve(VOLUME, HOST, "20", timeout_s=0) as first:
         local = pool / Path(first.host_path).name
         marker = local / scratch.MARKER
         assert marker.read_text() == first.marker
-        assert stat.S_IMODE(local.stat().st_mode) == 0o1777
+        assert stat.S_IMODE(local.stat().st_mode) == 0o700
         assert stat.S_IMODE(marker.stat().st_mode) == 0o444
         assert Path(first.host_path).parent == Path(MOUNTPOINT)
         (local / "prover-output").write_text("private")
@@ -284,18 +320,19 @@ async def test_scratch_is_mounted_only_as_a_private_verifier_tmp(monkeypatch):
     assert host_config["CapDrop"] == ["ALL"]
     assert host_config["SecurityOpt"] == ["no-new-privileges:true"]
     assert host_config["Memory"] == host_config["MemorySwap"] == 3513 * 1024 * 1024
-    assert "/tmp" not in host_config["Tmpfs"]
+    assert "Tmpfs" not in host_config
     assert host_config["LogConfig"] == {"Type": "local", "Config": {"max-size": "10m", "max-file": "2"}}
     assert host_config["Mounts"] == [
         {
             "Type": "bind",
             "Source": f"{HOST}/sample",
-            "Target": "/tmp",
+            "Target": "/logos-verifier-scratch",
             "ReadOnly": False,
             "BindOptions": {"CreateMountpoint": False, "NonRecursive": True, "Propagation": "rprivate"},
         }
     ]
     assert f"LOGOS_VERIFICATION_SCRATCH_MARKER={MARKER}" in payloads[0]["Env"]
+    assert "TMPDIR=/logos-verifier-scratch" in payloads[0]["Env"]
     for phase in ("agent", "prepare", "finalize"):
         with pytest.raises(ValueError, match="only a verifier"):
             await docker_engine.create_session_container(env={"LOGOS_SESSION_PHASE": phase}, **options)

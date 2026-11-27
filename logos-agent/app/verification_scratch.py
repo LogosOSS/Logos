@@ -1,4 +1,4 @@
-"""A private, bounded disk-backed /tmp for one verifier at a time."""
+"""Private, bounded disk-backed temporary storage for one verifier at a time."""
 
 from __future__ import annotations
 
@@ -184,16 +184,41 @@ async def validate_configuration(volume: str, host_path: str, max_gib: str) -> P
     return host
 
 
+def _open_lock_file() -> int:
+    fd = os.open(ROOT / ".lock", os.O_RDONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK, 0o600)
+    try:
+        lock = os.fstat(fd)
+        if not stat.S_ISREG(lock.st_mode) or lock.st_nlink != 1 or lock.st_uid != 0 or lock.st_mode & 0o077:
+            raise RuntimeError("verification scratch lock must be a private runner-owned file")
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def _close_opened_lock(task: asyncio.Task[int]) -> None:
+    if not task.cancelled() and task.exception() is None:
+        os.close(task.result())
+
+
+async def _open_lock() -> int:
+    # A disk stalled on open must not block other runner traffic. Keep the
+    # task alive on cancellation so the eventual descriptor is closed.
+    task = asyncio.create_task(asyncio.to_thread(_open_lock_file))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        task.add_done_callback(_close_opened_lock)
+        raise
+
+
 @asynccontextmanager
 async def reserve(volume: str, host_path: str, max_gib: str, *, timeout_s: float) -> AsyncIterator[Scratch]:
     host = await validate_configuration(volume, host_path, max_gib)
-    # The parent is runner-only. The verifier gets the slot, never the lock
-    # or parent; the sticky slot protects its root-owned identity marker.
-    lock_fd = os.open(ROOT / ".lock", os.O_RDONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK, 0o600)
+    # The parent and lock are runner-only. The verifier receives a newly
+    # created private directory, whose marker is checked before build code.
+    lock_fd = await _open_lock()
     try:
-        lock = os.fstat(lock_fd)
-        if not stat.S_ISREG(lock.st_mode) or lock.st_nlink != 1 or lock.st_uid != 0 or lock.st_mode & 0o077:
-            raise RuntimeError("verification scratch lock must be a private runner-owned file")
         end = monotonic() + timeout_s
         while True:
             try:
@@ -220,7 +245,7 @@ async def reserve(volume: str, host_path: str, max_gib: str, *, timeout_s: float
             marker = secrets.token_hex(32)
             (slot / MARKER).write_text(marker, encoding="ascii")
             (slot / MARKER).chmod(0o444)
-            slot.chmod(0o1777)
+            os.chown(slot, settings.session_uid, -1)
             yield Scratch(str(host / slot.name), marker)
         finally:
             # A removed container is absent (including in the all-states

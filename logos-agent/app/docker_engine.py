@@ -270,12 +270,6 @@ async def create_session_container(
         "Binds": binds,
         "NetworkMode": "none" if verifying else network or settings.session_network,
         "ReadonlyRootfs": True,
-        # The agent needs scratch space; give it tmpfs rather than a writable
-        # root so nothing it writes outside /workspace survives the session.
-        "Tmpfs": {
-            "/tmp": "rw,exec,nosuid,size=2g",  # NOSONAR - a private tmpfs inside the container, not a host directory
-            "/home/agent/.cache": "rw,nosuid,size=2g",
-        },
         "CapDrop": ["ALL"],
         "SecurityOpt": ["no-new-privileges:true"],
         "Memory": _memory_bytes(memory_mb),
@@ -286,11 +280,18 @@ async def create_session_container(
         "RestartPolicy": {"Name": "no"},
     }
 
+    if not verifying:
+        # Keep the ordinary agent and trusted helpers' isolated temporary
+        # storage. The verifier only gets a dedicated disk mount.
+        host_config["Tmpfs"] = {
+            "/tmp": "rw,exec,nosuid,size=2g",  # NOSONAR - a private tmpfs inside the container, not a host directory
+            "/home/agent/.cache": "rw,nosuid,size=2g",
+        }
+
     if verification_scratch is not None:
         scratch_path, marker = verification_scratch
         # The structured bind refuses missing sources and never includes
         # nested mounts. Only the private per-verification slot is exposed.
-        host_config["Tmpfs"].pop("/tmp")
         # Docker writes stdout/stderr outside the scratch filesystem. Keep
         # diagnostics without letting build output fill that other disk.
         host_config["LogConfig"] = {"Type": "local", "Config": {"max-size": "10m", "max-file": "2"}}
@@ -298,12 +299,12 @@ async def create_session_container(
             {
                 "Type": "bind",
                 "Source": scratch_path,
-                "Target": "/tmp",
+                "Target": "/logos-verifier-scratch",
                 "ReadOnly": False,
                 "BindOptions": {"CreateMountpoint": False, "NonRecursive": True, "Propagation": "rprivate"},
             }
         ]
-        env = {**env, "LOGOS_VERIFICATION_SCRATCH_MARKER": marker}
+        env = {**env, "LOGOS_VERIFICATION_SCRATCH_MARKER": marker, "TMPDIR": "/logos-verifier-scratch"}
 
     payload: dict[str, Any] = {
         "Image": image,

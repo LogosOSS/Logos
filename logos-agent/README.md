@@ -780,7 +780,10 @@ a busy one is refused.
 #### Bounded disk scratch for verification
 
 The runner's authoritative verifier always uses a dedicated disk filesystem
-for `/tmp`. Its capacity is the hard ceiling, including the copied candidate,
+for temporary files. It mounts only a private directory and points `TMPDIR`
+and Java's temporary directory there. The verifier's `/tmp` is read-only;
+repository verification commands should use `$TMPDIR`, not a hard-coded
+`/tmp`. The disk capacity is the hard ceiling, including the copied candidate,
 cache and build output. This does **not** increase session RAM, modify the
 workspace cache, or bypass verification. Only one verifier can use the
 filesystem at a time; a contender waits up to `LOGOS_AGENT_HELPER_TIMEOUT_S`

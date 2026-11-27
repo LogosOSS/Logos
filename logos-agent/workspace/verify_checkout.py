@@ -22,7 +22,7 @@ from pathlib import Path, PurePosixPath
 CHECKOUT = Path("/workspace/repo")
 CACHE = Path("/opt/logos-verification")
 WORKSPACE_CACHE = Path("/cache")
-SCRATCH_ROOT = Path("/tmp")  # NOSONAR - private verifier mount, not a host directory
+SCRATCH_ROOT = Path("/logos-verifier-scratch")
 SERVICES = ("logos-webservice", "logos-ui")
 COMMAND_TIMEOUT = 1800
 
@@ -102,6 +102,8 @@ def _environment(home: Path) -> dict[str, str]:
     }
     if os.environ.get("LOGOS_SESSION_PHASE") == "verify":
         environment["TMPDIR"] = str(SCRATCH_ROOT)
+        # Java does not use TMPDIR for java.io.tmpdir. Include forked JVMs.
+        environment["JAVA_TOOL_OPTIONS"] = f"-Djava.io.tmpdir={SCRATCH_ROOT}"
     if os.environ.get("JAVA_HOME"):
         environment["JAVA_HOME"] = os.environ["JAVA_HOME"]
     return environment

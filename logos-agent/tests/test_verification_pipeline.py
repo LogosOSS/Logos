@@ -350,7 +350,7 @@ async def test_verify_container_cannot_modify_candidate_or_access_network(monkey
     assert payload["Entrypoint"] == ["python3", "/usr/local/lib/verify_checkout.py"]
     assert payload["HostConfig"]["ReadonlyRootfs"]
     assert payload["HostConfig"]["CapDrop"] == ["ALL"]
-    assert "/tmp" not in payload["HostConfig"]["Tmpfs"]
+    assert "Tmpfs" not in payload["HostConfig"]
 
 
 async def test_verify_container_refuses_to_create_without_disk_scratch(monkeypatch):
