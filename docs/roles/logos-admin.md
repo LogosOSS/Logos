@@ -690,16 +690,17 @@ has four parts: **Pull**, **Drain**, **Swap** and **Verify**. The bar shows how
 far the node is.
 
 A worker downloads its new image while it waits for the core. The part **Pull**
-and the status line show this download:
+and the second line of the status show this download:
 
-| State of the download | Part **Pull** | Status line |
+| State of the download | Part **Pull** | Second line of the status |
 |---|---|---|
 | The download runs | Flashes slowly | *downloading the image* |
 | The image is on the host | Full | *image downloaded* |
-| The download failed | Empty | *Early download failed*, with the reason |
+| The download failed | Empty | *early download failed* |
 
-A failed download does not stop the deployment. The worker downloads the image
-again when its own part of the deployment starts.
+If the download failed, the node also shows a warning with the reason. A failed
+download does not stop the deployment. The worker downloads the image again when
+its own part of the deployment starts.
 
 ![Current deployment with a worker that drains](/img/roles/logos-admin-deployments-running.png)
 

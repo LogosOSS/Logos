@@ -119,6 +119,24 @@
   color: rgb(var(--color-typography-500));
 }
 
+/* A warning about one node, inside its row or card. */
+.lg-alert--compact {
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: 8px;
+
+  .lg-alert__icon {
+    font-size: var(--font-size-md);
+  }
+}
+
+/* The text that Docker or the node manager gave: long image names must wrap. */
+.lg-alert__reason {
+  font-family: var(--font-family-mono, ui-monospace, monospace);
+  font-size: var(--font-size-xs);
+  overflow-wrap: anywhere;
+}
+
 /* ── Image tag chip ────────────────────────────────────────────────────── */
 .lg-tag {
   display: inline-flex;

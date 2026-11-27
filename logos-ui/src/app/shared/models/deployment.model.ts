@@ -221,9 +221,17 @@ export function firstLine(text: string | null | undefined): string {
 
 const DRAIN_NOTE = /^waiting for the node to drain: (\d+) request\(s\)/i;
 
+/** What the second line of a status says about an early download. */
+const EARLY_DOWNLOAD_LINE: Record<EarlyDownload['state'], string> = {
+  downloading: 'downloading the image',
+  downloaded: 'image downloaded',
+  failed: 'early download failed',
+};
+
 /**
  * What a node is doing, in a few words: the status line of a node row. While a node drains, the line is cut to the
  * number of requests that are left, on a second line. The page of the deployment has the full message in its events.
+ * How an early download stands is a second line too, never part of the first one.
  */
 export function stepStatusText(step: DeploymentStep, tag: string): string {
   switch (step.status) {
@@ -234,7 +242,7 @@ export function stepStatusText(step: DeploymentStep, tag: string): string {
       if (note) return note;
       // A node that took its order, and has nothing to tell yet, may still download early.
       return step.details?.early_download?.state === 'downloading'
-        ? `${STEP_STATUS_LABEL.running}, downloading the image`
+        ? `${STEP_STATUS_LABEL.running}\n${EARLY_DOWNLOAD_LINE.downloading}`
         : STEP_STATUS_LABEL.running;
     }
     case 'succeeded':
@@ -255,17 +263,19 @@ export function stepStatusText(step: DeploymentStep, tag: string): string {
 /** What a node says while it waits, with how its early download stands. */
 function waitingText(step: DeploymentStep): string {
   const label = STEP_STATUS_LABEL[step.status];
+  const state = step.details?.early_download?.state;
+  return state ? `${label}\n${EARLY_DOWNLOAD_LINE[state]}` : label;
+}
+
+/**
+ * Why the early download of a node that still waits failed, for the warning on that node. The status line only says
+ * that it failed. Null if there is nothing to warn about.
+ */
+export function earlyDownloadProblem(step: DeploymentStep): string | null {
   const download = step.details?.early_download;
-  switch (download?.state) {
-    case 'downloading':
-      return `${label}, downloading the image`;
-    case 'downloaded':
-      return `${label}, image downloaded`;
-    case 'failed':
-      return `${label}\nEarly download failed: ${firstLine(download.message) || 'no reason given'}`;
-    default:
-      return label;
-  }
+  const waits = step.status === 'waiting' || step.status === 'ordered';
+  if (!waits || download?.state !== 'failed') return null;
+  return firstLine(download.message) || 'No reason given.';
 }
 
 /** "Oct 31, 2026, 1:58:00 PM": the full time for the title of a relative time. */

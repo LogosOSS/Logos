@@ -4,6 +4,7 @@ import {
   DeploymentStep,
   EarlyDownload,
   clockTime,
+  earlyDownloadProblem,
   eventTitle,
   firstLine,
   fullDate,
@@ -107,13 +108,28 @@ describe('texts', () => {
     const text = (status: DeploymentStep['status'], early_download: EarlyDownload) =>
       stepStatusText(step({ status, details: { early_download } }), 'pr-1');
 
-    expect(text('waiting', { state: 'downloading' })).toBe('Waiting for the core, downloading the image');
-    expect(text('ordered', { state: 'downloaded' })).toBe('Waiting for the deployer, image downloaded');
+    expect(text('waiting', { state: 'downloading' })).toBe('Waiting for the core\ndownloading the image');
+    expect(text('ordered', { state: 'downloaded' })).toBe('Waiting for the deployer\nimage downloaded');
     expect(text('waiting', { state: 'failed', message: 'manifest unknown' })).toBe(
-      'Waiting for the core\nEarly download failed: manifest unknown',
+      'Waiting for the core\nearly download failed',
     );
-    expect(text('running', { state: 'downloading' })).toBe('Running, downloading the image');
+    expect(text('running', { state: 'downloading' })).toBe('Running\ndownloading the image');
     expect(text('cancelled', { state: 'downloaded' })).toBe('Not started');
+  });
+
+  it('gives the reason of a failed early download only for a node that still waits', () => {
+    const problem = (status: DeploymentStep['status'], early_download: EarlyDownload) =>
+      earlyDownloadProblem(step({ status, details: { early_download } }));
+    const failed: EarlyDownload = { state: 'failed', message: 'manifest unknown\nmore' };
+
+    expect(problem('waiting', failed)).toBe('manifest unknown');
+    expect(problem('ordered', failed)).toBe('manifest unknown');
+    expect(problem('waiting', { state: 'failed' })).toBe('No reason given.');
+    // Once the node runs or the deployment is over, the earlier failure is of no use any more.
+    expect(problem('running', failed)).toBeNull();
+    expect(problem('cancelled', failed)).toBeNull();
+    expect(problem('waiting', { state: 'downloaded' })).toBeNull();
+    expect(earlyDownloadProblem(step({ status: 'waiting' }))).toBeNull();
   });
 });
 

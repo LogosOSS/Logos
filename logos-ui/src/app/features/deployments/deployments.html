@@ -62,6 +62,15 @@
                 </div>
                 <app-phase-bar [states]="phaseStates(step)" />
                 <div class="node__status">{{ stepStatusText(step, plan.tag) }}</div>
+                @if (earlyDownloadProblem(step); as problem) {
+                  <div class="lg-alert lg-alert--warning lg-alert--compact node__problem">
+                    <i class="pi pi-exclamation-triangle lg-alert__icon" aria-hidden="true"></i>
+                    <div class="lg-alert__body">
+                      <code class="lg-alert__reason">{{ problem }}</code>
+                      <span class="lg-alert__hint">The node tries the download again when it starts.</span>
+                    </div>
+                  </div>
+                }
               </div>
             }
           </div>

@@ -54,6 +54,18 @@ const makeStep = (overrides: Partial<DeploymentStep> = {}): DeploymentStep => ({
   ...overrides,
 });
 
+/** A worker that waits for the core after its early download failed. */
+const failedEarlyDownload = (): DeploymentStep =>
+  makeStep({
+    kind: 'worker',
+    deployer_name: 'gpu-1',
+    status: 'waiting',
+    phase: null,
+    message: null,
+    events: [],
+    details: { early_download: { state: 'failed', message: 'manifest unknown' } },
+  });
+
 const makePlan = (overrides: Partial<DeploymentPlan> = {}): DeploymentPlan => ({
   id: 'p1',
   number: 7,
@@ -159,6 +171,17 @@ describe('Deployments', () => {
     expect(text()).not.toContain('Only logos admins');
     expect(text()).toContain('Abandon deployment');
     expect(fixture.nativeElement.querySelectorAll('app-phase-bar').length).toBe(1);
+  });
+
+  it('shows on a waiting node why its early download failed', async () => {
+    plans = [makePlan({ id: 'run', number: 12, status: 'running', finished_at: null })];
+    service['getPlan'].mockResolvedValue(
+      makePlan({ id: 'run', status: 'running', finished_at: null, step_details: [failedEarlyDownload()] }),
+    );
+    await create();
+    expect(text()).toContain('early download failed');
+    expect(text()).toContain('manifest unknown');
+    expect(text()).toContain('The node tries the download again when it starts.');
   });
 
   it('asks in a dialog on a protected Logos, and starts only when the admin confirms', async () => {
@@ -454,6 +477,16 @@ describe('DeploymentDetail', () => {
     expect(text).toContain('pulled the images');
     expect(text).toContain('Container log');
     expect(text).toContain('health check failed');
+  });
+
+  it('shows on a waiting node why its early download failed', async () => {
+    await create(
+      makePlan({ id: 'run', status: 'running', finished_at: null, step_details: [failedEarlyDownload()] }),
+    );
+    const text = (fixture.nativeElement as HTMLElement).textContent ?? '';
+    expect(text).toContain('early download failed');
+    expect(text).toContain('manifest unknown');
+    expect(text).toContain('The node tries the download again when it starts.');
   });
 
   it('abandons a running deployment after asking', async () => {

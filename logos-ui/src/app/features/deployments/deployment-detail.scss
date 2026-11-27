@@ -67,9 +67,13 @@
 
 .card__status {
   min-width: 0;
+  max-width: 360px;
+  margin-left: auto;
   white-space: pre-line;
+  overflow-wrap: anywhere;
   font-size: var(--font-size-md);
   color: rgb(var(--color-typography-500));
+  text-align: right;
 }
 
 .card--running .card__status {
@@ -122,6 +126,17 @@
 @media (max-width: 767px) {
   .deployments {
     padding: 40px 16px 40px;
+  }
+
+  /* The status is below the name on every card, not only on the cards where it does not fit beside the name. */
+  .card__head {
+    flex-direction: column;
+  }
+
+  .card__status {
+    max-width: none;
+    margin-left: 0;
+    text-align: left;
   }
 
   .timeline li {
