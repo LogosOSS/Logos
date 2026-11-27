@@ -184,7 +184,7 @@ export interface CreateSessionRequest {
   model?: string | null;
   memory_override_mb?: number;
   open_pull_request: boolean;
-  deploy_to_dev: boolean;
+  no_push?: boolean;
   screenshot_paths: string[];
   /** A linked team repository to work on; null works on the platform repository. */
   team_repository_id?: number | null;

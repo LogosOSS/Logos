@@ -1,12 +1,5 @@
 <div class="batches">
   <h1 class="page-title">Batches</h1>
-  <p class="page-subtitle">
-    Run many requests at once without waiting for them. Where a provider offers a batch endpoint
-    Logos hands the job over and you pay its batch rate; everything else — models served here, and
-    cloud models their provider does not offer for batch — Logos runs itself as low-priority
-    requests that fill whatever capacity interactive traffic leaves.
-  </p>
-
   @if (keys().length === 0) {
     <p class="empty">You need an active API key to run a batch.</p>
   } @else {
@@ -23,14 +16,27 @@
         <small>The batch runs as this key: its model permissions and its team's budget apply.</small>
       </label>
 
-      <label class="field">
-        <span>Input file (.jsonl)</span>
-        <input type="file" accept=".jsonl,application/jsonl,text/plain" (change)="onFileSelected($event)" />
-        <small>
-          One request per line:
-          <code>{{ '{' }}"custom_id": "q-1", "method": "POST", "url": "/v1/chat/completions", "body": {{ '{' }}"model": "…", "messages": […]{{ '}' }}{{ '}' }}</code>
-        </small>
-      </label>
+      <div class="field">
+        <label class="input-label" for="batch-input-file">Input file (.jsonl)</label>
+        <input id="batch-input-file" type="file" accept=".jsonl,application/jsonl,text/plain" (change)="onFileSelected($event)" />
+        <p class="agent-prompt">
+          <span>Using an agent?</span>
+          <button class="copy-prompt" type="button" (click)="copyPreparationPrompt()">
+            <i [class]="copyPromptStatus() === 'copied' ? 'pi pi-check' : 'pi pi-copy'" aria-hidden="true"></i>
+            <span>Copy the batch setup prompt</span>
+          </button>
+        </p>
+        <div role="status">
+          @if (copyPromptStatus() === 'copied') {
+            <small>Prompt copied.</small>
+          } @else if (copyPromptStatus() === 'manual') {
+            <small>Clipboard unavailable. Copy the prompt below.</small>
+          }
+        </div>
+        @if (copyPromptStatus() === 'manual') {
+          <textarea class="manual-prompt" aria-label="Prompt for a batch preparation agent" readonly rows="6" [value]="preparationPrompt"></textarea>
+        }
+      </div>
 
       @if (readingFile()) {
         <p class="notice" role="status">Reading input file for the cost estimate…</p>
@@ -42,40 +48,33 @@
         <div class="estimate">
           <h3>Estimated cost</h3>
           <p class="estimate-models">
-            Models from input file:
+            Models:
             @for (model of summary.models; track model.name; let last = $last) {
               <strong>{{ model.name }}</strong>{{ last ? '' : ', ' }}
             }
           </p>
-          <label class="field">
-            <span>Average response length (tokens per request)</span>
-            <input type="number" min="0" step="1" [value]="averageResponseTokens() ?? ''"
-              (input)="onResponseTokensChange($any($event.target).value)" />
-            <small>Prefilled from each line's output token limit, or 500 when absent. Embeddings have no output tokens.</small>
-          </label>
-          <p>{{ summary.requestCount | number }} requests · approximately {{ summary.inputTokens | number }} input tokens</p>
-          <p role="status" aria-live="polite">
-            @if (loadingPrices()) {
-              Loading model prices…
-            } @else if (priceError()) {
-              {{ priceError() }}
-            } @else if (estimatedCost() !== null) {
-              <strong>Estimated cost: {{ estimatedCost() | currency:'USD':'symbol':'1.2-6' }}</strong>
+          <p>{{ summary.requestCount | number }} requests</p>
+          <div role="status" aria-live="polite">
+            @if (loadingHistory()) {
+              <p>Loading historical costs…</p>
+            } @else if (historyError()) {
+              <p>{{ historyError() }}</p>
             } @else {
-              Cost estimate unavailable. Check the response length and whether this key has prices for every model in the file.
+              @for (estimate of estimates(); track estimate.mode) {
+                <p><strong>{{ estimate.label }}:
+                  @if (estimate.usd !== null) {
+                    {{ estimate.usd | currency:'USD':'symbol':'1.2-6' }}
+                  } @else {
+                    Not enough history
+                  }
+                </strong></p>
+              }
             }
-          </p>
-          <small>
-            Estimate only: input tokens use body characters ÷ 4. Uses the highest current standard token prices
-            across permitted providers and context tiers. Batch discounts, cache discounts and non-token charges
-            are not included. Actual cost can differ.
-          </small>
+          </div>
+          <small>Based on recent requests for this key.</small>
         </div>
       }
-      <p class="notice">
-        No budget is reserved for provider batches. The creation check uses already settled costs.
-        Running provider batches count only after they finish, so batches can exceed the key or team budget.
-      </p>
+      <p class="notice"><strong>Actual costs can be higher. The estimate is not a spending cap; provider batches do not reserve budget.</strong></p>
 
       <label class="field">
         <span>Endpoint</span>
@@ -89,9 +88,9 @@
       <label class="field">
         <span>Where it runs</span>
         <select (change)="execution.set($any($event.target).value)">
-          <option value="auto">Automatic — use the provider's batch endpoint when it can</option>
-          <option value="logos">Run in Logos (low priority)</option>
-          <option value="provider">Provider only (fail if unavailable)</option>
+          <option value="auto">Automatic (provider preferred)</option>
+          <option value="logos">Logos replay (low priority)</option>
+          <option value="provider">Provider only</option>
         </select>
       </label>
 
@@ -118,37 +117,39 @@
       } @else if (batches().length === 0) {
         <p class="empty">No batches yet.</p>
       } @else {
-        <table>
-          <thead>
-            <tr>
-              <th>Batch</th>
-              <th>Created</th>
-              <th>Status</th>
-              <th>Progress</th>
-              <th>Runs on</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            @for (batch of batches(); track batch.id) {
+        <div class="table-scroll" role="region" aria-label="Batch results">
+          <table>
+            <thead>
               <tr>
-                <td class="mono">{{ batch.id }}</td>
-                <td>{{ createdAtOf(batch) }}</td>
-                <td><span class="status" [class]="'status-' + batch.status">{{ batch.status }}</span></td>
-                <td>{{ progressOf(batch) }}</td>
-                <td>{{ batch.logos_execution === 'logos' ? 'Logos' : 'Provider' }}</td>
-                <td class="actions">
-                  @if (batch.output_file_id) {
-                    <button class="ghost" (click)="download(batch)">Download results</button>
-                  }
-                  @if (!isTerminal(batch)) {
-                    <button class="ghost" (click)="cancel(batch)">Cancel</button>
-                  }
-                </td>
+                <th>Batch</th>
+                <th>Created</th>
+                <th>Status</th>
+                <th>Progress</th>
+                <th>Runs on</th>
+                <th></th>
               </tr>
-            }
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              @for (batch of batches(); track batch.id) {
+                <tr>
+                  <td class="mono" data-label="Batch">{{ batch.id }}</td>
+                  <td data-label="Created">{{ createdAtOf(batch) }}</td>
+                  <td data-label="Status"><span class="status" [class]="'status-' + batch.status">{{ batch.status }}</span></td>
+                  <td data-label="Progress">{{ progressOf(batch) }}</td>
+                  <td data-label="Runs on">{{ batch.logos_execution === 'logos' ? 'Logos' : 'Provider' }}</td>
+                  <td class="actions">
+                    @if (batch.output_file_id) {
+                      <button class="ghost" (click)="download(batch)">Download results</button>
+                    }
+                    @if (!isTerminal(batch)) {
+                      <button class="ghost" (click)="cancel(batch)">Cancel</button>
+                    }
+                  </td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        </div>
       }
     </section>
   }

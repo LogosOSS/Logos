@@ -686,6 +686,25 @@ class DBManager:
         """
         self.update_log_entry_metrics(log_id=log_id, request_id=request_id, **fields)
 
+    def close_unforwarded_request_log(self, log_id: int, error_message: str) -> bool:
+        """Close a request whose caller still owns pre-execution settlement."""
+        result = self.session.execute(
+            text("""
+                UPDATE log_entry
+                   SET result_status = 'error',
+                       timestamp_response = NOW(),
+                       error_message = COALESCE(error_message, :error_message)
+                 WHERE id = :log_id
+                   AND result_status IS NULL
+                   AND timestamp_response IS NULL
+                   AND timestamp_provider_call IS NULL
+                   AND timestamp_provider_response IS NULL
+                """),
+            {"log_id": log_id, "error_message": error_message},
+        )
+        self.session.commit()
+        return bool(result.rowcount and result.rowcount > 0)
+
     def close_orphaned_request_logs(self, error_message: str) -> int:
         """Finalise log rows left open by a previous orchestrator process.
 
@@ -4156,6 +4175,27 @@ class DBManager:
         )
         return dict(row) if row else None
 
+    def can_create_batch(self, api_key_id: int) -> bool:
+        """Check the active key owner's current role, without the API key cache."""
+        return bool(
+            self.session.execute(
+                text("""
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM api_keys ak
+                        JOIN users u ON u.id = ak.user_id
+                        WHERE ak.id = :api_key_id
+                          AND ak.is_active = true
+                          AND ak.key_type = 'developer'
+                          AND ak.internal_service IS NULL
+                          AND u.is_active = true
+                          AND u.role IN ('app_admin', 'logos_admin')
+                    )
+                """),
+                {"api_key_id": int(api_key_id)},
+            ).scalar_one()
+        )
+
     def get_api_key_logging_context(self, api_key_id: int) -> Dict[str, Any]:
         """The environment and privacy level a key's log rows are written with.
 
@@ -4939,19 +4979,25 @@ class DBManager:
         request_id: Optional[str] = None,
         timeout_s: Optional[float] = None,
         timestamp_request: Optional[datetime.datetime] = None,
+        *,
+        benchmark_job_id: Optional[int] = None,
     ) -> tuple[dict, int]:
         # Deferred inserts retain arrival time, before scheduling/provider events.
         timestamp = (timestamp_request or datetime.datetime.now(datetime.timezone.utc)).isoformat()
         payload_str = _json_for_jsonb(input_payload) if log_level == "FULL" and input_payload else None
         headers_str = _json_for_jsonb(dict(headers)) if log_level == "FULL" and headers else None
 
+        # Only the signed internal benchmark endpoint sets this marker. Keep
+        # ordinary inserts independent of the newly added benchmark column.
+        benchmark_column = ", benchmark_job_id" if benchmark_job_id is not None else ""
+        benchmark_value = ", :benchmark_job_id" if benchmark_job_id is not None else ""
         row = self.session.execute(
-            text("""
+            text(f"""
                  INSERT INTO log_entry (timestamp_request, api_key_id, team_id, user_id,
                                         environment, client_ip,
-                                        input_payload, headers, privacy_level, request_id, timeout_s)
+                                        input_payload, headers, privacy_level, request_id, timeout_s{benchmark_column})
                  VALUES (:ts, :aki, :tid, :uid, :env,
-                         :ip, :payload, :headers, CAST(:privacy AS logging_enum), :rid, :timeout_s)
+                         :ip, :payload, :headers, CAST(:privacy AS logging_enum), :rid, :timeout_s{benchmark_value})
                  RETURNING id
                  """),
             {
@@ -4966,6 +5012,7 @@ class DBManager:
                 "privacy": log_level,
                 "rid": request_id,
                 "timeout_s": timeout_s,
+                **({"benchmark_job_id": benchmark_job_id} if benchmark_job_id is not None else {}),
             },
         ).fetchone()
         self.session.commit()

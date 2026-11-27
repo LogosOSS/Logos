@@ -74,8 +74,9 @@
               <scope>runtime</scope>
           </dependency>
           <dependency>
-              <groupId>org.springframework.boot</groupId>
-              <artifactId>spring-boot-starter-data-redis</artifactId>
+              <groupId>io.valkey.springframework.boot</groupId>
+              <artifactId>spring-boot-starter-data-valkey</artifactId>
+              <version>2.0.1</version>
           </dependency>
           <dependency>
               <groupId>com.fasterxml.jackson.core</groupId>
@@ -96,7 +97,7 @@
           <dependency>
               <groupId>com.github.dasniko</groupId>
               <artifactId>testcontainers-keycloak</artifactId>
-              <version>4.4.0</version>
+              <version>4.4.1</version>
               <scope>test</scope>
           </dependency>
           <dependency>
@@ -119,7 +120,7 @@
               <artifactId>testcontainers-postgresql</artifactId>
               <scope>test</scope>
           </dependency>
-          <!-- redis module ships GenericContainer helpers; image pinned in tests -->
+          <!-- GenericContainer for the Valkey integration test; image pinned in test -->
           <dependency>
               <groupId>org.testcontainers</groupId>
               <artifactId>testcontainers</artifactId>
@@ -139,6 +140,13 @@
             <testResource>
                 <directory>${project.basedir}/../keycloak</directory>
                 <targetPath>keycloak</targetPath>
+            </testResource>
+            <testResource>
+                <directory>${project.basedir}/../e2e/harness/stack</directory>
+                <targetPath>e2e</targetPath>
+                <includes>
+                    <include>docker-compose.e2e.yaml</include>
+                </includes>
             </testResource>
         </testResources>
         <plugins>

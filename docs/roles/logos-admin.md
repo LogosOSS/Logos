@@ -32,13 +32,18 @@ the entries with the most requests first.
 
 ![Requesters list with people and application keys](/img/roles/logos-admin-statistics-requesters.png)
 
-The time range and every filter apply to the whole tab at once. The totals,
-the charts and the recent requests always show the same requests. This is also
-true when you drag across the request volume chart to select a time range. Only
-the state filter applies to the recent requests alone.
+The time range and all filters, including state, apply to the whole **Requests** tab.
+For example, select **Error** to see failed requests and timeouts in the list, totals and charts.
+Drag across the **Request volume** chart to select a time range.
 
-On the **Local Providers** tab, each worker node has its own section. The
-section shows memory, lane health and GPU metrics. Next to the name of the
+Internal Logos benchmarks appear only in **Recent requests** with a **Benchmark** badge.
+They must match the same filters and are included in the list count.
+The totals and charts exclude benchmark requests.
+
+![The Statistics Requests tab with a queued request that has the Benchmark badge](/img/roles/logos-admin-statistics.png)
+
+The **Local Providers** tab shows live worker state, memory and GPU metrics.
+The **Requests** filters do not change this view. Each worker node has its own section. Next to the name of the
 worker, the page shows `version: <commit>` and an info icon. `<commit>` is the
 commit from which the image was built. To see the full commit, hold the
 pointer over the icon, or tap it on a touch screen. Use the button there to
@@ -149,8 +154,6 @@ A worker unloads a lane at once, also while it loads or wakes another lane. It
 loads two lanes at the same time only if they use different GPUs. If the only
 GPUs that fit are in use by a lane that loads, the second lane waits until the
 first lane has started.
-
-![Statistics page](/img/roles/logos-admin-statistics.png)
 
 ## Models
 
@@ -953,16 +956,23 @@ To queue a manual session, do these steps:
 5. Optionally set **RAM limit (MiB)** for this session. Leave it blank to use
    the runner default. A custom request waits for enough memory to be free;
    it does not change the default for other sessions.
-6. Select **Queue session**.
+6. To keep the result in Logos, select **Private session: no GitHub writes**.
+7. Select **Queue session**.
 
 ![Start a session form with the linked repository docs-example/sample-app selected](/img/roles/logos-admin-agents-new-session.png)
 
 The example shows the linked repository `docs-example/sample-app` with the
 branch `develop`. For a linked repository, the session works on that
-repository and its branch. The form disables **Deploy to the dev environment
-afterwards** and **Screenshot paths**, because these options are available
-only for the platform repository. A note below the check boxes gives this
-reason.
+repository and its branch. The form disables **Screenshot paths** for linked
+repositories. A platform session can capture pages on the Dev instance that
+already runs. These screenshots do not deploy session changes. An operator
+[deploys changes separately](../deployment.md#deploy-from-github).
+
+In a private session, the agent can read issues from the linked repository.
+It cannot create a fork, push a branch, post a comment, or open a pull request.
+It cannot capture Dev screenshots.
+In **Task**, ask for the issue link, the proposed change, and the checks in the final response.
+Expand the session and open **Agent messages** to review the result.
 
 The session list and the session details show the repository of a session on
 a linked repository. In the session list, the repository shows below the task,

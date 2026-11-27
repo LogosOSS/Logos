@@ -1,4 +1,5 @@
 import type {
+  RequestLifecycleState,
   RequestLogStats,
   VramV2Sample,
   VramSeriesPoint,
@@ -34,9 +35,19 @@ export function modelSeriesKey(modelId: number | null | undefined, modelName: st
 
 export type RequestStage = 'queued' | 'executing' | 'complete';
 
-export function deriveStage(
-  item: { request_complete_ts: string | null; scheduled_ts: string | null },
-): RequestStage {
+type RequestStageData = {
+  request_complete_ts: string | null;
+  scheduled_ts: string | null;
+  lifecycle_state?: RequestLifecycleState | null;
+};
+
+export function deriveStage(item: RequestStageData): RequestStage {
+  switch (item.lifecycle_state) {
+    case 'queued': return 'queued';
+    case 'running': return 'executing';
+    case 'error':
+    case 'finished': return 'complete';
+  }
   if (item.request_complete_ts) return 'complete';
   if (item.scheduled_ts) return 'executing';
   return 'queued';
@@ -64,13 +75,7 @@ export function getRequestBorderColor(stage: RequestStage, status: string): stri
  * queued row says 'none' and the real provider appears only once the request
  * was handed off (or the row settled).
  */
-export function providerLabel(
-  item: {
-    provider_name: string | null;
-    scheduled_ts: string | null;
-    request_complete_ts: string | null;
-  },
-): string {
+export function providerLabel(item: RequestStageData & { provider_name: string | null }): string {
   if (deriveStage(item) === 'queued') return 'none';
   return item.provider_name || 'none';
 }
@@ -172,7 +177,7 @@ export function describeWorkerVersion(
  * and `finished` split the settled ones by outcome (a timeout counts as an
  * error, matching how the row border colours timeouts as a failure).
  */
-export const REQUEST_STATUS_FILTERS = ['queued', 'running', 'error', 'finished'] as const;
+export const REQUEST_STATUS_FILTERS = ['queued', 'running', 'error', 'finished'] as const satisfies readonly RequestLifecycleState[];
 
 export type RequestStatusFilter = (typeof REQUEST_STATUS_FILTERS)[number];
 

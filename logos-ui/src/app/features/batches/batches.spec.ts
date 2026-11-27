@@ -3,6 +3,7 @@ import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 
 import { Batches } from './batches';
+import { BATCH_PREPARATION_PROMPT } from './batch-preparation-prompt';
 import { BatchObject } from '../../core/services/batch.service';
 import { summarizeBatchInput } from './batch-estimate';
 
@@ -60,48 +61,67 @@ describe('Batches', () => {
     expect(page.progressOf(batch())).toBe('—');
   });
 
-  it('updates the estimate when the average response length changes', () => {
+  it('shows two conditional estimates for automatic execution, never a blended number', () => {
     page.inputSummary.set(summarizeBatchInput('{"body":{"model":"model"}}'));
-    page.modelPrices.set([{ model_name: 'model', input_price_per_k_tokens: 0, output_price_per_k_tokens: 1_000_000 }]);
-    page.onResponseTokensChange('500');
-    expect(page.estimatedCost()).toBeCloseTo(0.005);
-    page.onResponseTokensChange('1000');
-    expect(page.estimatedCost()).toBeCloseTo(0.01);
-    page.onResponseTokensChange('');
-    expect(page.estimatedCost()).toBeNull();
+    page.history.set([{ model_name: 'model', provider_average_usd: 0.05, logos_average_usd: 0.12 }]);
+    expect(page.estimates().map(row => row.usd)).toEqual([0.05, 0.12]);
+    page.execution.set('provider');
+    expect(page.estimates().map(row => row.usd)).toEqual([0.05]);
+    page.execution.set('logos');
+    expect(page.estimates().map(row => row.usd)).toEqual([0.12]);
   });
 
-  it('clears old prices and ignores a response for a previously selected key', async () => {
+  it('clears old history and ignores a response for a previously selected key', async () => {
     const http = TestBed.inject(HttpTestingController);
     page.selectedKeyId.set(1);
-    const first = page.loadPrices();
-    const firstRequest = http.expectOne('/api/logosdb/batches/prices?apiKeyId=1');
+    const first = page.loadHistory();
+    const firstRequest = http.expectOne('/api/logosdb/batches/historical-costs?apiKeyId=1');
     page.selectedKeyId.set(2);
-    const second = page.loadPrices();
-    const secondRequest = http.expectOne('/api/logosdb/batches/prices?apiKeyId=2');
-    expect(page.modelPrices()).toEqual([]);
-    firstRequest.flush([{ model_name: 'old', input_price_per_k_tokens: 1, output_price_per_k_tokens: 1 }]);
+    const second = page.loadHistory();
+    const secondRequest = http.expectOne('/api/logosdb/batches/historical-costs?apiKeyId=2');
+    expect(page.history()).toEqual([]);
+    firstRequest.flush([{ model_name: 'old', provider_average_usd: 1, logos_average_usd: 1 }]);
     await first;
-    expect(page.modelPrices()).toEqual([]);
-    expect(page.loadingPrices()).toBe(true);
-    secondRequest.flush([{ model_name: 'current', input_price_per_k_tokens: 2, output_price_per_k_tokens: 2 }]);
+    expect(page.history()).toEqual([]);
+    expect(page.loadingHistory()).toBe(true);
+    secondRequest.flush([{ model_name: 'current', provider_average_usd: 2, logos_average_usd: 2 }]);
     await second;
-    expect(page.modelPrices()[0].model_name).toBe('current');
-    expect(page.loadingPrices()).toBe(false);
+    expect(page.history()[0].model_name).toBe('current');
+    expect(page.loadingHistory()).toBe(false);
     http.verify();
   });
 
-  it('reports unavailable prices without reusing an earlier estimate', async () => {
+  it('ignores an old estimate response after selecting the original key again', async () => {
     const http = TestBed.inject(HttpTestingController);
     page.selectedKeyId.set(1);
-    page.modelPrices.set([{ model_name: 'model', input_price_per_k_tokens: 1, output_price_per_k_tokens: 1 }]);
-    const loading = page.loadPrices();
-    http.expectOne('/api/logosdb/batches/prices?apiKeyId=1')
+    const old = page.loadHistory();
+    const oldRequest = http.expectOne('/api/logosdb/batches/historical-costs?apiKeyId=1');
+    page.selectedKeyId.set(2);
+    const middle = page.loadHistory();
+    const middleRequest = http.expectOne('/api/logosdb/batches/historical-costs?apiKeyId=2');
+    page.selectedKeyId.set(1);
+    const current = page.loadHistory();
+    const currentRequest = http.expectOne('/api/logosdb/batches/historical-costs?apiKeyId=1');
+    currentRequest.flush([{ model_name: 'new', provider_average_usd: 9, logos_average_usd: 8 }]);
+    await current;
+    oldRequest.flush([{ model_name: 'old', provider_average_usd: 1, logos_average_usd: 2 }]);
+    middleRequest.flush([]);
+    await Promise.all([old, middle]);
+    expect(page.history()[0].model_name).toBe('new');
+    http.verify();
+  });
+
+  it('reports unavailable history without reusing an earlier estimate', async () => {
+    const http = TestBed.inject(HttpTestingController);
+    page.selectedKeyId.set(1);
+    page.history.set([{ model_name: 'model', provider_average_usd: 1, logos_average_usd: 1 }]);
+    const loading = page.loadHistory();
+    http.expectOne('/api/logosdb/batches/historical-costs?apiKeyId=1')
       .flush('Unavailable', { status: 503, statusText: 'Unavailable' });
     await loading;
-    expect(page.modelPrices()).toEqual([]);
-    expect(page.priceError()).toContain('Cost estimate unavailable');
-    expect(page.loadingPrices()).toBe(false);
+    expect(page.history()).toEqual([]);
+    expect(page.historyError()).toContain('Estimate unavailable');
+    expect(page.loadingHistory()).toBe(false);
     http.verify();
   });
 
@@ -115,12 +135,74 @@ describe('Batches', () => {
     finishOld('{"body":{"model":"old","max_tokens":900}}');
     await oldRead;
     expect(page.inputSummary()?.models[0].name).toBe('new');
-    expect(page.averageResponseTokens()).toBe(100);
     expect(page.readingFile()).toBe(false);
     await select({ text: async () => '{' } as File);
     expect(page.inputSummary()).toBeNull();
-    expect(page.estimatedCost()).toBeNull();
+    expect(page.estimates().every(row => row.usd === null)).toBe(true);
     expect(page.estimateError()).toContain('line 1');
   });
 
+  describe('the preparation prompt button', () => {
+    let originalClipboard: PropertyDescriptor | undefined;
+
+    beforeEach(() => {
+      originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    });
+
+    afterEach(() => {
+      if (originalClipboard) {
+        Object.defineProperty(navigator, 'clipboard', originalClipboard);
+      } else {
+        Reflect.deleteProperty(navigator, 'clipboard');
+      }
+    });
+
+    async function renderWithClipboard(writeText: (value: string) => Promise<void>) {
+      Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+      const fixture = TestBed.createComponent(Batches);
+      const http = TestBed.inject(HttpTestingController);
+      fixture.detectChanges();
+      http.expectOne('/api/logosdb/batches/keys').flush([
+        { id: 1, name: 'Synthetic key name', team_id: null, environment: null },
+      ]);
+      await Promise.resolve();
+      http.expectOne('/api/logosdb/batches?apiKeyId=1').flush({ data: [] });
+      await fixture.whenStable();
+      fixture.detectChanges();
+      const host: HTMLElement = fixture.nativeElement;
+      const button = [...host.querySelectorAll('button')]
+        .find(candidate => candidate.textContent?.trim() === 'Copy the batch setup prompt');
+      expect(host.querySelector('.agent-prompt > span')?.textContent?.trim()).toBe('Using an agent?');
+      expect(button?.getAttribute('type')).toBe('button');
+      expect(button?.querySelector('.pi.pi-copy')?.getAttribute('aria-hidden')).toBe('true');
+      button!.click();
+      await fixture.whenStable();
+      fixture.detectChanges();
+      http.verify(); // Copying must not make network requests, including uploads or submission.
+      return { fixture, host };
+    }
+
+    it('copies only the static preparation prompt and announces success', async () => {
+      const writeText = vi.fn().mockResolvedValue(undefined);
+      const { fixture, host } = await renderWithClipboard(writeText);
+      expect(writeText).toHaveBeenCalledExactlyOnceWith(BATCH_PREPARATION_PROMPT);
+      expect(writeText.mock.calls[0][0]).not.toContain('Synthetic key name');
+      expect(host.querySelector('[role="status"]')?.textContent).toContain('Prompt copied.');
+      expect(host.querySelector('.copy-prompt .pi-check')).not.toBeNull();
+      expect(host.querySelector('textarea')).toBeNull();
+      fixture.destroy();
+    });
+
+    it('makes the same prompt selectable when the clipboard is unavailable', async () => {
+      const { fixture, host } = await renderWithClipboard(
+        vi.fn().mockRejectedValue(new Error('clipboard denied')),
+      );
+      const textarea = host.querySelector('textarea');
+      expect(host.querySelector('[role="status"]')?.textContent).toContain('Clipboard unavailable.');
+      expect(host.querySelector('.copy-prompt .pi-copy')).not.toBeNull();
+      expect(textarea?.readOnly).toBe(true);
+      expect(textarea?.value).toBe(BATCH_PREPARATION_PROMPT);
+      fixture.destroy();
+    });
+  });
 });

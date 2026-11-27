@@ -367,3 +367,125 @@ async def test_unrelated_local_deployment_does_not_block_keepalive(monkeypatch):
 
     assert result == "keepalive-guarded"
     assert len(keepalive) == 1
+
+
+@pytest.mark.parametrize("phase", ["worker_reconnect", "routing"])
+async def test_cancelled_sync_requests_close_the_unforwarded_log_after_cleanup(monkeypatch, phase):
+    entered = asyncio.Event()
+    released = []
+    closed = []
+    request_ids = []
+    db_factory = MagicMock()
+    db = db_factory.return_value.__enter__.return_value
+    db.close_unforwarded_request_log.side_effect = lambda *args: closed.append((args, list(released))) or True
+
+    async def parse_log(request, use_profile_auth, request_id):
+        request_ids.append(request_id)
+        return {}, MagicMock(), {"model": "test-model"}, None, 42, [{"provider_id": 1, "model_id": 2}]
+
+    async def block(**kwargs):
+        try:
+            entered.set()
+            await asyncio.Event().wait()
+        finally:
+            released.append(phase)
+
+    async def filter_deployments(deployments, payload):
+        return [] if phase == "worker_reconnect" else deployments
+
+    async def wait_for_worker(*args, **kwargs):
+        return await block()
+
+    monkeypatch.setattr(main, "auth_parse_log", parse_log)
+    monkeypatch.setattr(main, "_filter_logosnode_deployments", filter_deployments)
+    monkeypatch.setattr(main, "_wait_for_worker_connect", wait_for_worker)
+    monkeypatch.setattr(main, "route_and_execute", block)
+    monkeypatch.setattr(main, "DBManager", db_factory)
+    task = asyncio.create_task(main.handle_sync_request("v1/chat/completions", _Client(leaves=False)))
+    await asyncio.wait_for(entered.wait(), timeout=1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert closed == [((42, "Request interrupted before it was forwarded."), [phase])]
+    assert len(request_ids) == 1
+    db.set_response_payload.assert_not_called()
+    db.finalize_billing_row.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("execution_has_ownership", [False, True])
+async def test_cancel_during_lane_resolution_or_after_execution_handoff(monkeypatch, execution_has_ownership):
+    from logos.monitoring import recorder as monitoring
+
+    request_id = "interrupted-after-scheduling"
+    entered = asyncio.Event()
+    recorder = monitoring.MonitoringRecorder()
+    monkeypatch.setattr(monitoring, "_request_states", {request_id: (0.0, "model", "provider")})
+    monkeypatch.setattr(monitoring, "_field_buffers", {request_id: {"timestamp_forwarding": "already scheduled"}})
+    pipeline = MagicMock()
+    pipeline.discard_request.side_effect = recorder.discard
+    pipeline.take_monitoring_buffer.side_effect = recorder.take_buffer
+
+    async def blocked(*args, **kwargs):
+        entered.set()
+        await asyncio.Event().wait()
+
+    async def process(_request):
+        if not execution_has_ownership:
+            return await blocked()
+        return MagicMock(success=True, scheduling_stats={"provider_type": "logosnode"})
+
+    async def route(**kwargs):
+        return await main._execute_resource_mode(
+            deployments=[{"model_id": 1, "model_name": "test"}],
+            body={},
+            headers={},
+            auth=MagicMock(cloud_rl=None, local_rl=None),
+            is_async_job=False,
+            **kwargs,
+        )
+
+    pipeline.process = process
+    db_factory = MagicMock()
+    db = db_factory.return_value.__enter__.return_value
+    db.close_unforwarded_request_log.return_value = True
+    monkeypatch.setattr(main, "_pipeline", pipeline, raising=False)
+    monkeypatch.setattr(main, "_sync_response", blocked)
+    monkeypatch.setattr(main, "_extract_policy", MagicMock())
+    monkeypatch.setattr(main, "_check_budget_if_cloud", MagicMock())
+    monkeypatch.setattr(main, "route_and_execute", route)
+    monkeypatch.setattr(main, "DBManager", db_factory)
+    task = asyncio.create_task(
+        main._execute_cancelling_on_disconnect(_Client(leaves=False), log_id=42, request_id=request_id)
+    )
+    await asyncio.wait_for(entered.wait(), timeout=1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    if execution_has_ownership:
+        db.close_unforwarded_request_log.assert_not_called()
+        assert request_id in monitoring._field_buffers
+        assert request_id in monitoring._request_states
+    else:
+        db.close_unforwarded_request_log.assert_called_once()
+        assert request_id not in monitoring._field_buffers
+        assert request_id not in monitoring._request_states
+    db.finalize_billing_row.assert_not_called()
+
+
+def test_terminal_interruption_without_log_drains_both_monitoring_maps(monkeypatch):
+    from logos.monitoring import recorder as monitoring
+
+    request_id = "interrupted-with-no-log"
+    monkeypatch.setattr(monitoring, "_request_states", {request_id: (0.0, "model", "provider")})
+    monkeypatch.setattr(monitoring, "_field_buffers", {request_id: {"queue_depth_at_enqueue": 3}})
+    recorder = monitoring.MonitoringRecorder()
+    pipeline = MagicMock(take_monitoring_buffer=recorder.take_buffer, discard_request=recorder.discard)
+    monkeypatch.setattr(main, "_pipeline", pipeline, raising=False)
+
+    main._close_interrupted_request(None, request_id)
+
+    assert request_id not in monitoring._field_buffers
+    assert request_id not in monitoring._request_states

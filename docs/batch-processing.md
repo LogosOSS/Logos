@@ -193,6 +193,10 @@ batch that a client submitted while the process was down.
 Permission to use a provider does not give permission for everything that the
 provider can do. Logos therefore does not pass requests through without checks:
 
+- **Submission role.** To create a batch, use your active developer key as an
+  App Admin or Logos Admin. Team application keys and service keys cannot
+  create batches. This rule also applies to the API mirrors. It does not
+  change the ownership checks for files or for existing batches.
 - **Model permissions per request line.** Each line of the input file names its
   own model. Before Logos accepts the file, it checks every line against the
   model permissions of the key on the target provider. If a line names a model
@@ -307,18 +311,24 @@ batch shows its progress. A finished batch offers its results as a download. You
 can cancel a batch that is not finished. The page refreshes every 30 seconds
 while a batch is in progress.
 
-The **New batch** form reads the model names from the request bodies in the input file.
-It shows the request count, an input token estimate and an **Estimated cost** in USD.
-The input estimate uses the number of characters in each body divided by 4, rounded up.
-Set **Average response length (tokens per request)** to the expected response length.
-The initial value uses the mean output token limit from the lines, with 500 tokens for each line without a limit.
-Embedding requests have no output tokens.
+If you are using an agent to prepare the file, select **Copy the batch setup prompt**
+under **Input file (.jsonl)**. Paste the prompt into your agent with your task and
+non-secret inputs. It asks the agent to prepare and validate the file locally,
+explain the cost assumptions, and leave uploading and starting the batch to
+you. Do not paste API keys or other credentials. Verify the file and choose
+the matching **Endpoint** before starting.
 
-The estimate multiplies input and output tokens by the highest current standard prices across permitted providers and context tiers.
-It adds these costs for all models in the file.
-It excludes batch discounts, cache discounts and charges that do not use tokens.
-If a required price is missing, then the form shows that the estimate is unavailable.
-The estimate does not reserve budget or change the request bodies. Actual costs can differ.
+The **New batch** form reads model names and counts request lines in the input file.
+For each model it multiplies that count by the average finalized cost of comparable
+successful requests on the selected key, then adds the estimates. The sample covers
+up to 20,000 recent requests in the last 30 days and requires at least three eligible
+observations per model and execution mode. An estimate is unavailable if any model
+has insufficient history; the form does not silently assume zero.
+
+Provider batch uses settled costs from native batch results. Logos replay uses ordinary
+request costs as a proxy. Automatic mode shows both scenarios separately because the
+actual route is decided at submission. The estimate does not reserve budget, set a
+spending cap, or change request bodies. Actual costs can be higher.
 
 The page is an admin function. Only app admins and logos admins see the menu
 item, and the endpoints behind it refuse all other users. Script use does not

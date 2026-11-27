@@ -1435,9 +1435,7 @@ class TriggerPoller:
                 # answer nobody asked to be a pull request.
                 branch=branch,
                 open_pull_request=candidate["kind"] == "issue",
-                # A session the runner queued by itself does not touch a
-                # shared environment: deploying is an operator's decision,
-                # made per session in the UI.
+                # Automated work does not deploy or request Dev screenshots.
                 deploy_to_dev=False,
                 screenshot_paths=[],
                 # Kept on the row for the same reason as everything else

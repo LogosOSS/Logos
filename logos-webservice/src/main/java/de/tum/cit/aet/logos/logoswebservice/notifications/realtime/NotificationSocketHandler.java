@@ -53,7 +53,7 @@ public class NotificationSocketHandler extends TextWebSocketHandler {
     public void afterConnectionEstablished(WebSocketSession session) {
         if (!sessionAuth.register(session, false)) return;
         Map<String, Object> attributes = session.getAttributes();
-        // Pushes come from channel and Redis threads; the decorator serializes
+        // Pushes come from channel and Valkey threads; the decorator serializes
         // concurrent sends to one session.
         WebSocketSession safe = new ConcurrentWebSocketSessionDecorator(
             session, SEND_TIME_LIMIT_MS, BUFFER_SIZE_LIMIT_BYTES);

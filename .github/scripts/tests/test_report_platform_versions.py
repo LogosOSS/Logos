@@ -13,9 +13,11 @@ def test_platform_report_uses_matching_release_lines_and_package_repositories(tm
     files = {
         "logos-agent/workspace/Dockerfile": (
             "ARG JDK_VERSION=25\nENV JAVA_VERSION=jdk-25+1\nARG GH_VERSION=1.0\n"
-            "ARG CLAUDE_CODE_VERSION=2.1\nARG PLAYWRIGHT_VERSION=3.2\n"
             "ARG BASE=debian:stable\nFROM ${BASE} AS build\nRUN apt-get install curl=1.2 libx\n"
             "FROM build\nRUN apt-get install curl=1.2 \\\n  git=2.0\n# RUN apt-get install ignored=1\n"
+        ),
+        "logos-agent/workspace/package.json": json.dumps(
+            {"dependencies": {"@anthropic-ai/claude-code": "2.1.1", "playwright": "3.2.1"}}
         ),
         "logos-ui/.nvmrc": "22.1.2",
         ".github/workflows/logos_test.yml": 'python-version: "3.13.2"',
@@ -31,7 +33,10 @@ def test_platform_report_uses_matching_release_lines_and_package_repositories(tm
 
     def upstream(url, timeout):
         if "registry.npmjs.org" in url:
-            data = {"version": "4.0"}
+            data = {
+                "https://registry.npmjs.org/@anthropic-ai/claude-code/stable": {"version": "2.2.0"},
+                "https://registry.npmjs.org/playwright/latest": {"version": "4.0.0"},
+            }[url]
         else:
             line = {"node-versions": "22.1", "python-versions": "3.13"}[url.split("/")[4]]
             releases = [(line + ".9", True), (line + ".10", True), (line + ".11", False), ("99.0.0", True)]
@@ -62,8 +67,8 @@ def test_platform_report_uses_matching_release_lines_and_package_repositories(tm
     for row in (
         "| Temurin | jdk-25+1 | jdk-25+2 |",
         "| GitHub CLI | 1.0 | 1.1 |",
-        "| Claude Code | 2.1 | 4.0 |",
-        "| Playwright | 3.2 | 4.0 |",
+        "| Claude Code | 2.1.1 | 2.2.0 |",
+        "| Playwright | 3.2.1 | 4.0.0 |",
         "| Node.js (CI) | 22.1.2 | 22.1.10 |",
         "| Python (CI) | 3.13.2 | 3.13.10 |",
         "| uv (images and CI) | 0.9.1 | 0.9.2 |",
@@ -72,5 +77,6 @@ def test_platform_report_uses_matching_release_lines_and_package_repositories(tm
         "- nvidia-cuda-nvcc 13.1",
     ):
         assert row in output
+    assert "Dependabot opens update PRs for workspace npm packages" in output
     assert output.count("| Package | Pinned | Candidate |") == 1
     assert "other" not in output

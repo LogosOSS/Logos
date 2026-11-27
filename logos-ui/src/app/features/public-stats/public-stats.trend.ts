@@ -8,14 +8,11 @@ interface TrendBar {
   percent: number;
   /** Whether the month name is printed under the bar. */
   labelled: boolean;
-  marked: boolean;
 }
 
 /**
  * Monthly bars for one metric of the growth chart. Bars are flex items, so
- * the chart fills any width and its text keeps its size on a phone. An
- * optional marker names the month something started (e.g. the Logos Agent),
- * so the curve reads against a concrete event.
+ * the chart fills any width and its text keeps its size on a phone.
  */
 @Component({
   selector: 'app-public-stats-trend',
@@ -26,9 +23,6 @@ interface TrendBar {
 })
 export class PublicStatsTrend {
   @Input() points: TrendPoint[] = [];
-  /** Key of the month the marker sits on; null for no marker. */
-  @Input() markerKey: string | null = null;
-  @Input() markerLabel = '';
   /** Accessible name for the chart. */
   @Input() label = 'Monthly trend';
 
@@ -48,7 +42,6 @@ export class PublicStatsTrend {
       point,
       percent: max === 0 ? 0 : (point.value / max) * 100,
       labelled: (n - 1 - i) % every === 0,
-      marked: point.key === this.markerKey,
     }));
   }
 

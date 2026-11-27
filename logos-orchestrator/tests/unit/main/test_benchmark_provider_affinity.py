@@ -448,6 +448,7 @@ async def test_internal_benchmark_request_is_visible_in_request_logs(monkeypatch
             "log_level": "FULL",
             "input_payload": body,
             "request_id": execute.await_args.kwargs["request_id"],
+            "benchmark_job_id": 7,
         }
     ]
     assert execute.await_args.kwargs["log_id"] == 99

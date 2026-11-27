@@ -1736,6 +1736,8 @@ async def handle_batch_api_request(request: Request) -> Response:
 
     try:
         with DBManager() as db:
+            if operation.is_batch_creation and not db.can_create_batch(auth.api_key_id):
+                raise_openai_error(403, "App Admin access required to create a batch.", code="batch_admin_required")
             if operation.resource_id:
                 owner = _owned_or_404(db, auth, operation)
 

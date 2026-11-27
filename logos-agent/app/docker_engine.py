@@ -312,7 +312,7 @@ async def create_screenshot_container(
 ) -> str:
     """Create a one-shot container that renders one page to a PNG.
 
-    Screenshots run *outside* the session, after any dev deploy has finished,
+    Screenshots run *outside* the session against the Dev instance already running,
     so this is a small dedicated container rather than part of a session: it
     runs the same workspace image's browser tooling on the same isolation
     footing — no socket, no capabilities, read-only rootfs, capped resources —

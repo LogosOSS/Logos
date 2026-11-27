@@ -757,3 +757,18 @@
     }
   }
 }
+
+@media (max-width: 480px) {
+  // Six presets cannot share a phone-width row at the Statistics padding.
+  .stats-time-range {
+    ::ng-deep .preset-pills {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    ::ng-deep .pill {
+      padding-inline: 4px;
+      white-space: normal;
+    }
+  }
+}

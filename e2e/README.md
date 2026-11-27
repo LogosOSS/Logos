@@ -45,6 +45,13 @@ Playwright-pinned Chromium and verifies its system libraries with a browser
 launch before starting the stack. It uses the runner's existing browser
 libraries instead of reinstalling them from Ubuntu package mirrors.
 
+GitHub Actions builds the migration and webservice images together, reusing
+the shared Maven stages. Stack loads only the migration image; Browser loads
+both. The compressed images are artifacts of the same workflow run, tagged
+with its checked-out commit, and never pushed to a registry. A failed test job
+can reuse those artifacts on a partial rerun. Local development still builds
+from source.
+
 The `--ui` profile roughly triples startup time (a Keycloak boot and an Angular
 production build), which is why the inter-node and SDK tiers run without it.
 Playwright goes through Traefik rather than straight at the UI container: in

@@ -386,7 +386,7 @@ class TestRunningWorkAgain:
         await main.retry_session(20, principal=_principal())
         assert created[0]["memory_override_mb"] == 6144
 
-    async def test_deploying_is_decided_per_attempt(self, monkeypatch):
+    async def test_retry_does_not_carry_a_legacy_deploy_request(self, monkeypatch):
         created = self.install(monkeypatch)
 
         await main.retry_session(20, principal=_principal())
@@ -582,7 +582,8 @@ class TestTheSchedulerPassAnEndpointStarts:
 
         await self.assert_one_held_pass(passes, release)
 
-    async def test_creating_a_session_runs_a_pass(self, monkeypatch):
+    @pytest.mark.parametrize("no_push", [False, True])
+    async def test_creating_a_session_runs_a_pass(self, monkeypatch, no_push):
         from app import db, memory_budget, model_policy
         from app.schemas import SessionCreate
 
@@ -595,6 +596,7 @@ class TestTheSchedulerPassAnEndpointStarts:
             return SimpleNamespace(allows=lambda _model: True)
 
         async def create_session(**kwargs):
+            assert kwargs["no_push"] is no_push
             assert kwargs["memory_override_mb"] == 6144
             return 21
 
@@ -609,11 +611,65 @@ class TestTheSchedulerPassAnEndpointStarts:
 
         monkeypatch.setattr(memory_budget, "current", lambda: memory_budget.Budget(8192, 8192, "test"))
         await main.create_session(
-            SessionCreate(workspace_id=3, task="Fix the flaky test", memory_override_mb=6144),
+            SessionCreate(
+                workspace_id=3,
+                task="Check the flaky test",
+                no_push=no_push,
+                open_pull_request=not no_push,
+                memory_override_mb=6144,
+            ),
             principal=_principal(),
         )
 
         await self.assert_one_held_pass(passes, release)
+
+
+@pytest.mark.parametrize("option,value", [("open_pull_request", True), ("screenshot_paths", ["/models"])])
+async def test_manual_private_session_rejects_publication_options(monkeypatch, option, value):
+    from unittest.mock import AsyncMock
+
+    from app.schemas import SessionCreate
+    from fastapi import HTTPException
+
+    monkeypatch.setattr(main.db, "get_workspace", AsyncMock(return_value={"id": 3}))
+    create = AsyncMock()
+    monkeypatch.setattr(main.db, "create_session", create)
+    options = {"workspace_id": 3, "task": "Draft a proof", "no_push": True, "open_pull_request": False}
+    options[option] = value
+    with pytest.raises(HTTPException) as error:
+        await main.create_session(SessionCreate(**options), principal=_principal())
+    assert error.value.status_code == 400
+    create.assert_not_awaited()
+
+
+async def test_legacy_deploy_flag_is_rejected_only_when_true(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    import httpx
+    from app.auth import require_agent_operator
+
+    workspace = AsyncMock(return_value={"id": 3})
+    create = AsyncMock(return_value=7)
+    monkeypatch.setitem(main.app.dependency_overrides, require_agent_operator, _principal)
+    monkeypatch.setattr(main.db, "get_workspace", workspace)
+    monkeypatch.setattr(main.db, "create_session", create)
+    row = {**TestRunningWorkAgain.ROW, "id": 7, "status": "queued"}
+    monkeypatch.setattr(main.db, "get_session", AsyncMock(return_value=row))
+    monkeypatch.setattr(main.model_policy, "refresh", AsyncMock(return_value=SimpleNamespace(allows=lambda _: True)))
+    monkeypatch.setattr(main, "_summary_fields", dict)
+    monkeypatch.setattr(main.manager, "request_scheduler_pass", lambda: None)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url="http://test") as client:
+        body = {"workspace_id": 3, "task": "Check the existing module", "screenshot_paths": ["/models"]}
+        refused = await client.post("/sessions", json={**body, "deploy_to_dev": True})
+        assert refused.status_code == 400
+        assert "no longer deploy" in refused.json()["detail"]
+        workspace.assert_not_awaited()
+        create.assert_not_awaited()
+        for legacy in ({}, {"deploy_to_dev": False}):
+            response = await client.post("/sessions", json={**body, **legacy})
+            assert response.status_code == 202
+            assert create.call_args.kwargs["deploy_to_dev"] is False
+            assert create.call_args.kwargs["screenshot_paths"] == ["/models"]
 
 
 async def test_session_messages_require_operator_and_read_only_the_selected_artifact(monkeypatch, tmp_path):

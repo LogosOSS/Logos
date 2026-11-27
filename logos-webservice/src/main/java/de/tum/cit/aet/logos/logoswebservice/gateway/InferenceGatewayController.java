@@ -42,7 +42,7 @@ import jakarta.servlet.http.HttpServletResponse;
  *   <li>{@link GatewayInFlightLimit} bounds owned request/provider I/O</li>
  *   <li>JDK {@link java.net.http.HttpClient} connection pools in the forwarders</li>
  * </ul>
- * Cloud RPM/TPM live in Redis ({@link GatewayCloudRateLimiter}), shared by every
+ * Cloud RPM/TPM live in Valkey ({@link GatewayCloudRateLimiter}), shared by every
  * replica — not process state.
  *
  * <p>When {@code logos.gateway.enabled=false}, every request is proxied to the

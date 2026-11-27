@@ -663,6 +663,16 @@ describe('Agents', () => {
       expect(component.formRepositoryId()).toBeNull();
     });
 
+    it('does not expose a deployment choice in the session form', () => {
+      component.openForm();
+      fixture.detectChanges();
+      const form: HTMLElement = fixture.nativeElement.querySelector('.form-card');
+      expect(form.textContent).toContain('Private session: no GitHub writes');
+      expect(form.textContent).toContain('Capturing them does not deploy these changes');
+      expect(form.textContent).not.toContain('Deploy to the dev environment afterwards');
+    });
+
+
     it('keeps only the platform repository when the list cannot be read', async () => {
       agentService.repositoriesFail = true;
       await component.refresh();
@@ -672,29 +682,39 @@ describe('Agents', () => {
       expect(component.error()).toBeNull();
     });
 
+    it('suppresses publishing and Dev screenshots for a private session', async () => {
+      component.formNoPush.set(true);
+      component.formOpenPr.set(true);
+      component.formScreenshots.set('/dashboard');
+      await component.submit();
+      expect(agentService.createBodies[0]).toEqual(
+        expect.objectContaining({
+          no_push: true,
+          open_pull_request: false,
+          screenshot_paths: [],
+        }),
+      );
+    });
+
     it('sends no linked repository for the platform repository', async () => {
-      component.formDeploy.set(true);
       component.formScreenshots.set('/dashboard /models');
       await component.submit();
+      expect(agentService.createBodies[0]).not.toHaveProperty('deploy_to_dev');
       expect(agentService.createBodies[0]).toEqual(expect.objectContaining({
         workspace_id: 3,
         team_repository_id: null,
-        deploy_to_dev: true,
         screenshot_paths: ['/dashboard', '/models'],
       }));
     });
 
-    it('turns off deploy and screenshots for a linked repository', async () => {
-      component.formDeploy.set(true);
+    it('turns off Dev screenshots for a linked repository', async () => {
       component.formScreenshots.set('/dashboard');
       component.selectRepositoryById('5');
       expect(component.linkedRepositorySelected()).toBe(true);
-      expect(component.formDeploy()).toBe(false);
       expect(component.formScreenshots()).toBe('');
       await component.submit();
       expect(agentService.createBodies[0]).toEqual(expect.objectContaining({
         team_repository_id: 5,
-        deploy_to_dev: false,
         screenshot_paths: [],
       }));
     });

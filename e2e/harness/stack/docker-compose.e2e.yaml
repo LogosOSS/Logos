@@ -43,8 +43,15 @@ services:
     networks: [e2e]
 
   logos-redis:
-    image: redis:7-alpine
-    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    image: valkey/valkey:9.2.1-alpine@sha256:3ad5a213cb1bc2fd4a113c89b6248a88655a6bf1dda69519d04e03cd3e3d2742
+    tmpfs:
+      - /data
+    command: ["valkey-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "valkey-cli", "-e", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 10
     networks: [e2e]
 
   # One-shot: bring the schema up to the same revision the webservice would.
@@ -241,7 +248,7 @@ services:
       keycloak:
         condition: service_healthy
       logos-redis:
-        condition: service_started
+        condition: service_healthy
     environment:
       DB_HOST: logos-db
       DB_PORT: 5432

@@ -1,8 +1,11 @@
 version: 2
 
-# Maintain the actions, benchmark tools and pre-commit hooks used by CI together.
+# One scheduled PR covers ordinary version updates across package managers.
+# Custom Python hash locks and base images stay separate: updating their pins
+# alone can break resolution against vLLM or the fixed distro snapshots.
+# Security updates are independent of the weekly schedule.
 multi-ecosystem-groups:
-  ci-tooling:
+  weekly-dependencies:
     schedule:
       interval: "weekly"
 
@@ -18,20 +21,15 @@ updates:
     directories:
       - "/logos-agent"
       - "/logos-node-manager"
-    schedule:
-      interval: "weekly"
-    open-pull-requests-limit: 2
+    patterns: ["*"]
+    multi-ecosystem-group: weekly-dependencies
     groups:
-      agent-and-node-manager:
-        patterns: ["*"]
       service-security:
         applies-to: security-updates
         patterns: ["*"]
 
   - package-ecosystem: "uv"
-    directory: "logos-orchestrator"
-    schedule:
-      interval: "weekly"
+    directory: "/logos-orchestrator"
     ignore:
       # SQLAlchemy 2.1 changes the default driver for `postgresql://` URLs; the
       # pin in pyproject.toml explains what moving off 2.0 requires.
@@ -39,27 +37,35 @@ updates:
         update-types:
           - "version-update:semver-major"
           - "version-update:semver-minor"
+    patterns: ["*"]
+    multi-ecosystem-group: weekly-dependencies
     groups:
-      logos-orchestrator-python-dependencies:
-        patterns: ["*"]
       orchestrator-security:
         applies-to: security-updates
         patterns: ["*"]
 
   - package-ecosystem: "npm"
-    directories:
-      - "logos-ui"
-    schedule:
-      interval: "weekly"
+    directory: "/logos-ui"
+    versioning-strategy: increase
     # Angular 22 requires typescript >=6.0 <6.1. TS 7.0 has no stable
     # programmatic compiler API yet; Angular support is blocked until ~7.1+.
     ignore:
       - dependency-name: "typescript"
         update-types: ["version-update:semver-major"]
+    patterns: ["*"]
+    multi-ecosystem-group: weekly-dependencies
     groups:
-      npm-dependencies:
-        patterns: ["*"]
       ui-security:
+        applies-to: security-updates
+        patterns: ["*"]
+
+  - package-ecosystem: "npm"
+    directory: "/logos-agent/workspace"
+    versioning-strategy: "increase"
+    patterns: ["*"]
+    multi-ecosystem-group: weekly-dependencies
+    groups:
+      workspace-npm-security:
         applies-to: security-updates
         patterns: ["*"]
 
@@ -69,24 +75,13 @@ updates:
       - "/"
       - "/.github/actions/*"
     patterns: ["*"]
-    multi-ecosystem-group: ci-tooling
-
-  - package-ecosystem: "pip"
-    directories:
-      - "/tools/pre-commit"
-      - "/benchmarks"
-      - "/benchmarks/gateway_concurrency"
-    patterns: ["*"]
-    multi-ecosystem-group: ci-tooling
+    multi-ecosystem-group: weekly-dependencies
 
   - package-ecosystem: "maven"
     directory: "/logos-webservice"
-    schedule:
-      interval: "weekly"
-    open-pull-requests-limit: 2
+    patterns: ["*"]
+    multi-ecosystem-group: weekly-dependencies
     groups:
-      webservice-maven:
-        patterns: ["*"]
       maven-security:
         applies-to: security-updates
         patterns: ["*"]
@@ -94,29 +89,33 @@ updates:
   # The documentation build has its own lockfile and TypeScript constraints.
   - package-ecosystem: "npm"
     directory: "/docs"
-    schedule:
-      interval: "weekly"
-    open-pull-requests-limit: 2
+    versioning-strategy: increase
+    patterns: ["*"]
+    multi-ecosystem-group: weekly-dependencies
     groups:
-      docs-npm:
-        patterns: ["*"]
       docs-security:
         applies-to: security-updates
         patterns: ["*"]
 
-  # CI regenerates the platform-specific hash locks from these inputs.
+  # These inputs share custom hash locks. The test workflow exports a lock
+  # patch when they change; commit it with the dependency versions before merging.
   - package-ecosystem: "pip"
     directories:
       - "/logos-workernode"
       - "/e2e"
+      - "/tools/pre-commit"
+      - "/benchmarks"
+      - "/benchmarks/gateway_concurrency"
     schedule:
       interval: "weekly"
-    open-pull-requests-limit: 2
+    open-pull-requests-limit: 1
+    ignore:
+      # The worker's pinned vLLM currently requires FastAPI <0.137. Update this
+      # compatibility guard when moving to a newer vLLM/FastAPI release line.
+      - dependency-name: "fastapi"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
     groups:
-      # The worker image also resolves vLLM's FastAPI constraint.
-      fastapi:
-        patterns: ["fastapi"]
-      python-requirements:
+      python-hash-lock-inputs:
         patterns: ["*"]
       python-security:
         applies-to: security-updates
@@ -143,10 +142,14 @@ updates:
       # The current Python image line has matching native wheels and lockfiles.
       - dependency-name: "python"
         update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      # PostgreSQL major upgrades need a coordinated change to the data layout,
+      # pg_cron and the deployment path, not a one-line base image update.
+      - dependency-name: "postgres"
+        update-types: ["version-update:semver-major"]
     groups:
-      # Each database engine or migration tool has its own major-upgrade decision.
+      # Each datastore or migration tool has its own major-upgrade decision.
       base-images-migrations:
-        patterns: ["postgres", "redis", "liquibase/liquibase"]
+        patterns: ["redis", "valkey/valkey", "liquibase/liquibase"]
         group-by: dependency-name
         update-types: ["major"]
       base-images:
@@ -163,19 +166,22 @@ updates:
       - "/logos-node-manager"
       - "/logos-node-manager/tests/smoke"
       - "/logos-workernode"
-    schedule:
-      interval: "weekly"
-    open-pull-requests-limit: 2
+    patterns: ["*"]
+    multi-ecosystem-group: weekly-dependencies
     ignore:
       - dependency-name: "ghcr.io/logososs/*"
+      # PostgreSQL major upgrades need a coordinated change to the data layout,
+      # pg_cron and the deployment path, not a one-line base image update.
+      - dependency-name: "postgres"
+        update-types: ["version-update:semver-major"]
+      # Major datastore and migration-tool upgrades should not enter this bundle.
+      - dependency-name: "redis"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "valkey/valkey"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "liquibase/liquibase"
+        update-types: ["version-update:semver-major"]
     groups:
-      # Each database engine or migration tool has its own major-upgrade decision.
-      compose-images-migrations:
-        patterns: ["postgres", "redis", "liquibase/liquibase"]
-        group-by: dependency-name
-        update-types: ["major"]
-      compose-images:
-        patterns: ["*"]
       compose-security:
         applies-to: security-updates
         patterns: ["*"]

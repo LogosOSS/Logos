@@ -81,6 +81,7 @@ async function login(browser, user, dark = false) {
   });
   await ctx.addInitScript((theme) => localStorage.setItem("logos-theme", theme), dark ? "dark" : "light");
   const page = await ctx.newPage();
+  if (!user) return { ctx, page };
   await page.goto(BASE + "/");
   await page.getByText(/Sign in with TUM/i).first().click({ timeout: 30000 });
   await page.waitForSelector("#username", { timeout: 30000 });
@@ -105,8 +106,8 @@ async function markNotificationsRead(page) {
 }
 
 // Waits for fonts, for skeletons and spinners to disappear, then for paint.
-async function settle(page, extra = 1500) {
-  await page.locator(".shell-layout").waitFor();
+async function settle(page, extra = 1500, readySelector = ".shell-layout") {
+  await page.locator(readySelector).waitFor();
   await page.evaluate(() => document.fonts.ready);
   await page
     .waitForFunction(
@@ -161,7 +162,7 @@ async function nodeModel(page, ids, model) {
 // stretch fixed full-viewport layers (dialog backdrops) over the whole page.
 async function unlock(page) {
   await page.addStyleTag({
-    content: `html, body, .main-content { height: auto !important; max-height: none !important; overflow: visible !important; }
+    content: `html, body, .main-content, .public-stats-page { height: auto !important; max-height: none !important; overflow: visible !important; }
       .shell-layout { min-height: 100vh !important; height: auto !important; overflow: visible !important; align-items: stretch !important; }
       .sidebar { align-self: stretch !important; min-height: 100% !important; }`,
   });
@@ -372,7 +373,28 @@ const SHOTS = [
     after: (p) => p.getByText("Mark all as read").first().evaluate((b) => b.click()),
   },
 
-  { file: "roles/logos-admin-statistics.png", user: ADMIN, full: true, go: (p) => p.goto(BASE + "/statistics?tab=requests") },
+  {
+    file: "roles/public-stats-hourly-load.png",
+    user: null,
+    needs: "seed/public-hourly-request-load.sql and a public cache refresh",
+    full: true,
+    readySelector: ".public-stats-page",
+    go: async (p) => {
+      await p.goto(BASE + "/usage");
+      await p.getByRole("heading", { name: "Typical hourly request load" }).waitFor();
+      await p.locator(".hourly-public-hour").first().waitFor();
+    },
+  },
+
+  {
+    file: "roles/logos-admin-statistics.png",
+    user: ADMIN,
+    full: true,
+    go: async (p) => {
+      await p.goto(BASE + "/statistics?tab=requests");
+      await p.locator(".rr-badge--benchmark").waitFor();
+    },
+  },
   {
     file: "roles/logos-admin-statistics-requesters.png",
     user: ADMIN,
@@ -673,7 +695,10 @@ const SHOTS = [
       await p.locator(".form-card textarea").first().fill("Fix the date format in the export of the order list");
       await p.getByRole("textbox", { name: /RAM limit/ }).fill("4096");
       await p.getByRole("textbox", { name: /RAM limit/ }).blur();
-      await p.getByText("Deploy to dev and screenshots are available only for the platform repository.").waitFor();
+      await p.getByText("Dev screenshots are available only for the platform repository.").waitFor();
+      await p.getByRole("checkbox", { name: "Private session: no GitHub writes" }).check();
+      await p.getByRole("checkbox", { name: "Open a pull request when finished" }).and(p.locator(":disabled")).waitFor();
+      await p.getByRole("checkbox", { name: "Deploy to the dev environment afterwards" }).waitFor({ state: "detached" });
     },
   },
   { file: "roles/logos-admin-my-workspace.png", user: ADMIN, go: (p) => p.goto(BASE + "/my-workspace") },
@@ -911,7 +936,24 @@ const SHOTS = [
   { file: "roles/app-admin-user-management.png", full: true, user: APP_ADMIN, go: (p) => p.goto(BASE + "/user-management") },
   { file: "roles/app-admin-team-management.png", full: true, user: APP_ADMIN, go: (p) => p.goto(BASE + "/team-management") },
   { file: "roles/app-admin-my-workspace.png", user: APP_ADMIN, go: (p) => p.goto(BASE + "/my-workspace") },
-  { file: "roles/batches.png", user: APP_ADMIN, full: true, go: (p) => p.goto(BASE + "/batches") },
+  {
+    file: "roles/batches.png",
+    user: APP_ADMIN,
+    full: true,
+    go: async (p) => {
+      await p.goto(BASE + "/batches");
+      await p.getByText("batch_docs_completed", { exact: true }).waitFor();
+      const lines = Array.from({ length: 4 }, (_, i) => JSON.stringify({
+        custom_id: `example-${i + 1}`, method: "POST", url: "/v1/chat/completions",
+        body: { model: "llama-3.1-8b-instruct", messages: [{ role: "user", content: "Hello" }] },
+      }));
+      await p.locator('input[type="file"]').setInputFiles({
+        name: "example-requests.jsonl", mimeType: "application/jsonl", buffer: Buffer.from(lines.join("\n")),
+      });
+      await p.getByText(/Provider batch:\s*\$0\.144/).waitFor();
+      await p.getByText(/Logos replay:\s*\$0\.288/).waitFor();
+    },
+  },
   { file: "roles/team-detail-overview.png", user: APP_ADMIN, go: (p, ids) => teamTab(p, ids, "Overview") },
   {
     file: "roles/team-members-csv.png",
@@ -1008,12 +1050,12 @@ const SHOTS = [
     if (!session || session.key !== key) {
       if (session) await session.ctx.close();
       session = { key, ...(await login(browser, shot.user, shot.dark)) };
-      if (!shot.file.endsWith("benchmark-notification.png")) await markNotificationsRead(session.page);
+      if (shot.user && !shot.file.endsWith("benchmark-notification.png")) await markNotificationsRead(session.page);
     }
     const { page } = session;
     try {
       await shot.go(page, ids);
-      await settle(page);
+      await settle(page, undefined, shot.readySelector);
       if (shot.full) await unlock(page);
       const target = path.join(OUT, shot.file);
       fs.mkdirSync(path.dirname(target), { recursive: true });

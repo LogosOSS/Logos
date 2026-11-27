@@ -94,6 +94,57 @@ class LiquibaseBaselineTest {
     }
 
     @Test
+    void requestScopeRollbackRestoresLegacyForwardingHours() throws Exception {
+        // The rollup functions explicitly use public; isolate this reversal in a database.
+        String database = "request_scope_" + UUID.randomUUID().toString().replace("-", "");
+        jdbc.execute("CREATE DATABASE " + database);
+        String url = postgres.getJdbcUrl().replace("/logosdb", "/" + database);
+        try (var releaseConnection = DriverManager.getConnection(url, postgres.getUsername(), postgres.getPassword());
+                var connection = DriverManager.getConnection(url, postgres.getUsername(), postgres.getPassword());
+                var resources = new ClassLoaderResourceAccessor();
+                var release = new Liquibase("liquibase/changelog/master.xml", resources, new JdbcConnection(releaseConnection));
+                var scope = new Liquibase("liquibase/changelog/108_log_entry_benchmark_source.xml",
+                    resources, new JdbcConnection(connection))) {
+            var isolated = new JdbcTemplate(new SingleConnectionDataSource(connection, true));
+            isolated.execute("SET TIME ZONE 'UTC'");
+            release.update(new Contexts(), new LabelExpression());
+            scope.rollback(4, new Contexts(), new LabelExpression());
+            isolated.execute("""
+                UPDATE log_entry_rollup_state SET processed_through = '2026-01-04 03:00Z';
+                INSERT INTO log_entry(request_id, timestamp_request, timestamp_forwarding, timestamp_response,
+                                      result_status, error_message, cost_finalized, settled_cost_micro_cents)
+                VALUES
+                    ('crosses-hour', '2026-01-04 01:50Z', '2026-01-04 02:15Z', '2026-01-04 02:16Z', 'success', null, true, 42),
+                    ('crosses-watermark', '2026-01-04 02:50Z', '2026-01-04 03:15Z', '2026-01-04 03:16Z', 'success', null, true, 73),
+                    (null, '2026-01-04 01:51Z', null, null, null, null, false, null);
+                INSERT INTO token_types(name) VALUES ('total_tokens') ON CONFLICT DO NOTHING;
+                INSERT INTO usage_tokens(log_entry_id, type_id, token_count)
+                    SELECT le.id, tt.id, 67 FROM log_entry le CROSS JOIN token_types tt
+                    WHERE le.request_id = 'crosses-hour' AND tt.name = 'total_tokens';
+                SELECT logos_stats_rollup_apply(ARRAY['2026-01-04 01:00Z'::timestamptz,
+                                                       '2026-01-04 02:00Z'::timestamptz]);
+                """);
+            connection.commit();
+            String history = "SELECT * FROM log_entry_hourly_stats ORDER BY bucket_hour";
+            var before = isolated.queryForList(history);
+            assertThat(before).hasSize(2);
+            assertThat(before.get(0)).containsEntry("error_count", 1L);
+            assertThat(before.get(1)).containsEntry("total_tokens", 67L).containsEntry("cost_micro_cents", 42L);
+
+            scope.update(new Contexts(), new LabelExpression());
+            var upgraded = isolated.queryForList(history);
+            assertThat(upgraded).hasSize(2);
+            assertThat(upgraded.get(0)).containsEntry("total_tokens", 67L).containsEntry("cost_micro_cents", 42L);
+            assertThat(upgraded.get(1)).containsEntry("cost_micro_cents", 73L);
+
+            scope.rollback(4, new Contexts(), new LabelExpression());
+            assertThat(isolated.queryForList(history)).isEqualTo(before);
+        } finally {
+            jdbc.execute("DROP DATABASE " + database + " WITH (FORCE)");
+        }
+    }
+
+    @Test
     void nightlySchedulesCoexistWithCentralProfilesAndUseConsolidatedMigrationIds() {
         assertThat(tableExists("model_profiles")).isTrue();
         assertThat(tableExists("model_calibrations")).isTrue();

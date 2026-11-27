@@ -1036,6 +1036,7 @@ async def internal_model_benchmark_completion(job_id: int, path: str, request: R
             log_level=auth.log_level,
             input_payload=sanitized_payload_for_logging(body),
             request_id=request_id,
+            benchmark_job_id=job_id,
         )
     log_id = int(log_result["log-id"])
     response = await _execute_cancelling_on_disconnect(

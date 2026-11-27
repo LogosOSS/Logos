@@ -581,6 +581,16 @@ JOIN models m ON m.name = 'gpt-4o-mini'
              AND m.description LIKE '%[docs-role-screenshots]'
 JOIN providers p ON p.name = 'Docs Local Worker';
 
+-- The newest queued sample shows the source badge next to its usual state.
+-- It has no user, team, or API key.
+INSERT INTO log_entry (
+    request_id, model_id, provider_id, timestamp_request, environment, benchmark_job_id
+)
+SELECT 'docs-role-zz-benchmark-request', m.id, p.id, now(), 'docs-role-screenshots', 1
+FROM models m
+JOIN providers p ON p.name = 'Docs Local Worker'
+WHERE m.name = 'llama-3.1-8b-instruct';
+
 -- Retire the demo model. The BEFORE DELETE trigger stamps the model name onto
 -- every usage row before the foreign key nulls the id, so the statistics
 -- page keeps showing the usage under the model's former name — flagged
@@ -611,6 +621,22 @@ WHERE le.environment = 'docs-role-screenshots'
   );
 
 -- Batches: one running, one finished.
+-- Illustrative settled history for the App Admin's estimate preview.
+INSERT INTO log_entry (
+    request_id, api_key_id, model_id, provider_id, result_status,
+    timestamp_request, timestamp_response, user_id, team_id, environment,
+    rate_limit_admitted, cost_finalized, settled_cost_micro_cents, service_tier
+)
+SELECT CASE WHEN mode.tier = 'batch' THEN 'batch-' ELSE '' END || 'docs-estimate-' || g.n,
+       k.id, m.id, p.id, 'success',
+       now() - interval '2 days', now() - interval '2 days' + interval '1 second',
+       k.user_id, k.team_id, 'docs-role-screenshots', true, true, mode.cost, mode.tier
+FROM (VALUES ('batch', 3600000), ('default', 7200000)) AS mode(tier, cost)
+CROSS JOIN generate_series(1, 3) AS g(n)
+JOIN api_keys k ON k.name = 'docs-role-alexandra.szuminska-key'
+JOIN models m ON m.name = 'llama-3.1-8b-instruct'
+JOIN providers p ON p.name = 'Docs Cloud (EU)';
+
 INSERT INTO batch_objects (
     kind, upstream_id, execution, api_key_id, team_id, user_id, status,
     endpoint, total_requests, completed_requests, failed_requests,

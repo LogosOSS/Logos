@@ -450,12 +450,14 @@ services:
   # Shared cloud RPM/TPM window for logos-webservice replicas. Ephemeral:
   # a restart clears the sliding window (limits reset for up to 60 s).
   logos-redis:
-    image: redis:7-alpine
+    image: valkey/valkey:9.2.1-alpine@sha256:3ad5a213cb1bc2fd4a113c89b6248a88655a6bf1dda69519d04e03cd3e3d2742
+    tmpfs:
+      - /data
     container_name: logos-redis
     restart: unless-stopped
-    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    command: ["valkey-server", "--save", "", "--appendonly", "no"]
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "valkey-cli", "-e", "ping"]
       interval: 2s
       timeout: 3s
       retries: 10

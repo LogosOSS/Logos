@@ -48,7 +48,7 @@ instance. The second line of a component names its technology. The table below g
 | Gateway | `logos-rate-gateway` (nginx), `traefik` |
 | Webservice | `logos-webservice` |
 | Orchestrator | `logos-orchestrator` |
-| Shared State | `logos-redis` |
+| Shared State | Valkey (`logos-redis`) |
 | Database | `logos-db` |
 | Worker Node | `logos-workernode` (on each GPU node) |
 | Inference Process | one vLLM process of the worker node for one model, also called a lane |
@@ -57,7 +57,7 @@ Each request from a client goes through the gateway: first
 `logos-rate-gateway`, then `traefik`. Traefik sends the request to one of the
 `logos-webservice` replicas. On the core node, only `logos-webservice` runs
 as more than one replica (×N). One orchestrator can control many GPU worker
-nodes. The replicas share two things in `logos-redis`: the sliding window
+nodes. The replicas share two things in Valkey: the sliding window
 of the cloud rate limits, and a pub/sub channel for notifications. The web service sends cloud requests directly to the cloud
 provider. It sends local and mixed requests to `logos-orchestrator`.
 
@@ -81,7 +81,7 @@ profiles.
 />
 
 - **`logos-webservice` ×N** — Traefik balances the load between the replicas.
-  The replicas share their cloud rate limits in `logos-redis`. It is safe to
+  The replicas share their cloud rate limits in Valkey. It is safe to
   scale the web service for traffic with many cloud requests. Liquibase takes a
   DB lock when it migrates.
 - **`logos-orchestrator` ×1** — it holds the live worker registry and schedules
