@@ -139,7 +139,7 @@ async def agent_cloud_deployments() -> list[dict[str, Any]]:
                 FROM model_provider mp
                 JOIN models m ON m.id = mp.model_id
                 JOIN providers p ON p.id = mp.provider_id
-                WHERE p.provider_type = 'cloud' AND p.cloud_provider_type = 'other'
+                WHERE p.provider_type = 'cloud' AND p.cloud_provider_type = 'logos'
                   AND COALESCE(NULLIF(btrim(mp.api_key), ''), NULLIF(btrim(p.api_key), '')) IS NOT NULL
                   AND lower(COALESCE(NULLIF(btrim(p.auth_name), ''), 'authorization')) = 'authorization'
                   AND lower(COALESCE(NULLIF(btrim(p.auth_format), ''), 'bearer {}')) = 'bearer {}'
@@ -1519,7 +1519,8 @@ async def claim_session(
                                  SELECT 1 FROM agent_sessions manual
                                   WHERE manual.status = 'queued'
                                     AND manual.trigger_ref IS NULL
-                                    AND (manual.inference_provider_id IS NOT NULL OR manual.inference_model_id IS NOT NULL)
+                                    AND (manual.inference_provider_id IS NOT NULL
+                                         OR manual.inference_model_id IS NOT NULL)
                                         = (s.inference_provider_id IS NOT NULL OR s.inference_model_id IS NOT NULL)
                                     AND NOT EXISTS (
                                         SELECT 1 FROM agent_sessions busy

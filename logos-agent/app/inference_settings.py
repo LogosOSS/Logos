@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import secrets
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -23,6 +25,8 @@ def _https_origin(value: str, *, allow_path: bool = True) -> tuple[str, int] | N
             or not url.hostname
             or url.username is not None
             or url.password is not None
+            or url.port == 0
+            or url.netloc.endswith(":")
             or url.query
             or url.fragment
             or (not allow_path and url.path not in ("", "/"))
@@ -74,6 +78,13 @@ async def permits_pin(session: dict[str, Any]) -> bool:
         and row["model"] == session.get("model")
         for row in await cloud_options()
     )
+
+
+async def issue_remote_grant(session_id: int) -> str | None:
+    """Store only a digest for the still-starting session."""
+    grant = secrets.token_urlsafe(32)
+    digest = hashlib.sha256(grant.encode("ascii")).hexdigest()
+    return grant if await db.set_agent_inference_grant(session_id, digest) else None
 
 
 async def view() -> dict[str, Any]:

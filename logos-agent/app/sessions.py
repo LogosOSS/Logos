@@ -19,7 +19,6 @@ each, so a slow session cannot hold up admission of the others.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import logging
 import os
@@ -1583,8 +1582,9 @@ class SessionManager:
         # Attach first: a session thawed without its network would fail on
         # its next model call, which is worse than staying paused one more
         # tick.
+        remote = inference_settings.is_remote(session)
         try:
-            if inference_settings.is_remote(session):
+            if remote:
                 if not await inference_settings.permits_pin(session):
                     await self._settle(sid, exit_code=None, error="The pinned remote Agent model is no longer eligible")
                     return False
@@ -1596,6 +1596,12 @@ class SessionManager:
         if not attached:
             logger.error("session %s could not be reattached to the session network; leaving it paused", sid)
             return False
+        if remote and not await db.transition_session(sid, SessionStatus.RUNNING):
+            # On remote sessions the relay checks the row before accepting
+            # a request. Publish its running state before thaw, while the
+            # authenticated container cannot make a request yet.
+            await self._detach_from_model_gateway(sid, container_id, remote=True)
+            return False
         if session.get("active_seconds") is not None:
             self._publish_active_origin(sid, time.time() - session["active_seconds"])
         try:
@@ -1605,11 +1611,14 @@ class SessionManager:
             # pass down with it: everything behind this session — resuming,
             # admitting, sweeping — would stop with it.
             logger.error("could not resume session %s: %s", sid, exc)
-            return False
+            thawed = False
         if not thawed:
+            if remote:
+                await db.transition_session(sid, SessionStatus.PAUSED)
+                await self._detach_from_model_gateway(sid, container_id, remote=True)
             logger.info("session %s could not be resumed; its container is not running", sid)
             return False
-        if await db.transition_session(sid, SessionStatus.RUNNING):
+        if remote or await db.transition_session(sid, SessionStatus.RUNNING):
             await db.add_event(sid, EventKind.CAPACITY, {"decision": "resume", "reason": reason})
             logger.info("resumed session %s: %s", sid, reason)
             return True
@@ -1836,9 +1845,10 @@ class SessionManager:
                     await self._settle(sid, exit_code=None, error="The pinned remote Agent model is no longer eligible")
                     return
                 await docker_engine.ensure_network(inference_settings.remote_network(), internal=True)
-                grant = secrets.token_urlsafe(32)
-                digest = hashlib.sha256(grant.encode("ascii")).hexdigest()
-                if launch.cancelled or not await db.set_agent_inference_grant(sid, digest):
+                if launch.cancelled:
+                    return
+                grant = await inference_settings.issue_remote_grant(sid)
+                if grant is None or launch.cancelled:
                     return
                 grant_env = {"inference_grant": grant}
                 network = {"network": inference_settings.remote_network()}
