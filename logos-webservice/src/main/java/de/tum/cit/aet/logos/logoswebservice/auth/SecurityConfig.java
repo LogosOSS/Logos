@@ -89,8 +89,8 @@ public class SecurityConfig {
                 .requestMatchers(HttpMethod.POST, "/internal/models_discovered").permitAll()
                 // /internal/notifications is the orchestrator's emission door,
                 // also authenticated with the internal secret in the controller.
-                .requestMatchers(HttpMethod.POST, "/internal/notifications",
-                    "/internal/provider-spend/status").permitAll()
+                .requestMatchers(HttpMethod.POST, "/internal/notifications").permitAll()
+                .requestMatchers(HttpMethod.GET, "/internal/provider-spend/status").permitAll()
                 // Per-replica StreamingResponseBody occupancy for the gateway
                 // concurrency benchmark. Counters only; not routed via Traefik.
                 .requestMatchers("/internal/gateway_relay_stats", "/internal/gateway_relay_stats/**")

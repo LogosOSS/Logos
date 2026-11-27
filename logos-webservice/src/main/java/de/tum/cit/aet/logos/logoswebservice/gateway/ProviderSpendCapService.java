@@ -49,7 +49,7 @@ public class ProviderSpendCapService {
     }
 
     @EventListener(ApplicationReadyEvent.class)
-    @Scheduled(scheduler = "providerSpendScheduler", initialDelay = 2000, fixedDelay = 2000)
+    @Scheduled(scheduler = "providerSpendScheduler", initialDelay = 3000, fixedDelay = 3000)
     public synchronized void refresh() {
         long start = nanoTime.getAsLong();
         try {
