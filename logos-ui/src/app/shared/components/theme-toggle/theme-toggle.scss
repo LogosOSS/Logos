@@ -5,9 +5,8 @@
 }
 
 .theme-toggle {
-  position: absolute;
-  top: 20px;
-  right: 20px;
+  position: var(--theme-toggle-position, absolute);
+  inset: var(--theme-toggle-inset, 20px 20px auto auto);
   z-index: 20;
 
   display: flex;

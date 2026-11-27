@@ -7,14 +7,14 @@
 .hourly-public-note {
   color: rgb(var(--color-typography-700));
   font-size: var(--font-size-sm);
-  margin: 0.5rem 0;
+  margin: 0.35rem 0;
 }
 
 .hourly-public-plot {
-  --plot-height: 7rem;
+  --plot-height: clamp(5rem, 8vw, 7rem);
   display: flex;
   gap: 0.4rem;
-  margin-top: 0.85rem;
+  margin-top: 0.5rem;
 }
 
 .hourly-public-axis,
@@ -49,8 +49,12 @@
     background: rgb(var(--color-primary-500));
   }
 
-  &.quiet { border-bottom: 2px solid rgb(var(--color-typography-700)); }
-  &.suppressed { border-bottom: 2px dashed rgb(var(--color-typography-700)); }
+  &.quiet {
+    border-bottom: 2px solid rgb(var(--color-typography-700));
+  }
+  &.suppressed {
+    border-bottom: 2px dashed rgb(var(--color-typography-700));
+  }
 
   &:hover,
   &[aria-pressed='true'] {
@@ -71,10 +75,13 @@
 
 .hourly-public-detail {
   min-height: 1.5rem;
-  margin: 0.65rem 0;
+  margin: 0.45rem 0;
+  color: rgb(var(--color-typography-0));
   font-size: var(--font-size-sm);
 }
 
 @media (max-width: 480px) {
-  .hourly-public-plot { --plot-height: 5rem; }
+  .hourly-public-plot {
+    --plot-height: 5rem;
+  }
 }

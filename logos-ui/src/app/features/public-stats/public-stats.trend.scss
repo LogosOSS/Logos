@@ -21,9 +21,10 @@
   display: flex;
   align-items: flex-end;
   gap: 2px;
-  height: 11rem;
+  height: clamp(5.5rem, 8vw, 7.5rem);
   border-top: 1px dashed rgb(var(--color-typography-500) / var(--opacity-guide));
-  border-bottom: 1px solid rgb(var(--color-typography-500) / var(--opacity-muted));
+  border-bottom: 1px solid
+    rgb(var(--color-typography-500) / var(--opacity-muted));
 }
 
 .trend-slot {
@@ -74,6 +75,11 @@
   white-space: nowrap;
   color: rgb(var(--color-typography-500));
   font-size: var(--font-size-xs);
+
+  &:last-child {
+    display: flex;
+    justify-content: flex-end;
+  }
 }
 
 .trend-readout {
