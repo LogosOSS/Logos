@@ -85,6 +85,10 @@
       gap: 8px;
     }
 
-    dd { text-align: end; }
+    dd {
+      flex-shrink: 0;
+      max-width: 55%;
+      text-align: end;
+    }
   }
 }
