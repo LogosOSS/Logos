@@ -215,15 +215,20 @@ Enough to work on any part of this repository, and nothing else:
 
 | Tool | Version | Why |
 |---|---|---|
-| Claude Code | 2.1.245 | The agent. Driven headless: `claude -p … --output-format stream-json` |
+| Claude Code | Workspace npm manifest | The agent. Driven headless: `claude -p … --output-format stream-json` |
 | Node | 22 | logos-ui |
 | Python | 3.11 (system) + **3.13 via uv** | Logos targets 3.13; bookworm ships 3.11, and a read-only rootfs cannot download an interpreter at runtime, so it is preinstalled into `/opt/uv-python` |
 | Temurin JDK / Maven | 25 / 3.10 | logos-webservice compilation, with Maven and a warm repository available offline |
-| gh | 2.98 | Opening the pull request |
-| Chromium (Playwright) | 151 | Screenshots of the dev environment |
+| gh | Dockerfile pin | Opening the pull request |
+| Chromium | Revision selected by locked Playwright | Screenshots of the dev environment |
 
-Versions are pinned as build args; bump them deliberately rather than letting a
-session's behaviour drift between builds.
+The workspace's [npm manifest](workspace/package.json) and lockfile pin
+Claude Code and Playwright, including the native CLI package and the matching
+Chromium revision. Dependabot opens weekly update PRs for these packages.
+The weekly platform report still lists candidate versions; for Claude Code it
+checks the vendor's `stable` tag. Review Claude Code proposals against that
+channel before merging. The workspace image installs with `npm ci` and does
+not let Claude Code update itself at runtime.
 
 Java and Angular dependencies are resolved when this image is built. Sessions
 can run `python3 /usr/local/lib/verify_checkout.py logos-webservice logos-ui`

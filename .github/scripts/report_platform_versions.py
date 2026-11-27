@@ -15,8 +15,8 @@ def latest_release(repository):
     ).strip()
 
 
-def npm_version(package):
-    with urlopen(f"https://registry.npmjs.org/{package}/latest", timeout=30) as response:
+def npm_version(package, tag="latest"):
+    with urlopen(f"https://registry.npmjs.org/{package}/{tag}", timeout=30) as response:
         return json.load(response)["version"]
 
 
@@ -38,8 +38,10 @@ def workspace_tools():
     major = args["JDK_VERSION"]
     yield "Temurin", jdk, latest_release(f"adoptium/temurin{major}-binaries")
     yield "GitHub CLI", args["GH_VERSION"], latest_release("cli/cli").removeprefix("v")
-    yield "Claude Code", args["CLAUDE_CODE_VERSION"], npm_version("@anthropic-ai/claude-code")
-    yield "Playwright", args["PLAYWRIGHT_VERSION"], npm_version("playwright")
+    dependencies = json.loads(Path("logos-agent/workspace/package.json").read_text())["dependencies"]
+    claude = "@anthropic-ai/claude-code"
+    yield "Claude Code", dependencies[claude], npm_version(claude, "stable")
+    yield "Playwright", dependencies["playwright"], npm_version("playwright")
     node = Path("logos-ui/.nvmrc").read_text().strip()
     yield "Node.js (CI)", node, setup_version("node", node.split(".")[0])
     ci = Path(".github/workflows/logos_test.yml").read_text()
@@ -91,7 +93,8 @@ def report():
     print("### Workspace tools\n\n| Tool | Pinned | Latest stable |\n| --- | --- | --- |")
     for name, pinned, latest in workspace_tools():
         print(f"| {name} | {pinned} | {latest} |")
-    print("\nReview Temurin archives, workspace packages, both architectures' checksums and CI tool versions together.")
+    print("\nDependabot opens update PRs for workspace npm packages. This report uses Claude Code's stable channel.")
+    print("Review Temurin archives, workspace packages, both architectures' checksums and CI tool versions together.")
 
     print("\n### Distribution packages (linux/amd64)")
     for image, pins in sorted(apt_inputs().items()):
