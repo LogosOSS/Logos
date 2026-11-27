@@ -383,5 +383,5 @@ def test_estimate_available_for_kv_uses_full_base_for_uncalibrated():
 
     avail = planner._estimate_available_for_kv_mb(profile, capacity, provider_id=1, tp=2)
     # node-ownership: per_gpu_total 45000 - per_gpu_base 20000 - 1024 headroom = 23976
-    # (measured profile → no kv_budget subtraction from the weights-only base)
+    # (uncalibrated → no kv_budget subtraction from the weights-only base)
     assert abs(avail - 23976.0) < 1.0

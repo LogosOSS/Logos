@@ -26,13 +26,13 @@ from logos.capacity.capacity_planner import CapacityPlanner
 _CALIBRATED_PROFILE = SimpleNamespace(residency_source="calibrated")
 
 
-def _planner(*, calibrating=False, has_status=True, capacity=object(), profiles=None, metal=False) -> CapacityPlanner:
+def _planner(*, calibrating=False, has_status=True, capacity=object(), profiles=None) -> CapacityPlanner:
     planner = CapacityPlanner.__new__(CapacityPlanner)
     registry = MagicMock()
     registry.is_calibrating.return_value = calibrating
     registry.is_cordoned.return_value = False
     registry.has_received_first_status.return_value = has_status
-    registry.peek_runtime_snapshot.return_value = {"runtime": {"devices": {"mode": "metal"}}} if metal else None
+    registry.peek_runtime_snapshot.return_value = None
     planner._registry = registry
     facade = MagicMock()
     facade.get_capacity_info.return_value = capacity
@@ -67,38 +67,24 @@ def test_provider_without_capacity_snapshot_is_refused():
     assert "capacity information" in reason
 
 
-def test_never_calibrated_model_is_refused_on_cuda():
+def test_never_calibrated_model_is_refused():
     profiles = {"org/model-a": SimpleNamespace(residency_source=None)}
     reason = _planner(profiles=profiles).manual_load_rejection_reason(1, "org/model-a")
     assert reason is not None
     assert "never been calibrated" in reason
 
 
-def test_hf_precheck_profile_is_refused_on_cuda():
+def test_hf_precheck_profile_is_refused():
     profiles = {"org/model-a": SimpleNamespace(residency_source="hf")}
     reason = _planner(profiles=profiles).manual_load_rejection_reason(1, "org/model-a")
     assert reason is not None
     assert "never been calibrated" in reason
 
 
-def test_override_profile_is_accepted_on_metal():
-    profiles = {"org/model-a": SimpleNamespace(residency_source="override")}
-    reason = _planner(profiles=profiles, metal=True).manual_load_rejection_reason(1, "org/model-a")
-    assert reason is None
-
-
-def test_override_profile_is_refused_on_cuda():
-    profiles = {"org/model-a": SimpleNamespace(residency_source="override")}
-    reason = _planner(profiles=profiles).manual_load_rejection_reason(1, "org/model-a")
-    assert reason is not None
-    assert "never been calibrated" in reason
-
-
-def test_missing_profile_is_refused_even_on_metal():
-    """A missing profile is not the same as an override — building a load
-    with profile=None starts a lane with the wrong backend config (see
-    load_lane_manually's docstring), so Metal must not wave this through."""
-    reason = _planner(profiles={}, metal=True).manual_load_rejection_reason(1, "org/does-not-exist")
+def test_missing_profile_is_refused():
+    """Building a load with profile=None starts a lane with the wrong backend
+    config (see load_lane_manually's docstring)."""
+    reason = _planner(profiles={}).manual_load_rejection_reason(1, "org/does-not-exist")
     assert reason is not None
     assert "never been calibrated" in reason
 
@@ -109,7 +95,7 @@ def test_model_name_omitted_skips_the_calibration_check():
     assert _planner(profiles=profiles).manual_load_rejection_reason(1) is None
 
 
-def test_load_lane_manually_rejects_a_never_calibrated_model_on_cuda():
+def test_load_lane_manually_rejects_a_never_calibrated_model():
     profiles = {"org/model-a": SimpleNamespace(residency_source=None)}
     planner = _planner(profiles=profiles)
     planner._execute_action_with_confirmation = MagicMock()

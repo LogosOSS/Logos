@@ -1,14 +1,13 @@
 """Model VRAM profiles.
 
-Sources of truth, in priority order:
+Where base_residency_mb came from (residency_source), best first:
   1. "calibrated"  — measured by a calibration session
-  2. "override"    — operator-provided values in config.yml
-  3. "hf"          — best-effort estimate from the model's Hugging Face
+  2. "hf"          — best-effort estimate from the model's Hugging Face
                      config.json + safetensors sizes, applied by the
                      calibration compatibility pre-check (hf_model_info.py)
-                     before a probe has ever run. Below "calibrated" in
-                     authority — a real calibration always overwrites it.
-  4. "cached"      — any of the above, restored from the central store
+                     before a probe has ever run; a calibration replaces it.
+  3. None          — no base known yet
+Operator values from config.yml pin single fields (see overridden_fields).
 
 If base_residency_mb is unknown (no override, no HF estimate, never
 calibrated), placement returns 0 (no estimate) and the lane manager skips
@@ -161,12 +160,11 @@ class ModelProfileRecord:
     #                  loaded_vram_mb = full awake footprint with the
     #                  configured KV cap already in effect. KV is INCLUDED;
     #                  callers must NOT add kv_cache_memory_bytes on top.
-    #   "override"   — operator-provided value in config.yml.
     #   "hf"         — best-effort estimate from HF config.json +
     #                  safetensors sizes (pre-calibration precheck).
     #                  Weights-only: callers DO add KV separately;
     #                  a real calibration always replaces it.
-    #   "cached"     — any of the above, restored without a source label.
+    #   None         — no base known yet.
     residency_source: str | None = None
     # Provenance: what enforce_eager mode the calibration ran under.
     # When None on a "calibrated" profile, treat as legacy = True (the prior
@@ -551,7 +549,6 @@ class ModelProfileRegistry:
         applied = []
         if "base_residency_mb" in overrides:
             profile.base_residency_mb = float(overrides["base_residency_mb"])
-            profile.residency_source = "override"
             applied.append(f"base_residency={profile.base_residency_mb:.0f}MB")
         if "sleeping_residual_mb" in overrides:
             profile.sleeping_residual_mb = float(overrides["sleeping_residual_mb"])
@@ -716,11 +713,9 @@ class ModelProfileRegistry:
         tensor_parallel_size: int | None = None,
         kv_cache_sent_mb: float = 0.0,
     ) -> None:
-        """Called after a lane reaches loaded/running with VRAM in use.
-
-        Updates loaded_vram_mb, and kv_budget_mb when the lane pins its KV
-        cache (kv_cache_sent_mb > 0). base_residency_mb and its source are
-        never touched: calibration, the HF precheck and overrides own them.
+        """Record the live VRAM of a loaded lane and, when it pins its KV
+        cache (kv_cache_sent_mb > 0), kv_budget_mb. base_residency_mb is
+        never touched.
         A lane that ran at a TP different from the calibrated profile's TP
         records nothing: the calibrated TP is authoritative, and the
         measurement would describe a different configuration.
@@ -955,8 +950,8 @@ class ModelProfileRegistry:
         Returns True when the stored value changed. Never overwrites an
         operator-provided config.yml override for the same field. Only sets
         base_residency_mb + residency_source="hf" when the profile has no
-        higher-priority source yet (None, "hf", or "cached") — a real
-        "calibrated"/"override" value always wins.
+        higher-priority source yet (None or "hf") — a calibrated value
+        always wins.
         kv_per_token_bytes/max_context_length/disk_size_bytes have no
         higher-priority writer to conflict with, so they're set unconditionally
         (subject only to the manual-override check).
@@ -999,7 +994,7 @@ class ModelProfileRegistry:
                 "base_residency_mb" not in overrides
                 and base_residency_mb
                 and base_residency_mb > 0
-                and profile.residency_source in (None, "hf", "cached")
+                and profile.residency_source in (None, "hf")
             ):
                 if profile.base_residency_mb != base_residency_mb:
                     profile.base_residency_mb = base_residency_mb
@@ -1283,7 +1278,7 @@ def _record_from_dict(data: dict[str, Any]) -> ModelProfileRecord:
     values.update(
         measurement_count=int(data.get("measurement_count", 0) or 0),
         last_measured_epoch=float(data.get("last_measured_epoch", 0.0) or 0.0),
-        residency_source=persisted_source or "cached",
+        residency_source=persisted_source,
         enforce_eager_at_calibration=eager_at_cal,
         calibration_max_model_len=_optional_int(data.get("calibration_max_model_len")),
         calibration_max_num_seqs=_optional_int(data.get("calibration_max_num_seqs")),

@@ -317,6 +317,28 @@ def test_calibrated_profile_survives_restart():
     assert profile.engine == "vllm"
 
 
+def test_a_live_load_leaves_a_pinned_base_and_its_source_alone():
+    registry = ModelProfileRegistry(model_profile_overrides={"org/model": {"base_residency_mb": 7500.0}})
+    registry.seed_capabilities(["org/model"])
+
+    registry.record_loaded_vram("org/model", 9000.0, engine="vllm", kv_cache_sent_mb=2000.0)
+
+    profile = registry.get_profile("org/model")
+    assert profile.base_residency_mb == pytest.approx(7500.0)
+    assert profile.residency_source is None
+
+
+def test_a_calibration_keeps_a_pinned_base_and_becomes_the_source():
+    registry = ModelProfileRegistry(model_profile_overrides={"org/model": {"base_residency_mb": 7500.0}})
+    registry.seed_capabilities(["org/model"])
+
+    registry.apply_calibration_result("org/model", {"base_residency_mb": 9000.0, "residency_source": "calibrated"})
+
+    profile = registry.get_profile("org/model")
+    assert profile.base_residency_mb == pytest.approx(7500.0)
+    assert profile.residency_source == "calibrated"
+
+
 def test_calibrated_profile_not_overwritten_by_subsequent_load():
     """After calibration, a real load leaves the base and its source alone."""
 
@@ -502,7 +524,7 @@ def test_seed_capabilities_applies_manual_overrides():
     profile = registry.get_profile("org/model")
     assert profile.base_residency_mb == pytest.approx(6000.0)
     assert profile.tensor_parallel_size == 2
-    assert profile.residency_source == "override"
+    assert profile.residency_source is None
 
 
 # ---------------------------------------------------------------------------
@@ -520,7 +542,7 @@ def test_manual_override_base_residency():
 
     profile = registry.get_profile("org/model")
     assert profile.base_residency_mb == pytest.approx(7500.0)
-    assert profile.residency_source == "override"
+    assert profile.residency_source is None
 
 
 # ---------------------------------------------------------------------------
@@ -585,7 +607,7 @@ def test_apply_hf_precheck_respects_manual_override():
 
     profile = registry.get_profile("org/model")
     assert profile.base_residency_mb == pytest.approx(7500.0)
-    assert profile.residency_source == "override"
+    assert profile.residency_source is None
     # kv_per_token_bytes has no override, so the HF value still lands.
     assert profile.kv_per_token_bytes == 1024
 
@@ -1241,7 +1263,7 @@ def test_a_local_calibration_awaits_its_snapshot_until_logos_links_it():
 
 def test_a_new_record_field_reaches_the_dict_and_comes_back():
     record = ModelProfileRecord(
-        base_residency_mb=5.0, residency_source="override", calibration_max_model_len=4096, host_ram_mb=7.0
+        base_residency_mb=5.0, residency_source="hf", calibration_max_model_len=4096, host_ram_mb=7.0
     )
     echoed = record.to_dict()
     assert set(echoed) == {field.name for field in fields(ModelProfileRecord)}
@@ -1323,7 +1345,7 @@ def test_a_removed_residency_override_restores_the_stored_source_too():
         base_residency_mb=9000.0, residency_source="calibrated"
     )  # noqa: SLF001
     registry.add_overrides({"m": {"base_residency_mb": 500.0}})
-    assert registry.get_profile("m").residency_source == "override"
+    assert registry.get_profile("m").residency_source == "calibrated"
 
     registry.replace_config_overrides({}, {"m": {"base_residency_mb": 9000.0, "residency_source": "calibrated"}})
 

@@ -232,7 +232,7 @@ def test_an_automatic_model_carries_what_the_worker_will_choose_from_its_calibra
         provider_id=1,
         config={"revision": 1, "entries": [placed]},
         sources={},
-        profiles={"org/placed": calibrated, "org/auto": calibrated, "org/none": {"residency_source": "cached"}},
+        profiles={"org/placed": calibrated, "org/auto": calibrated, "org/none": {"residency_source": None}},
         calibrated_at={},
         snapshot={"capabilities_models": ["org/auto", "org/none"], "configured_models": [], "runtime": {}},
         supports={},
@@ -253,7 +253,7 @@ def test_an_automatic_model_carries_what_the_worker_will_choose_from_its_calibra
 
 
 def test_only_a_calibrated_profile_counts_as_calibrated():
-    view = calibration_view({"residency_source": "override", "tensor_parallel_size": 1, "base_residency_mb": 9.0})
+    view = calibration_view({"residency_source": "hf", "tensor_parallel_size": 1, "base_residency_mb": 9.0})
 
     assert view["status"] == "not_calibrated"
     assert view["results"] == []

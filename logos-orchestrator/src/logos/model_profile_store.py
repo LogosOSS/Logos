@@ -93,10 +93,8 @@ def profile_needs_calibration(profile: Mapping[str, Any] | None) -> bool:
         and min_kv == max_kv
     )
     return (
-        profile.get("base_residency_mb") is None
-        # An HF estimate is no measurement; the worker keeps such a model a
-        # candidate, so a session must start for it too.
-        or profile.get("residency_source") == "hf"
+        # Only a calibration counts; anything else stays a candidate.
+        profile.get("residency_source") != "calibrated"
         or (not sleep_na and profile.get("sleeping_residual_mb") is None)
         or (not sleep_na and profile.get("sleep_l1_transient_host_ram_mb") is None)
         or (profile.get("residency_source") == "calibrated" and not profile.get("kv_cache_to_max_model_len_pairs"))

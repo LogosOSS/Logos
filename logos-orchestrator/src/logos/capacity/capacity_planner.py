@@ -4505,11 +4505,11 @@ class CapacityPlanner:
             else:
                 needed_mb = 0.0
         else:
-            # Never-calibrated on a non-Metal provider can't actually load
-            # here (see _load_requires_calibration) — mark infeasible before
+            # A model never calibrated here can't actually load
+            # (see _load_requires_calibration) — mark infeasible before
             # it wins the ranking on a falsely cheap 4096 MB guess, leaving
             # every provider that could serve it deferring to a dead end.
-            if self._load_requires_calibration(profile, provider_id):
+            if self._load_requires_calibration(profile):
                 return None
             target_cost = self.TARGET_ACTION_COST_S["load"]
             # Cold-load VRAM need = full base_residency (with KV+TP if profile knows).
@@ -5536,9 +5536,9 @@ class CapacityPlanner:
             # The contention branch below skips _passes_minimum_load_
             # feasibility entirely (see its own comment), so gate
             # calibration here instead, before the if/else split.
-            if self._load_requires_calibration(profile, provider_id):
+            if self._load_requires_calibration(profile):
                 logger.info(
-                    "Skipping load of %s on worker=%s: never calibrated here " "and not a Metal/MLX provider",
+                    "Skipping load of %s on worker=%s: never calibrated here",
                     model_name,
                     self._facade.get_provider_name(provider_id) or provider_id,
                 )
@@ -6330,9 +6330,9 @@ class CapacityPlanner:
             if capacity is None:
                 return False
 
-        if self._load_requires_calibration(profile, provider_id):
+        if self._load_requires_calibration(profile):
             logger.info(
-                "ensure_capacity worker=%s model=%s: refusing — never calibrated " "on this (non-Metal) provider",
+                "ensure_capacity worker=%s model=%s: refusing — never calibrated here",
                 self._facade.get_provider_name(provider_id) or provider_id,
                 target.model_name,
             )
@@ -7522,21 +7522,10 @@ class CapacityPlanner:
         devices = runtime.get("devices") if isinstance(runtime, dict) else None
         return isinstance(devices, dict) and devices.get("mode") == "metal"
 
-    def _load_requires_calibration(
-        self,
-        profile: Optional[ModelProfile],
-        provider_id: Optional[int],
-    ) -> bool:
-        """True when this profile must not be used to load a lane.
-
-        No profile at all always fails, even on Metal — only an override
-        profile is exempt there, not having nothing (see load_lane_manually).
-        """
-        if profile is None:
-            return True
-        if profile.residency_source == "calibrated":
-            return False
-        return not (profile.residency_source == "override" and self._provider_is_metal(provider_id))
+    @staticmethod
+    def _load_requires_calibration(profile: Optional[ModelProfile]) -> bool:
+        """True unless the profile is a calibration."""
+        return profile is None or profile.residency_source != "calibrated"
 
     def _passes_minimum_load_feasibility(
         self,
@@ -7549,8 +7538,7 @@ class CapacityPlanner:
         """Quick gate before emitting a planner-initiated load action.
 
         Refuses outright when the model has never been calibrated on this
-        node and the provider is not Metal/MLX, and refuses a missing
-        profile outright too, even on Metal — see
+        node, and a missing profile too — see
         _load_requires_calibration. Past that gate, base_residency comes
         from the profile itself, never guessed at from the model's name.
 
@@ -7569,10 +7557,9 @@ class CapacityPlanner:
         if available_mb <= 0:
             return False
 
-        if self._load_requires_calibration(profile, provider_id):
+        if self._load_requires_calibration(profile):
             logger.info(
-                "Feasibility FAILED for %s: never calibrated on worker=%s and "
-                "not a Metal/MLX provider — calibrate it before loading",
+                "Feasibility FAILED for %s: never calibrated on worker=%s — calibrate it before loading",
                 model_name,
                 provider_id,
             )
@@ -8194,7 +8181,7 @@ class CapacityPlanner:
             return "No capacity information for this provider yet; its free VRAM is unknown."
         if model_name is not None:
             profile = self._safe_get_profiles(provider_id).get(model_name)
-            if self._load_requires_calibration(profile, provider_id):
+            if self._load_requires_calibration(profile):
                 return (
                     f"Model {model_name!r} has never been calibrated on this " "provider; calibrate it before loading."
                 )

@@ -61,7 +61,7 @@ Feasibility FAILED for <model>: no calibrated KV point serves the required minim
 
 The first line is temporary. It goes away when VRAM becomes free. The second line does not go away. No calibrated point on that node reaches the floor at any KV size. Do one of these actions: decrease `min_context_fraction` for that model, or re-calibrate the model.
 
-The floor never blocks a model with an unknown context length. The floor stops the planner from *choosing* a narrow window. It is not a gate on calibration. A separate gate does that: `_passes_minimum_load_feasibility` refuses to load a model that was never calibrated on that node. The exception is a Metal/MLX provider. A Metal/MLX provider uses override profiles from the operator, because calibration is not possible there by design.
+The floor never blocks a model with an unknown context length. The floor stops the planner from *choosing* a narrow window. It is not a gate on calibration. A separate gate does that: `_passes_minimum_load_feasibility` refuses to load a model that was never calibrated on that node.
 
 ## 3. Context-Aware Routing
 

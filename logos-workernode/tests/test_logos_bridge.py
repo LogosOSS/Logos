@@ -1735,10 +1735,10 @@ def test_list_uncalibrated_skips_calibration_unsupported(tmp_path):
     assert client._list_uncalibrated_models() == ["good/model"]  # noqa: SLF001
 
 
-def test_list_uncalibrated_skips_sleep_disabled_models_already_measured(tmp_path):
-    """A model whose worker config forbids sleep and that already has
-    base_residency measured has nothing more to calibrate — the sleep
-    fields are N/A by design."""
+def test_list_uncalibrated_skips_sleep_disabled_models_already_calibrated(tmp_path):
+    """A model whose worker config forbids sleep and that is already
+    calibrated has nothing more to calibrate — the sleep fields are N/A
+    by design."""
     from logos_worker_node.model_profiles import ModelProfileRecord
 
     app = _make_app_for_calibration(tmp_path, vllm_disable_sleep=True)
@@ -1751,6 +1751,8 @@ def test_list_uncalibrated_skips_sleep_disabled_models_already_measured(tmp_path
     client = LogosBridgeClient(app, cfg)
     app.state.model_profiles._profiles["openai/gpt-oss-120b"] = ModelProfileRecord(
         base_residency_mb=91203.0,
+        residency_source="calibrated",
+        kv_cache_to_max_model_len_pairs=[{"kv_mb": 1.0, "max_model_len": 2}],
         sleep_mode_disabled=True,
     )
 

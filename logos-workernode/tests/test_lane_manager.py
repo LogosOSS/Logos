@@ -3591,7 +3591,9 @@ def test_model_overrides_profile_keys_are_routed_to_registry() -> None:
     snapshot — even when the profile record already exists (calibrated model).
     """
     registry = ModelProfileRegistry()
-    registry.record_loaded_vram("org/model-27b", 50000.0, engine="vllm", kv_cache_sent_mb=8000.0)
+    registry.replace_from_sync(
+        {"org/model-27b": {"base_residency_mb": 42000.0, "residency_source": "calibrated", "engine": "vllm"}}
+    )
     manager = LaneManager(
         WorkerConfig(),
         VllmEngineConfig(
