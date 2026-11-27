@@ -27,7 +27,7 @@ This option updates the central Dev server and leaves the GPU worker unchanged. 
 ## Deployment credentials
 
 Store each host's credentials in its `.env` file.
-Core hosts need the database, Redis, internal-service, repository, optional agent, Keycloak sync, metrics, and Hugging Face credentials.
+Core hosts need the database, Valkey, internal-service, repository, optional agent, Keycloak sync, metrics, and Hugging Face credentials.
 A core host with a deployer also needs `LOGOS_DEPLOYER_KEY`.
 Worker hosts need only `LOGOS_API_KEY` in `.env`.
 The worker obtains its Hugging Face token from the orchestrator when it starts.
@@ -60,8 +60,15 @@ Prefer `\password`: it keeps the cleartext value out of command history and SQL 
 See the [PostgreSQL password instructions](https://www.postgresql.org/docs/17/sql-alterrole.html).
 Do not delete the volume to change its password.
 
-Redis uses `requirepass`. The web service and Redis health check use the same `LOGOS_REDIS_PASSWORD`.
-To change the Redis password, update `.env`, then recreate Redis and the web service together.
+Valkey uses `requirepass`. The web service and the Valkey health check use the same `LOGOS_REDIS_PASSWORD`.
+To change the Valkey password, update `.env`, then recreate Valkey and the web service together.
+
+On upgrade from Redis, the core deployment replaces the existing `logos-redis` container in place. Keep the
+existing credentials and Compose project. No backup or import of shared state is necessary: the service
+does not write snapshots or an append-only file. The cache restart clears up to 60 seconds of rate-limit
+history. Requests with a configured limit can temporarily return HTTP 503 while the store is unavailable.
+Live notification pushes between replicas can pause; the persisted inbox remains available. To roll back,
+deploy the previous Logos release with its matching Compose file and the same credentials.
 
 ## Residency policy
 
@@ -118,7 +125,7 @@ It also enables `no-new-privileges`.
 Traefik and the agent runner still mount the host's Docker socket.
 These restrictions do not limit Docker API access through that socket.
 A socket proxy needs a separate design and deployment change.
-PostgreSQL, Redis, nginx, and GPU worker images retain their existing startup users and capabilities.
+PostgreSQL, Valkey, nginx, and GPU worker images use their own startup users and capabilities.
 
 ## Images and Registry
 
@@ -878,7 +885,7 @@ On every deploy, the deploy workflows (`logos_deploy-{dev,test,prod}.yml`) scale
 to this count automatically. The default is **1** when `.env` does not set
 `LOGOS_WEBSERVICE_REPLICAS`. More replicas hide crashes and routine deploys from
 the inference gateway. Cloud RPM and TPM stay shared across replicas through
-Redis (see the options below). Set the count in the `.env` of the core node:
+Valkey (see the options below). Set the count in the `.env` of the core node:
 
 ```bash
 # in the .env next to docker-compose.yaml
@@ -909,12 +916,12 @@ cache stay per-instance state (see `gateway/InferenceGatewayController`).
 Optional `.env` options:
 
 - `LOGOS_WEBSERVICE_REPLICAS` (default `1`) — the number of webservice replicas
-  for the core `docker-compose.yaml`. Redis (`logos-redis`, sliding 60 s window)
+  for the core `docker-compose.yaml`. Valkey (`logos-redis`, sliding 60 s window)
   enforces cloud RPM and TPM, and all replicas share the limits.
 - `REDIS_HOST` / `REDIS_PORT` (default `logos-redis` / `6379` in compose) —
   the shared rate-limit store for the inference gateway. It is ephemeral. A
-  Redis restart clears the window (the limits reset for up to 60 s). If a per-key
-  limit is set and Redis is not reachable, then cloud admission fails closed
+  Valkey restart clears the window (the limits reset for up to 60 s). If a per-key
+  limit is set and Valkey is not reachable, then cloud admission fails closed
   (503).
 - `LOGOS_GATEWAY_ENABLED` (default `true`) — if the value is `false`, the gateway
   still accepts the public paths. It proxies every request to the orchestrator
@@ -1026,7 +1033,7 @@ variables:
 | `LOGOS_DOMAIN` | the core node's fully qualified domain | — |
 | `ACME_EMAIL` | the Let's Encrypt contact address | — |
 | `LOGOS_DB_PASSWORD` | required — PostgreSQL password; see Data service passwords above | — |
-| `LOGOS_REDIS_PASSWORD` | required — Redis password | — |
+| `LOGOS_REDIS_PASSWORD` | required — Valkey password (legacy key name) | — |
 | `LOGOS_INTERNAL_SECRET` | a strong random string — the shared secret between web service and orchestrator | — |
 | `KEYCLOAK_ISSUER_URI` | your identity provider's issuer (`https://<idp>/realms/<realm>`) | — |
 | `PROMETHEUS_API_KEY` | optional — gates `/metrics`; unset denies all | — |

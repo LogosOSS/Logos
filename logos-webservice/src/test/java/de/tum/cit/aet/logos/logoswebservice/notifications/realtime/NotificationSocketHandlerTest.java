@@ -111,7 +111,7 @@ class NotificationSocketHandlerTest {
     }
 
     @Test
-    void fanoutEventSurvivesTheRedisJsonRoundTrip() throws Exception {
+    void fanoutEventSurvivesThePubSubJsonRoundTrip() throws Exception {
         NotificationEvent sent = event(7);
         NotificationEvent received = objectMapper.readValue(objectMapper.writeValueAsString(sent), NotificationEvent.class);
         assertThat(received.notificationId()).isEqualTo(7L);

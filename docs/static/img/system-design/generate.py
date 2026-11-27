@@ -224,7 +224,7 @@ def top_level():
     s.comp(720, 430, 270, 190, "«component»", "Webservice", "Spring Boot")
     s.badge(734, 442, "× N")
     s.comp(1270, 430, 250, 190, "«component»", "Orchestrator", "FastAPI", name_size=f + 3)
-    s.comp(645, 730, 230, 90, "«component»", "Shared State", "Redis")
+    s.comp(645, 730, 230, 90, "«component»", "Shared State", "Valkey")
     s.comp(1010, 730, 230, 90, "«component»", "Database", "PostgreSQL")
     # Interfaces: ball = provided, socket = required
     s.iface(275, 490, ["Management", "API"], 282, 434)
