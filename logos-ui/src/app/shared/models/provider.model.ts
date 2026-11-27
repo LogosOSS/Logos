@@ -222,3 +222,22 @@ export interface UpdateProviderPayload {
   privacy_level?: PrivacyLevel;
   eu_processing_verified?: boolean;
 }
+
+export interface ProviderSpendPolicy {
+  enabled: boolean;
+  effective_month: string;
+  limit_usd: number | string | null;
+}
+
+/** The UTC calendar month's settled charges and outstanding reservations. */
+export interface ProviderSpendStatus {
+  current: ProviderSpendPolicy | null;
+  scheduled: ProviderSpendPolicy | null;
+  charged_usd: number | string;
+  reserved_usd: number | string;
+  bound_violation: boolean;
+  /** Older API responses do not report which deployments can be bounded. */
+  bounded_deployments?: number;
+}
+
+export type ProviderSpendChange = { enabled: false } | { enabled: true; limit_usd: string };

@@ -428,19 +428,25 @@ Expand a provider for its connected models, or for the worker control actions
 
 ### Schedule a monthly cloud spend cap
 
-A Logos administrator can read or change a cloud provider's policy at
-`/logosdb/providers/{providerId}/monthly-spend-cap` (GET or PUT). Use the
-provider record ID, not the vendor's account ID. To schedule a policy, send:
+1. Expand a cloud provider in **Providers**.
+2. In **Monthly spend cap**, select **Edit spend cap**.
+3. Select **Enable cap next month** and enter the **Monthly maximum (USD)**.
+4. Select **Schedule change**.
 
-```json
-{"enabled": true, "limit_usd": 400}
-```
+To remove the cap, clear **Enable cap next month** before you schedule the change.
+All changes take effect at the start of the next UTC calendar month.
+A limit of $0 blocks new billable requests through Logos.
 
-`limit_usd` is the maximum spend as priced by Logos. Use `{"enabled": false}`
-to schedule removal. New policies take effect on the first day of the next
-UTC calendar month. GET shows current and scheduled configuration, posted
-charges and outstanding reservations. A failed cost-bound check freezes
-admission for the remainder of that month.
+The section shows the current limit, the next change, settled charges, and outstanding reservations.
+The cap applies only to spend that Logos tracks for the provider during a capped month.
+If an upstream charge exceeds its reservation, Logos stops new billable requests to that provider for that month.
+
+![Monthly spend cap editor for a cloud provider](/img/roles/logos-admin-provider-spend-cap.png)
+
+The administrator API also accepts GET and PUT at `/logosdb/providers/{providerId}/monthly-spend-cap`.
+Use the provider record ID, not the vendor account ID.
+To schedule a limit, send `{"enabled": true, "limit_usd": "400"}`.
+To schedule removal, send `{"enabled": false}`.
 
 Logos reserves the maximum charge before each upstream attempt. Reported
 complete usage replaces the reservation. If Logos cannot tell whether an
@@ -448,11 +454,9 @@ attempt billed, it keeps the reservation in the original month. When the
 remaining allowance cannot cover a reservation, the request gets HTTP 402
 without reaching the provider.
 
-With a cap enabled, only plain-text requests to supported versioned models on
-the official OpenAI and Anthropic endpoints can be reserved. They require an
-explicit output token limit. Unsupported requests get HTTP 422; this also
-prevents new provider-native batches, file uploads and cloud benchmark jobs
-from bypassing the cap. The Logos-managed batch uses the same inference cap.
+An active cap permits only plain-text requests to deployments with a verified cost bound.
+Each request needs an explicit output token limit. If there is no verified bound, Logos rejects the request with HTTP 422.
+This rule also applies to new provider-native batches, file uploads and cloud benchmark jobs. The Logos-managed batch uses the same inference cap.
 Previously admitted provider-native work, requests sent outside Logos and
 vendor invoice adjustments are not included.
 

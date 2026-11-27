@@ -1,0 +1,90 @@
+<section class="spend-cap" aria-label="Monthly spend cap">
+  <div class="heading">
+    <h3>Monthly spend cap</h3>
+    @if (status() && !editing()) {
+      <button type="button" class="btn-secondary" (click)="edit()">Edit spend cap</button>
+    }
+  </div>
+
+  @if (loading()) {
+    <p role="status">Loading spend cap…</p>
+  } @else if (loadFailed()) {
+    <p role="alert">Could not load the spend cap.</p>
+    <button type="button" class="btn-secondary" (click)="load()">Retry</button>
+  } @else if (status(); as details) {
+    <dl class="totals">
+      <div>
+        <dt>Current limit</dt>
+        <dd>
+          @if (details.current?.enabled) {
+            {{ usdLabel(details.current.limit_usd) }}
+          } @else { No cap }
+        </dd>
+      </div>
+      <div>
+        <dt>Charged this month</dt>
+        <dd>{{ usdLabel(details.charged_usd) }}</dd>
+      </div>
+      <div>
+        <dt>Reserved this month</dt>
+        <dd>{{ usdLabel(details.reserved_usd) }}</dd>
+      </div>
+    </dl>
+    @if (details.scheduled; as scheduled) {
+      <p>
+        <strong>Scheduled for {{ (scheduled.effective_month + 'T00:00:00Z') | date:'MMMM d, y':'UTC' }} (UTC):</strong>
+        @if (scheduled.enabled) {
+          {{ usdLabel(scheduled.limit_usd) }} limit
+        } @else {
+          Remove cap
+        }
+      </p>
+    }
+    @if (details.bound_violation && details.current?.enabled) {
+      <p class="warning" role="alert">An upstream charge exceeded its reservation. This provider cannot accept new billable requests through Logos this month.</p>
+    }
+    @if (details.bounded_deployments === 0) {
+      <p class="warning">No deployments have a verified cost bound. An active cap blocks billable requests until a bound is verified.</p>
+    } @else if (details.bounded_deployments != null) {
+      <p class="hint">Verified cost bounds: {{ details.bounded_deployments }} {{ details.bounded_deployments === 1 ? 'deployment' : 'deployments' }}. While a cap is active, Logos blocks requests it cannot bound.</p>
+    }
+
+    @if (editing()) {
+      <form class="editor" (submit)="$event.preventDefault(); save()">
+        <fieldset [disabled]="saving()">
+          <legend>Schedule a change</legend>
+          <label class="option">
+            <input type="checkbox" [checked]="enabled()" (change)="enabled.set($any($event.target).checked)" />
+            Enable cap next month
+          </label>
+          @if (enabled()) {
+            <label class="amount">
+              Monthly maximum (USD)
+              <input type="text" inputmode="decimal" [value]="limit()" [attr.aria-invalid]="limit().trim() && !limitValid() ? 'true' : null"
+                (input)="limit.set($any($event.target).value)" placeholder="400.00" autocomplete="off" />
+            </label>
+            @if (limit().trim() && !limitValid()) {
+              <p class="warning">Enter a nonnegative USD amount with up to 8 decimals.</p>
+            }
+            <p class="hint">A $0 limit blocks new billable requests through Logos.</p>
+          } @else {
+            <p class="hint">Logos removes the cap at the start of next month.</p>
+          }
+          <p class="hint">Changes take effect at the start of the next UTC calendar month.</p>
+          <div class="actions">
+            <button type="submit" class="btn-primary" [disabled]="enabled() && !limitValid()">
+              {{ saving() ? 'Scheduling…' : 'Schedule change' }}
+            </button>
+            <button type="button" class="btn-secondary" (click)="cancel()">Cancel</button>
+          </div>
+        </fieldset>
+        @if (saveFailed()) {
+          <p role="alert">Could not schedule the change. Try again.</p>
+        }
+      </form>
+    }
+    @if (saved()) {
+      <p role="status">Spend cap change scheduled.</p>
+    }
+  }
+</section>
