@@ -82,12 +82,19 @@ class AgentInferenceRelayTest {
             CREATE TYPE cloud_provider_type_enum AS ENUM ('openai', 'anthropic', 'logos');
             CREATE TABLE providers(id integer primary key, base_url text, api_key text,
                                    provider_type text, cloud_provider_type cloud_provider_type_enum,
-                                   auth_name text, auth_format text);
+                                   auth_name text, auth_format text, privacy_level text);
+            CREATE TABLE teams(id integer primary key, privacy_scope text);
+            CREATE TABLE team_repositories(id integer primary key, team_id integer, agent_enabled boolean, repo_slug text);
+            CREATE VIEW team_privacy_providers AS
+            SELECT t.id AS team_id, p.id AS provider_id FROM teams t CROSS JOIN providers p
+              WHERE t.privacy_scope='WORLDWIDE' OR
+                (t.privacy_scope='EU' AND p.privacy_level IN ('CLOUD_IN_EU_BY_EU_PROVIDER','CLOUD_IN_EU_BY_US_PROVIDER'));
             CREATE TABLE models(id integer primary key, name text);
             CREATE TABLE model_provider(provider_id integer, model_id integer, api_key text,
                                         primary key(provider_id, model_id));
             CREATE TABLE agent_sessions(id bigint primary key, status text, error text, inference_grant_hash text UNIQUE,
-                                        inference_client_tag text, inference_provider_id integer, inference_model_id integer, model text);
+                                        inference_client_tag text, inference_provider_id integer, inference_model_id integer, model text,
+                                        team_repository_id integer REFERENCES team_repositories ON DELETE SET NULL, repo_slug text);
             """);
         Path storePath = tmp.resolve("loopback.p12");
         var keytool = new ProcessBuilder(Path.of(System.getProperty("java.home"), "bin", "keytool").toString(),
@@ -155,11 +162,11 @@ class AgentInferenceRelayTest {
 
     @BeforeEach
     void seed() {
-        db.execute("TRUNCATE agent_sessions, model_provider, models, providers");
-        db.update("INSERT INTO providers VALUES (3, ?, 'wrong-provider-key', 'cloud', 'logos', 'Authorization', 'Bearer {}')", allowedOrigin);
+        db.execute("TRUNCATE agent_sessions, model_provider, models, providers, team_repositories, teams");
+        db.update("INSERT INTO providers VALUES (3, ?, 'wrong-provider-key', 'cloud', 'logos', 'Authorization', 'Bearer {}', 'CLOUD_IN_EU_BY_EU_PROVIDER')", allowedOrigin);
         db.update("INSERT INTO models VALUES (4, 'claude-test')");
         db.update("INSERT INTO model_provider VALUES (3, 4, ?)", PROVIDER_KEY);
-        db.update("INSERT INTO agent_sessions VALUES (2, 'starting', null, ?, null, 3, 4, 'claude-test')", HASH);
+        db.update("INSERT INTO agent_sessions VALUES (2, 'starting', null, ?, null, 3, 4, 'claude-test', null, null)", HASH);
         MODE.set("ok");
         SEEN.set(null);
         CALLS.set(0);
@@ -255,8 +262,44 @@ class AgentInferenceRelayTest {
             .isInstanceOf(IllegalArgumentException.class);
     }
 
+    private void linkRepository() {
+        db.update("INSERT INTO teams VALUES (6, 'EU')");
+        db.update("INSERT INTO team_repositories VALUES (7, 6, true, 'Example/Repo')");
+        db.update("UPDATE agent_sessions SET team_repository_id=7, repo_slug='example/repo' WHERE id=2");
+    }
+
+    @Test
+    void checksLiveRepositoryAndExactProviderPrivacy() throws Exception {
+        linkRepository();
+        var result = mvc.perform(relayRequest(MESSAGES, JSON)).andExpect(request().asyncStarted()).andReturn();
+        mvc.perform(asyncDispatch(result)).andExpect(status().isOk());
+        db.update("UPDATE teams SET privacy_scope='LOCAL' WHERE id=6");
+        mvc.perform(relayRequest(MESSAGES, JSON)).andExpect(status().isForbidden());
+        db.update("UPDATE teams SET privacy_scope='EU' WHERE id=6");
+        db.update("UPDATE providers SET privacy_level='CLOUD_NOT_IN_EU_BY_US_PROVIDER' WHERE id=3");
+        mvc.perform(relayRequest(MESSAGES, JSON)).andExpect(status().isForbidden());
+        db.update("UPDATE providers SET privacy_level='CLOUD_IN_EU_BY_EU_PROVIDER' WHERE id=3");
+        db.update("UPDATE team_repositories SET repo_slug='example/other' WHERE id=7");
+        mvc.perform(relayRequest(MESSAGES, JSON)).andExpect(status().isForbidden());
+        db.update("UPDATE team_repositories SET repo_slug='Example/Repo', agent_enabled=false WHERE id=7");
+        mvc.perform(relayRequest(MESSAGES, JSON)).andExpect(status().isForbidden());
+        db.update("DELETE FROM team_repositories WHERE id=7");
+        mvc.perform(relayRequest(MESSAGES, JSON)).andExpect(status().isForbidden());
+        assertThat(CALLS).hasValue(1);
+    }
+
+    @Test
+    void closesAnAlreadyStartedStreamIfTheTeamRevokesRemoteProcessing() throws Exception {
+        linkRepository();
+        assertIdleStreamClosedBy(() -> db.update("UPDATE teams SET privacy_scope='LOCAL' WHERE id=6"));
+    }
+
     @Test
     void relaysStreamBeforeEofAndClosesIdleReadWhenSessionPauses() throws Exception {
+        assertIdleStreamClosedBy(() -> db.update("UPDATE agent_sessions SET status='paused' WHERE id=2"));
+    }
+
+    private void assertIdleStreamClosedBy(Runnable revoke) throws Exception {
         MODE.set("hold");
         var input = new MockHttpServletRequest("POST", MESSAGES);
         input.addHeader("Authorization", "Bearer " + GRANT);
@@ -282,7 +325,7 @@ class AgentInferenceRelayTest {
                 assertThat(gotChunk.await(3, TimeUnit.SECONDS)).isTrue();
                 assertThat(out.toString(StandardCharsets.UTF_8)).isEqualTo(EVENT);
                 assertThat(writing.isDone()).isFalse();
-                db.update("UPDATE agent_sessions SET status='paused' WHERE id=2");
+                revoke.run();
                 relay.closeInactive();
                 writing.get(3, TimeUnit.SECONDS);
                 assertThat(capacity.inFlight()).isZero();

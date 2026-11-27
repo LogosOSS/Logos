@@ -48,6 +48,18 @@ final class AgentInferenceRelay {
         )
         """;
 
+    private static final String TEAM_SCOPE = """
+        (
+            (s.team_repository_id IS NULL AND s.repo_slug IS NULL)
+            OR EXISTS (
+                SELECT 1 FROM team_repositories tr
+                JOIN team_privacy_providers pp ON pp.team_id = tr.team_id AND pp.provider_id = s.inference_provider_id
+                WHERE tr.id = s.team_repository_id AND tr.agent_enabled = TRUE
+                  AND LOWER(tr.repo_slug) = LOWER(s.repo_slug)
+            )
+        )
+        """;
+
     record Grant(long sessionId, String hash, String tag, int providerId, int modelId, String model,
                  URI origin, String operatingKey) {
         // Do not expose credential-bearing record component values in logging.
@@ -112,7 +124,9 @@ final class AgentInferenceRelay {
                 """ + ACTIVE, identity);
             return jdbc.query("""
                 SELECT s.id, s.inference_provider_id, m.id AS inference_model_id, m.name, p.base_url,
-                       COALESCE(NULLIF(mp.api_key, ''), p.api_key, '') AS operating_key
+                       COALESCE(NULLIF(mp.api_key, ''), p.api_key, '') AS operating_key,
+                """ + TEAM_SCOPE + """
+                       AS privacy_permitted
                 FROM agent_sessions s
                 JOIN models m ON m.id = s.inference_model_id AND m.name = s.model
                 JOIN providers p ON p.id = s.inference_provider_id
@@ -121,6 +135,9 @@ final class AgentInferenceRelay {
                     AND
                 """ + REMOTE_SCOPE + " AND " + ACTIVE, identity, rs -> {
                     if (!rs.next()) throw denied();
+                    if (!rs.getBoolean("privacy_permitted")) {
+                        throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Agent repository privacy does not allow remote inference");
+                    }
                     URI destination;
                     try {
                         destination = origin(rs.getString("base_url"));
@@ -194,7 +211,7 @@ final class AgentInferenceRelay {
                                       AND mp.model_id = s.inference_model_id
                 JOIN providers p ON p.id = s.inference_provider_id
                 WHERE s.id IN (:sessions) AND
-                """ + REMOTE_SCOPE + " AND " + ACTIVE, Map.of("sessions", sessions), rs -> {
+                """ + REMOTE_SCOPE + " AND " + ACTIVE + " AND " + TEAM_SCOPE, Map.of("sessions", sessions), rs -> {
                     long id = rs.getLong("id");
                     try {
                         valid.put(id, new Scope(rs.getString("inference_grant_hash"),
