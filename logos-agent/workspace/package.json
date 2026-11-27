@@ -2,7 +2,7 @@
   "name": "logos-agent-workspace-tools",
   "private": true,
   "dependencies": {
-    "@anthropic-ai/claude-code": "2.1.326",
+    "@anthropic-ai/claude-code": "2.1.331",
     "playwright": "1.65.1"
   }
 }
