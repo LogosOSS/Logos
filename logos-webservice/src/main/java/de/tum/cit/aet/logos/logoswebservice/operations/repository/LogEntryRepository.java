@@ -446,7 +446,7 @@ public interface LogEntryRepository extends JpaRepository<LogEntry, Integer> {
                     THEN COALESCE(NULLIF(k.environment, '-'), NULLIF(le.environment, '-'))
                     ELSE NULLIF(le.environment, '-')
                END AS environment,
-               (le.benchmark_job_id IS NOT NULL) AS benchmark,
+               logos_stats_is_internal_benchmark(le) AS benchmark,
                tk.prompt_tokens AS promptTokens,
                tk.estimated_prompt_tokens AS estimatedPromptTokens,
                tk.completion_tokens AS completionTokens,
@@ -1356,9 +1356,12 @@ public interface LogEntryRepository extends JpaRepository<LogEntry, Integer> {
         WITH w AS (SELECT * FROM logos_stats_rollup_window(:start, :end, :useRollup AND CAST(:apiKeyId AS INTEGER) IS NULL)),
         parts AS (
             SELECT to_timestamp(FLOOR(EXTRACT(EPOCH FROM s.bucket_hour) / :bucketSec) * :bucketSec) AS bucket_ts,
-                   s.provider_id, s.requests, s.run_seconds_sum, s.run_seconds_count
+                   s.provider_id, s.requests - s.benchmark_requests AS requests,
+                   s.run_seconds_sum - s.benchmark_run_seconds_sum AS run_seconds_sum,
+                   s.run_seconds_count - s.benchmark_run_seconds_count AS run_seconds_count
             FROM log_entry_hourly_stats s
-            WHERE s.bucket_hour >= (SELECT mv_lo FROM w) AND s.bucket_hour < (SELECT mv_hi FROM w)
+            WHERE s.requests > s.benchmark_requests
+              AND s.bucket_hour >= (SELECT mv_lo FROM w) AND s.bucket_hour < (SELECT mv_hi FROM w)
               AND (CAST(:userId AS INTEGER) IS NULL OR s.user_id = CAST(:userId AS INTEGER))
               AND (CAST(:teamId AS INTEGER) IS NULL OR s.team_id = CAST(:teamId AS INTEGER))
               AND (CAST(:providerId AS INTEGER) IS NULL OR s.provider_id = CAST(:providerId AS INTEGER))
@@ -1375,7 +1378,8 @@ public interface LogEntryRepository extends JpaRepository<LogEntry, Integer> {
                    (COALESCE(le.timestamp_provider_call, le.timestamp_forwarding) IS NOT NULL
                     AND COALESCE(le.timestamp_provider_response, le.timestamp_response) IS NOT NULL)::int::bigint
             FROM log_entry le
-            WHERE COALESCE(le.timestamp_forwarding, le.timestamp_request, le.timestamp_response) BETWEEN :start AND :end
+            WHERE NOT logos_stats_is_internal_benchmark(le)
+              AND COALESCE(le.timestamp_forwarding, le.timestamp_request, le.timestamp_response) BETWEEN :start AND :end
               AND (COALESCE(le.timestamp_forwarding, le.timestamp_request, le.timestamp_response) <  (SELECT mv_lo FROM w)
                 OR COALESCE(le.timestamp_forwarding, le.timestamp_request, le.timestamp_response) >= (SELECT mv_hi FROM w))
               AND (CAST(:userId AS INTEGER) IS NULL OR le.user_id = CAST(:userId AS INTEGER))
@@ -1429,9 +1433,10 @@ public interface LogEntryRepository extends JpaRepository<LogEntry, Integer> {
         WITH w AS (SELECT * FROM logos_stats_rollup_window(:start, :end, :useRollup AND CAST(:apiKeyId AS INTEGER) IS NULL)),
         parts AS (
             SELECT to_timestamp(FLOOR(EXTRACT(EPOCH FROM s.bucket_hour) / :bucketSec) * :bucketSec) AS bucket_ts,
-                   s.model_id, s.model_name, s.requests
+                   s.model_id, s.model_name, s.requests - s.benchmark_requests AS requests
             FROM log_entry_hourly_stats s
-            WHERE s.bucket_hour >= (SELECT mv_lo FROM w) AND s.bucket_hour < (SELECT mv_hi FROM w)
+            WHERE s.requests > s.benchmark_requests
+              AND s.bucket_hour >= (SELECT mv_lo FROM w) AND s.bucket_hour < (SELECT mv_hi FROM w)
               -- Orphans (model deleted) carry the captured name instead; rows
               -- with neither never resolved to a model and stay out, as before.
               AND (s.model_id IS NOT NULL OR s.model_name IS NOT NULL)
@@ -1444,7 +1449,8 @@ public interface LogEntryRepository extends JpaRepository<LogEntry, Integer> {
             SELECT to_timestamp(FLOOR(EXTRACT(EPOCH FROM COALESCE(le.timestamp_forwarding, le.timestamp_request, le.timestamp_response)) / :bucketSec) * :bucketSec),
                    le.model_id, le.model_name, 1::bigint
             FROM log_entry le
-            WHERE COALESCE(le.timestamp_forwarding, le.timestamp_request, le.timestamp_response) BETWEEN :start AND :end
+            WHERE NOT logos_stats_is_internal_benchmark(le)
+              AND COALESCE(le.timestamp_forwarding, le.timestamp_request, le.timestamp_response) BETWEEN :start AND :end
               AND (COALESCE(le.timestamp_forwarding, le.timestamp_request, le.timestamp_response) <  (SELECT mv_lo FROM w)
                 OR COALESCE(le.timestamp_forwarding, le.timestamp_request, le.timestamp_response) >= (SELECT mv_hi FROM w))
               -- Orphans (model deleted) carry the captured name instead; rows

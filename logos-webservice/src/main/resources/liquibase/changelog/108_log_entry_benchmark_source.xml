@@ -15,4 +15,223 @@
             <dropColumn tableName="log_entry" columnName="benchmark_job_id"/>
         </rollback>
     </changeSet>
+    <!-- Only the signed benchmark endpoint sets the explicit marker. Before
+         that marker existed the same endpoint used this anonymous FULL log
+         shape. Keyed FULL proxy rows retain client_ip and headers, even if
+         their identities are later deleted. The Java gateway generates gw-
+         request IDs and batch settlement has its own service tier. No keyed
+         request is classified just because its environment has this name. -->
+    <changeSet id="108-stats-benchmark-provenance" author="logos">
+        <sql splitStatements="false"><![CDATA[
+            CREATE FUNCTION logos_stats_is_internal_benchmark(le log_entry)
+            RETURNS boolean
+            LANGUAGE sql IMMUTABLE PARALLEL SAFE
+            RETURN le.benchmark_job_id IS NOT NULL OR (
+                le.environment IS NOT DISTINCT FROM 'model-provider-benchmark'
+                AND le.api_key_id IS NULL AND le.team_id IS NULL AND le.user_id IS NULL
+                AND le.privacy_level IS NOT DISTINCT FROM 'FULL'
+                AND le.client_ip IS NULL AND le.headers IS NULL AND le.timeout_s IS NULL
+                AND le.service_tier IS DISTINCT FROM 'batch'
+                AND COALESCE(le.request_id ~ '^[A-Za-z0-9_-]{22}$', FALSE)
+            );
+        ]]></sql>
+        <rollback><sql>DROP FUNCTION logos_stats_is_internal_benchmark(log_entry);</sql></rollback>
+    </changeSet>
+
+    <!-- Store the exact contributions independently of the other aggregates.
+         Only Request volume consumes the exclusion. Bounded raw edges still
+         use the same provenance function and provider-time definition. -->
+    <changeSet id="108-stats-rollup-benchmark-volume" author="logos">
+        <sql splitStatements="false"><![CDATA[
+            -- Share the refresher's advisory lock across the storage change
+            -- and backfill so an old pass cannot overwrite newly computed data.
+            SELECT pg_advisory_xact_lock(1022035::bigint);
+
+            -- Discover benchmark hours before taking the rollup table's DDL
+            -- lock. Unaffected history already has a zero contribution.
+            CREATE TEMP TABLE stats_benchmark_rebuild_hours ON COMMIT DROP AS
+            SELECT DISTINCT date_trunc('hour', COALESCE(le.timestamp_forwarding,
+                                                        le.timestamp_request,
+                                                        le.timestamp_response)) AS bucket_hour
+            FROM log_entry le
+            WHERE (le.benchmark_job_id IS NOT NULL OR le.environment = 'model-provider-benchmark')
+              AND logos_stats_is_internal_benchmark(le)
+              AND COALESCE(le.timestamp_forwarding, le.timestamp_request, le.timestamp_response)
+                    < (SELECT date_trunc('hour', processed_through) FROM log_entry_rollup_state);
+
+            ALTER TABLE log_entry_hourly_stats
+                ADD COLUMN benchmark_requests bigint NOT NULL DEFAULT 0,
+                ADD COLUMN benchmark_run_seconds_sum double precision NOT NULL DEFAULT 0,
+                ADD COLUMN benchmark_run_seconds_count bigint NOT NULL DEFAULT 0;
+
+            CREATE OR REPLACE FUNCTION logos_stats_rollup_apply(p_hours timestamptz[])
+            RETURNS bigint
+            LANGUAGE plpgsql
+            SET search_path = public, pg_catalog
+            AS $$
+            DECLARE
+                affected bigint;
+            BEGIN
+                IF p_hours IS NULL OR array_length(p_hours, 1) IS NULL THEN
+                    RETURN 0;
+                END IF;
+
+                DELETE FROM log_entry_hourly_stats s
+                 WHERE s.bucket_hour = ANY (p_hours);
+
+                INSERT INTO log_entry_hourly_stats (
+                    bucket_hour, model_id, model_name, provider_id, team_id, user_id,
+                    result_status, was_cold_start, requests,
+                    queue_seconds_sum, queue_seconds_count,
+                    run_seconds_sum, run_seconds_count,
+                    error_count, total_tokens, cost_micro_cents,
+                    benchmark_requests, benchmark_run_seconds_sum, benchmark_run_seconds_count)
+                SELECT
+                    date_trunc('hour', COALESCE(le.timestamp_forwarding,
+                                                le.timestamp_request,
+                                                le.timestamp_response)),
+                    le.model_id,
+                    -- Keep 042's orphan-name grain: two deleted models must not
+                    -- collapse into one anonymous (NULL, NULL) bucket.
+                    CASE WHEN le.model_id IS NULL THEN le.model_name END,
+                    le.provider_id,
+                    le.team_id,
+                    le.user_id,
+                    le.result_status,
+                    COALESCE(le.was_cold_start, FALSE),
+                    COUNT(*),
+                    SUM(CASE WHEN le.timestamp_request IS NOT NULL
+                              AND COALESCE(le.timestamp_provider_call, le.timestamp_forwarding) IS NOT NULL
+                             THEN EXTRACT(EPOCH FROM (COALESCE(le.timestamp_provider_call, le.timestamp_forwarding)
+                                                     - le.timestamp_request))
+                        END),
+                    COUNT(*) FILTER (WHERE le.timestamp_request IS NOT NULL
+                                       AND COALESCE(le.timestamp_provider_call, le.timestamp_forwarding) IS NOT NULL),
+                    SUM(CASE WHEN COALESCE(le.timestamp_provider_call, le.timestamp_forwarding) IS NOT NULL
+                              AND COALESCE(le.timestamp_provider_response, le.timestamp_response) IS NOT NULL
+                             THEN EXTRACT(EPOCH FROM (COALESCE(le.timestamp_provider_response, le.timestamp_response)
+                                                     - COALESCE(le.timestamp_provider_call, le.timestamp_forwarding)))
+                        END),
+                    COUNT(*) FILTER (WHERE COALESCE(le.timestamp_provider_call, le.timestamp_forwarding) IS NOT NULL
+                                       AND COALESCE(le.timestamp_provider_response, le.timestamp_response) IS NOT NULL),
+                    COUNT(*) FILTER (WHERE le.result_status IS DISTINCT FROM 'success'
+                                        OR (le.error_message IS NOT NULL
+                                            AND le.error_message <> '')),
+                    COALESCE(SUM(tok.total_tokens), 0)::bigint,
+                    COALESCE(SUM(lec.cost_micro_cents), 0)::bigint,
+                    COUNT(*) FILTER (WHERE source.is_benchmark),
+                    COALESCE(SUM(EXTRACT(EPOCH FROM (
+                        COALESCE(le.timestamp_provider_response, le.timestamp_response) -
+                        COALESCE(le.timestamp_provider_call, le.timestamp_forwarding)
+                    ))) FILTER (WHERE source.is_benchmark), 0),
+                    COUNT(*) FILTER (WHERE source.is_benchmark
+                                        AND COALESCE(le.timestamp_provider_response, le.timestamp_response) IS NOT NULL
+                                        AND COALESCE(le.timestamp_provider_call, le.timestamp_forwarding) IS NOT NULL)
+                FROM (SELECT DISTINCT unnest(p_hours) AS bucket_hour) affected_hours
+                JOIN log_entry le
+                  ON COALESCE(le.timestamp_forwarding, le.timestamp_request, le.timestamp_response) >= affected_hours.bucket_hour
+                 AND COALESCE(le.timestamp_forwarding, le.timestamp_request, le.timestamp_response) < affected_hours.bucket_hour + interval '1 hour'
+                CROSS JOIN LATERAL (SELECT logos_stats_is_internal_benchmark(le) AS is_benchmark) source
+                LEFT JOIN LATERAL (
+                    SELECT SUM(ut.token_count) AS total_tokens
+                    FROM usage_tokens ut
+                    JOIN token_types tt ON tt.id = ut.type_id
+                    WHERE ut.log_entry_id = le.id
+                      AND tt.name = 'total_tokens'
+                ) tok ON TRUE
+                LEFT JOIN log_entry_cost lec ON lec.log_entry_id = le.id
+                GROUP BY 1, 2, 3, 4, 5, 6, 7, 8;
+
+                GET DIAGNOSTICS affected = ROW_COUNT;
+                RETURN affected;
+            END;
+            $$;
+        ]]></sql>
+        <sql splitStatements="false"><![CDATA[
+            SELECT logos_stats_rollup_apply(ARRAY(SELECT bucket_hour FROM stats_benchmark_rebuild_hours));
+        ]]></sql>
+        <rollback>
+            <sql splitStatements="false"><![CDATA[
+                SELECT pg_advisory_xact_lock(1022035::bigint);
+
+                CREATE OR REPLACE FUNCTION logos_stats_rollup_apply(p_hours timestamptz[])
+                RETURNS bigint
+                LANGUAGE plpgsql
+                SET search_path = public, pg_catalog
+                AS $$
+                DECLARE
+                    affected bigint;
+                BEGIN
+                    IF p_hours IS NULL OR array_length(p_hours, 1) IS NULL THEN
+                        RETURN 0;
+                    END IF;
+
+                    DELETE FROM log_entry_hourly_stats s
+                     WHERE s.bucket_hour = ANY (p_hours);
+
+                    INSERT INTO log_entry_hourly_stats (
+                        bucket_hour, model_id, model_name, provider_id, team_id, user_id,
+                        result_status, was_cold_start, requests,
+                        queue_seconds_sum, queue_seconds_count,
+                        run_seconds_sum, run_seconds_count,
+                        error_count, total_tokens, cost_micro_cents)
+                    SELECT
+                        date_trunc('hour', COALESCE(le.timestamp_forwarding,
+                                                    le.timestamp_request,
+                                                    le.timestamp_response)),
+                        le.model_id,
+                        -- Keep 042's orphan-name grain: two deleted models must not
+                        -- collapse into one anonymous (NULL, NULL) bucket.
+                        CASE WHEN le.model_id IS NULL THEN le.model_name END,
+                        le.provider_id,
+                        le.team_id,
+                        le.user_id,
+                        le.result_status,
+                        COALESCE(le.was_cold_start, FALSE),
+                        COUNT(*),
+                        SUM(CASE WHEN le.timestamp_request IS NOT NULL
+                                  AND COALESCE(le.timestamp_provider_call, le.timestamp_forwarding) IS NOT NULL
+                                 THEN EXTRACT(EPOCH FROM (COALESCE(le.timestamp_provider_call, le.timestamp_forwarding)
+                                                         - le.timestamp_request))
+                            END),
+                        COUNT(*) FILTER (WHERE le.timestamp_request IS NOT NULL
+                                           AND COALESCE(le.timestamp_provider_call, le.timestamp_forwarding) IS NOT NULL),
+                        SUM(CASE WHEN COALESCE(le.timestamp_provider_call, le.timestamp_forwarding) IS NOT NULL
+                                  AND COALESCE(le.timestamp_provider_response, le.timestamp_response) IS NOT NULL
+                                 THEN EXTRACT(EPOCH FROM (COALESCE(le.timestamp_provider_response, le.timestamp_response)
+                                                         - COALESCE(le.timestamp_provider_call, le.timestamp_forwarding)))
+                            END),
+                        COUNT(*) FILTER (WHERE COALESCE(le.timestamp_provider_call, le.timestamp_forwarding) IS NOT NULL
+                                           AND COALESCE(le.timestamp_provider_response, le.timestamp_response) IS NOT NULL),
+                        COUNT(*) FILTER (WHERE le.result_status IS DISTINCT FROM 'success'
+                                            OR (le.error_message IS NOT NULL
+                                                AND le.error_message <> '')),
+                        COALESCE(SUM(tok.total_tokens), 0)::bigint,
+                        COALESCE(SUM(lec.cost_micro_cents), 0)::bigint
+                    FROM log_entry le
+                    LEFT JOIN LATERAL (
+                        SELECT SUM(ut.token_count) AS total_tokens
+                        FROM usage_tokens ut
+                        JOIN token_types tt ON tt.id = ut.type_id
+                        WHERE ut.log_entry_id = le.id
+                          AND tt.name = 'total_tokens'
+                    ) tok ON TRUE
+                    LEFT JOIN log_entry_cost lec ON lec.log_entry_id = le.id
+                    WHERE date_trunc('hour', COALESCE(le.timestamp_forwarding,
+                                                      le.timestamp_request,
+                                                      le.timestamp_response)) = ANY (p_hours)
+                    GROUP BY 1, 2, 3, 4, 5, 6, 7, 8;
+
+                    GET DIAGNOSTICS affected = ROW_COUNT;
+                    RETURN affected;
+                END;
+                $$;
+
+                ALTER TABLE log_entry_hourly_stats
+                    DROP COLUMN benchmark_requests,
+                    DROP COLUMN benchmark_run_seconds_sum,
+                    DROP COLUMN benchmark_run_seconds_count;
+            ]]></sql>
+        </rollback>
+    </changeSet>
 </databaseChangeLog>

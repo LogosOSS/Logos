@@ -873,7 +873,9 @@ export class Statistics implements OnInit, OnDestroy {
       .sort((a, b) => b.total - a.total);
 
     const deletedSuffix = (key: string) => (this.modelDeletedKeys().has(key) ? ' (deleted)' : '');
-    if (windowed.length === 0) {
+    // An explicitly empty series is authoritative: falling back to the
+    // breakdown would put benchmark-only traffic back into the distribution.
+    if (this.stats()?.modelTimeSeries == null) {
       return (this.stats()?.modelBreakdown ?? []).map((m) => {
         const key = modelSeriesKey(m.modelId, m.modelName);
         return {

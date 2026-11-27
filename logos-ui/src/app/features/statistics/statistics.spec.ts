@@ -642,3 +642,30 @@ describe('local providers: failed GPUs and offline workers', () => {
     expect(offline.querySelector('.stats-disk-meter')).toBeNull();
   });
 });
+
+
+describe('Statistics benchmark-free volume distributions', () => {
+  it('does not restore benchmark-only models from the headline breakdown', async () => {
+    const page = await pageAt();
+    try {
+      page.component.stats.set({
+        totals: {
+          requests: 3, cloudRequests: 0, localRequests: 3, coldStarts: 0, warmStarts: 3,
+          avgQueueSeconds: null, avgRunSeconds: null, totalTokens: null, cloudCostMicroCents: null,
+        },
+        statusCounts: { success: 3 },
+        modelBreakdown: [{
+          modelId: 10, modelName: 'Benchmark only', requestCount: 3,
+          avgQueueSeconds: null, avgRunSeconds: null, coldStarts: 0, warmStarts: 3, errorCount: 0,
+        }],
+        timeSeries: [{ timestamp: 1, label: '', total: 0, cloud: 0, local: 0, avgRunSeconds: null }],
+        modelTimeSeries: [],
+      });
+
+      expect(page.component.providerPieData()).toEqual([]);
+      expect(page.component.modelPieData()).toEqual([]);
+    } finally {
+      page.fx.destroy();
+    }
+  });
+});

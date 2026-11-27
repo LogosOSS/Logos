@@ -134,6 +134,71 @@ class RequestLogStatsRollupTest {
         return statsService.getRequestLogStats(start(), end(), targetBuckets, userId, teamId);
     }
 
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void volume_excludes_explicit_and_legacy_benchmarks_on_both_sides_of_the_watermark() {
+        try {
+            jdbc.update("""
+                INSERT INTO log_entry (id, request_id, api_key_id, user_id, team_id, model_id, provider_id,
+                    result_status, timestamp_request, timestamp_forwarding, timestamp_response,
+                    timestamp_provider_call, timestamp_provider_response, benchmark_job_id, environment,
+                    privacy_level, headers, client_ip)
+                SELECT 9600 + (bucket.hours_ago + 1) * 10 + r.seq,
+                    repeat(CASE WHEN bucket.hours_ago = 0 THEN lower(r.marker) ELSE upper(r.marker) END, 22),
+                    r.key_id, r.user_id, r.team_id, 5002, r.provider_id,
+                    'success', bucket.hour, bucket.hour + interval '1 second', bucket.hour + interval '4 minutes',
+                    bucket.hour + interval '5 seconds', bucket.hour + make_interval(secs => 5 + r.run_seconds),
+                    r.job_id, 'model-provider-benchmark', 'FULL', r.headers::jsonb, r.client_ip
+                FROM (
+                    SELECT hours_ago, date_trunc('hour', now()) - make_interval(hours => hours_ago) AS hour
+                    FROM (VALUES (0), (6)) AS h(hours_ago)
+                ) bucket
+                CROSS JOIN (VALUES
+                    (1, 'b', NULL, NULL, NULL, 6001, 42, 100, NULL, NULL), -- verified marker
+                    (2, 'l', NULL, NULL, NULL, 6401, NULL, 200, NULL, NULL), -- legacy signed route shape
+                    (3, 'k', 3001, 1001, 2001, 6401, NULL, 4, '{}', '127.0.0.1'), -- keyed lookalike
+                    (4, 'd', NULL, NULL, NULL, 6001, NULL, 8, '{}', '127.0.0.1') -- deleted identities
+                ) AS r(seq, marker, key_id, user_id, team_id, provider_id, job_id, run_seconds, headers, client_ip)
+                """);
+
+            assertRollupIsEmpty();
+            var live = stats(statsService.getRequestLogStats(start(), end(), 24, null, null, null, false, List.of(5002)));
+            populateRollup();
+            assertThat(rolledUpRowsForHour(6)).isGreaterThan(0);
+            assertThat(rolledUpRowsForHour(0)).isZero();
+            assertThat(jdbc.queryForObject("""
+                SELECT SUM(benchmark_requests) FROM log_entry_hourly_stats WHERE model_id = 5002
+                """, Long.class)).isEqualTo(2L);
+            var mixed = stats(statsService.getRequestLogStats(start(), end(), 24, null, null, null, false, List.of(5002)));
+
+            assertThat(mixed.get("timeSeries")).isEqualTo(live.get("timeSeries"));
+            assertThat(mixed.get("modelTimeSeries")).isEqualTo(live.get("modelTimeSeries"));
+            var volume = (List<Map<String, Object>>) mixed.get("timeSeries");
+            var modelVolume = (List<Map<String, Object>>) mixed.get("modelTimeSeries");
+            var populated = volume.stream().filter(b -> ((Number) b.get("total")).longValue() > 0).toList();
+            assertThat(populated).hasSize(2).allSatisfy(b -> {
+                assertThat(((Number) b.get("total")).longValue()).isEqualTo(2L);
+                assertThat(((Number) b.get("local")).longValue()).isEqualTo(1L);
+                assertThat(((Number) b.get("cloud")).longValue()).isEqualTo(1L);
+                assertThat(((Number) b.get("avgRunSeconds")).doubleValue()).isEqualTo(6.0);
+            });
+            assertThat(modelVolume).hasSize(2).allSatisfy(b -> {
+                assertThat(((Number) b.get("modelId")).intValue()).isEqualTo(5002);
+                assertThat(((Number) b.get("count")).longValue()).isEqualTo(2L);
+            });
+
+            var totals = (Map<String, Object>) mixed.get("totals");
+            assertThat(((Number) totals.get("requests")).longValue()).isEqualTo(8L);
+            var keyScoped = stats(statsService.getRequestLogStats(
+                start(), end(), 24, null, null, null, 3001, false, List.of(5002)));
+            assertThat((List<Map<String, Object>>) keyScoped.get("modelTimeSeries")).hasSize(2).allSatisfy(
+                b -> assertThat(((Number) b.get("count")).longValue()).isEqualTo(1L));
+        } finally {
+            jdbc.update("DELETE FROM log_entry WHERE id BETWEEN 9611 AND 9614 OR id BETWEEN 9671 AND 9674");
+        }
+    }
+
     @Test
     void totals_are_the_same_whether_they_come_from_the_rollup_or_from_log_entry() {
         assertRollupIsEmpty();

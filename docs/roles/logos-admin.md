@@ -32,13 +32,14 @@ the entries with the most requests first.
 
 ![Requesters list with people and application keys](/img/roles/logos-admin-statistics-requesters.png)
 
-The time range and every filter apply to the whole tab at once. The totals,
-the charts and the recent requests always show the same requests. This is also
-true when you drag across the request volume chart to select a time range. Only
-the state filter applies to the recent requests alone.
+The time range and scope filters apply to the whole tab, including when you
+drag across the request volume chart to select a time range. The state filter
+applies only to recent requests.
 
-In **Recent requests**, the **Benchmark** badge identifies a request from an
-internal Logos benchmark. The badge does not change the state of the request.
+**Request volume**, **Request type**, and **Model share** exclude internal
+Logos benchmarks. Benchmarks still appear in the headline totals and **Recent
+requests**, where a **Benchmark** badge identifies them without changing their
+request state.
 
 ![The Statistics Requests tab with a queued request that has the Benchmark badge](/img/roles/logos-admin-statistics.png)
 
