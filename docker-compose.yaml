@@ -731,6 +731,9 @@ services:
       # a literal name and this matches it. That is what keeps the child's bind
       # source on the same storage the runner writes the mark into.
       LOGOS_AGENT_STATE_VOLUME: "${LOGOS_AGENT_STATE_VOLUME:-logos_agent_state}"
+      LOGOS_AGENT_VERIFICATION_SCRATCH_VOLUME: "${LOGOS_AGENT_VERIFICATION_SCRATCH_VOLUME:-logos_agent_verifier_scratch}"
+      LOGOS_AGENT_VERIFICATION_SCRATCH_MAX_GIB: "${LOGOS_AGENT_VERIFICATION_SCRATCH_MAX_GIB:-20}"
+      LOGOS_AGENT_VERIFICATION_SCRATCH_MIN_FREE_GIB: "${LOGOS_AGENT_VERIFICATION_SCRATCH_MIN_FREE_GIB:-10}"
     volumes:
       # Needed to create session containers. This is the one privileged thing
       # the runner holds — and precisely what it never passes on: session
@@ -740,6 +743,11 @@ services:
       # Runner-owned session state, shared with the child read-only: a pause
       # mark written here is the mark the agent container reads.
       - agent_state:/var/lib/logos-agent/state
+      - type: volume
+        source: agent_verification_scratch
+        target: /var/lib/logos-agent/verification-scratch
+        volume:
+          nocopy: true
     expose:
       - "8082"
     # On purpose *not* attached to the agent network: the runner controls
@@ -867,6 +875,10 @@ volumes:
   # child mounts a directory the runner never writes the pause mark into.
   agent_state:
     name: logos_agent_state
+  # Compose creates this plain local volume for the verifier on the Docker host.
+  agent_verification_scratch:
+    driver: local
+    name: "${LOGOS_AGENT_VERIFICATION_SCRATCH_VOLUME:-logos_agent_verifier_scratch}"
 
 networks:
   internal:

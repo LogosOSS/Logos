@@ -193,8 +193,9 @@ RUN chmod -R a+rX /usr/share/maven /opt/logos-verification
 # /cache is the mount point of a linked repository's workspace cache. Docker
 # fills an empty named volume from the image directory it is mounted over,
 # ownership included, so a fresh cache volume belongs to the session user.
+# The verifier mounts a separately reserved private scratch directory.
 RUN useradd --create-home --shell /bin/bash --uid 10001 agent \
-  && mkdir -p /workspace /artifacts /cache \
+  && mkdir -p /workspace /artifacts /cache /logos-verifier-scratch \
   && chown -R agent:agent /workspace /artifacts /cache /home/agent
 
 COPY logos-agent/workspace/session_activity.py /usr/local/lib/session_activity.py

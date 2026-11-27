@@ -784,6 +784,44 @@ gets. Deploys and screenshots stay with the platform repository. An idle
 workspace that last worked on another repository is moved to the link's branch;
 a busy one is refused.
 
+#### Disk scratch for verification
+
+The bundled Compose configuration automatically creates the plain local Docker
+volume `logos_agent_verifier_scratch` when the `agent` profile is enabled.
+Deploying from Logos does not require a separate disk or host configuration.
+The verifier requires Docker Engine 26 or newer to mount only its individual
+subdirectory; there is no fallback that mounts the whole volume.
+An independently deployed runner must mount that volume at
+`/var/lib/logos-agent/verification-scratch` and set
+`LOGOS_AGENT_VERIFICATION_SCRATCH_VOLUME` to its actual Docker name.
+
+The verifier mounts only a private directory on that volume and points
+`TMPDIR` and Java's temporary directory there. Its root, workspace, cache
+and artifacts stay read-only, with no network or credentials. There is no
+RAM-backed fallback. Only one verifier may use the volume at a time; a
+contender waits up to `LOGOS_AGENT_HELPER_TIMEOUT_S` for the slot. The runner
+deletes scratch only after Docker releases its container and reconciles
+orphaned helpers on restart.
+
+A verifier will not start unless its volume's filesystem has more than the
+configured free-space floor plus 1 GiB, and more than 16,384 free inodes.
+While starting and running the verifier, the runner samples space and inodes
+every 250 ms. It force-removes the verifier if available space drops by
+`LOGOS_AGENT_VERIFICATION_SCRATCH_MAX_GIB` (default 20 GiB) from its admission
+sample, hits `LOGOS_AGENT_VERIFICATION_SCRATCH_MIN_FREE_GIB` (default 10 GiB),
+or falls to the inode floor. Individual files are limited to 8 GiB by the
+verifier's kernel file-size limit; Docker rotates logs separately. Missing
+storage, failed checks or exhausted headroom fail verification and allow
+only a draft PR.
+
+Docker local volumes share the host filesystem. These checks are **not a hard
+aggregate quota**: unrelated writers can trigger them, unrelated deletions can
+mask verifier growth, and rapid writes or delayed Docker removal can
+overshoot between samples. If the runner crashes, monitoring depends on
+restarting it and cleaning up its orphaned containers. Monitor host free
+space as usual. Normal agent
+sessions are unaffected; a manual check cannot replace the runner's verification.
+
 #### Working the way the repository asks
 
 Repositories have their own contribution process: claim an issue with a

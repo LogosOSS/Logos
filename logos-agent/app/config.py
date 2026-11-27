@@ -303,6 +303,10 @@ class Settings:
     analysis_nightly_hour_utc: int = _int("LOGOS_AGENT_ANALYSIS_NIGHTLY_HOUR_UTC", 0)
 
     # --- storage ----------------------------------------------------------
+    verification_scratch_volume: str = os.getenv("LOGOS_AGENT_VERIFICATION_SCRATCH_VOLUME", "")
+    # Shared-filesystem pressure guard, not a kernel disk quota.
+    verification_scratch_max_gib: str = os.getenv("LOGOS_AGENT_VERIFICATION_SCRATCH_MAX_GIB", "20")
+    verification_scratch_min_free_gib: str = os.getenv("LOGOS_AGENT_VERIFICATION_SCRATCH_MIN_FREE_GIB", "10")
     # Where session artefacts (logs, screenshots) are kept, on a volume shared
     # with the session containers.
     artifact_root: str = os.getenv("LOGOS_AGENT_ARTIFACT_ROOT", "/var/lib/logos-agent/artifacts")

@@ -46,6 +46,7 @@ from . import (
     model_policy,
     repository_context,
     upstream,
+    verification_scratch,
 )
 from .artifacts import read_artifact_text
 from .asyncio_tasks import cancel_and_wait
@@ -1973,6 +1974,41 @@ class SessionManager:
         artifact_host_path: str,
         cache_volume: str | None = None,
     ) -> int | None:
+        kwargs = {
+            "phase": phase,
+            "session_id": session_id,
+            "env": env,
+            "workspace_volume": workspace_volume,
+            "artifact_host_path": artifact_host_path,
+            "cache_volume": cache_volume,
+        }
+        if phase != "verify":
+            return await self._run_helper_container(**kwargs)
+        try:
+            async with verification_scratch.reserve(
+                settings.verification_scratch_volume,
+                settings.verification_scratch_max_gib,
+                settings.verification_scratch_min_free_gib,
+                timeout_s=settings.helper_timeout_s,
+            ) as scratch:
+                return await self._run_helper_container(**kwargs, scratch=scratch)
+        except (OSError, RuntimeError) as exc:
+            # A failed admission is a failed verification, not a tmpfs
+            # retry or permission to mark the tree verified.
+            self._last_helper_output[session_id] = f"[verify] disk scratch unavailable: {exc}"
+            return 1
+
+    async def _run_helper_container(
+        self,
+        *,
+        phase: str,
+        session_id: int,
+        env: dict[str, str],
+        workspace_volume: str,
+        artifact_host_path: str,
+        cache_volume: str | None = None,
+        scratch: verification_scratch.Scratch | None = None,
+    ) -> int | None:
         """Run one trusted one-shot helper container to completion, remove it.
 
         The helper phases (checkout preparation, finalization) are
@@ -2034,13 +2070,14 @@ class SessionManager:
                     artifact_host_path=artifact_host_path,
                     session_id=session_id,
                     network="none" if phase == "verify" else settings.session_egress_network,
-                    labels={"logos.agent.helper": phase},
+                    labels={"logos.agent.helper": phase, **({verification_scratch.LABEL: "true"} if scratch else {})},
                     ssh_known_hosts_host_path=known_hosts_host_path,
                     ssh_key_host_path=ssh_key_host_path,
                     # Only verification reads the workspace cache, read-only;
                     # credential-bearing helpers never mount it.
                     cache_volume=cache_volume if phase == "verify" else None,
                     memory_mb=memory_mb,
+                    **({"verification_scratch": (scratch.volume, scratch.slot, scratch.marker)} if scratch else {}),
                 )
                 helper.container_id = container_id
             finally:
@@ -2057,14 +2094,19 @@ class SessionManager:
                 # removes it.
                 helper.started.set()
                 return 137
-            try:
-                await docker_engine.start_container(container_id)
-            finally:
-                # The start has settled: from here on a stop is a real
-                # stop, not a 304 against a container that is not running
-                # yet.
-                helper.started.set()
-            code = await docker_engine.wait_container(container_id, timeout_s=settings.helper_timeout_s)
+
+            async def start_and_wait() -> int | None:
+                try:
+                    # Disk admission and scheduling the monitored task can
+                    # yield after the initial post-create cancellation check.
+                    if self._helpers.get(session_id) is not helper:
+                        return 137
+                    await docker_engine.start_container(container_id)
+                finally:
+                    helper.started.set()
+                return await docker_engine.wait_container(container_id, timeout_s=settings.helper_timeout_s)
+
+            code = await scratch.monitor(start_and_wait) if scratch else await start_and_wait()
             if code is None:
                 logger.warning("helper %s for session %s timed out; stopping it", phase, session_id)
                 await docker_engine.stop_container(container_id)
@@ -2081,6 +2123,7 @@ class SessionManager:
                 )
             return code
         finally:
+            helper.started.set()
             remaining = helper.container_id
             try:
                 if remaining:
