@@ -507,7 +507,7 @@
             <div class="control">
               <label class="field__label" for="agent-inference-location">Inference location</label>
               <app-select
-                id="agent-inference-location"
+                [id]="'agent-inference-location'"
                 ariaLabel="Inference location"
                 [options]="inferenceModeOptions"
                 [value]="inferenceMode()"
@@ -521,7 +521,7 @@
               <div class="control">
                 <label class="field__label" for="agent-inference-model">Inference model</label>
                 <app-select
-                  id="agent-inference-model"
+                  [id]="'agent-inference-model'"
                   ariaLabel="Inference model"
                   [options]="inferenceModelOptions()"
                   [value]="inferenceModel()"
