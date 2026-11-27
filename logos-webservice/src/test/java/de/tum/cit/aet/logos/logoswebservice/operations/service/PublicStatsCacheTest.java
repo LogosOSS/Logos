@@ -2,6 +2,7 @@ package de.tum.cit.aet.logos.logoswebservice.operations.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
@@ -47,6 +48,18 @@ class PublicStatsCacheTest {
         verify(statsService, times(1)).publicStats("30");
         cache.refreshExpired();
         for (String window : windows) verify(statsService, times(2)).publicStats(window);
+    }
+
+    @Test
+    void publicHourlyChartIsComputedOnceAndIdenticalAcrossAllRollingWindows() {
+        var release = new PublicHourlyRequestLoad("Europe/Berlin", java.time.LocalDate.of(2026, 1, 5),
+            java.time.LocalDate.of(2026, 2, 2), 5, List.of());
+        when(statsService.publicHourlyRequestLoad(any())).thenReturn(release);
+        var cache = new PublicStatsCache(statsService, Duration.ofMinutes(30), now::get);
+        for (String window : windows) {
+            assertThat(cache.get(window)).containsEntry("hourly_request_load", release);
+        }
+        verify(statsService, times(1)).publicHourlyRequestLoad(any());
     }
 
     @Test

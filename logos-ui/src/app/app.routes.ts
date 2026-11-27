@@ -13,8 +13,8 @@ export const routes: Routes = [
     loadComponent: () => import('./core/auth/pages/login/login').then(m => m.Login),
   },
   {
-    path: 'stats',
-    title: 'Stats · Logos',
+    path: 'usage',
+    title: 'Usage · Logos',
     loadComponent: () => import('./features/public-stats/public-stats').then(m => m.PublicStats),
   },
   {
