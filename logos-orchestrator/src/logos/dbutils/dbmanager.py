@@ -708,7 +708,7 @@ class DBManager:
         self.update_log_entry_metrics(log_id=log_id, request_id=request_id, **fields)
 
     def close_unforwarded_request_log(self, log_id: int, error_message: str) -> bool:
-        """Close one interrupted request without changing a forwarded or settled row."""
+        """Close a request whose caller still owns pre-execution settlement."""
         result = self.session.execute(
             text("""
                 UPDATE log_entry
@@ -718,7 +718,6 @@ class DBManager:
                  WHERE id = :log_id
                    AND result_status IS NULL
                    AND timestamp_response IS NULL
-                   AND timestamp_forwarding IS NULL
                    AND timestamp_provider_call IS NULL
                    AND timestamp_provider_response IS NULL
                 """),

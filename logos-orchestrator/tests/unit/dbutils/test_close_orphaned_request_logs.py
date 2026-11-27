@@ -93,11 +93,11 @@ def test_an_interrupted_request_closes_only_its_unforwarded_and_unsettled_row():
     for column in (
         "result_status",
         "timestamp_response",
-        "timestamp_forwarding",
         "timestamp_provider_call",
         "timestamp_provider_response",
     ):
         assert f"AND {column} IS NULL" in sql
+    assert "AND timestamp_forwarding IS NULL" not in sql  # Set on scheduling, before provider work.
     assert "result_status = 'error'" in sql
     assert "timestamp_response = NOW()" in sql
     assert "COALESCE(error_message, :error_message)" in sql
