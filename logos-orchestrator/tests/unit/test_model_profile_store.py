@@ -17,6 +17,7 @@ from logos.model_profile_store import (
     profile_needs_calibration,
     reported_profile,
     shared_profiles_enabled,
+    snapshot_is_metal,
 )
 
 
@@ -280,3 +281,26 @@ def test_a_live_edit_to_an_out_of_range_cache_is_seen_once_the_worker_reports_it
     assert effective_profile(1, before_report)["calibration_stale"] is False
     # The next status of the worker carries the fingerprint of the edited configuration.
     assert effective_profile(1, after_report)["calibration_stale"] is True
+
+
+def test_a_metal_calibration_is_complete_without_pairs_or_sleep():
+    profile = {"base_residency_mb": 16680.0, "residency_source": "calibrated"}
+    assert profile_needs_calibration(profile, metal=True) is False
+    assert profile_needs_calibration(profile) is True
+
+
+def test_a_snapshot_carries_the_measured_base_under_an_operator_override():
+    echoed = {
+        "residency_source": "calibrated",
+        "base_residency_mb": 7500.0,
+        "calibrated_footprint_mb": 9000.0,
+        "overridden_fields": ["base_residency_mb"],
+    }
+    snapshot = calibration_snapshot(persistable_profile(echoed))
+    assert snapshot["base_residency_mb"] == 9000.0
+
+
+def test_snapshot_is_metal_reads_the_device_mode():
+    assert snapshot_is_metal({"runtime": {"devices": {"mode": "metal"}}}) is True
+    assert snapshot_is_metal({"runtime": {"devices": {"mode": "cuda"}}}) is False
+    assert snapshot_is_metal(None) is False

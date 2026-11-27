@@ -77,13 +77,22 @@ def is_central_profile_payload(profiles: Mapping[str, Any]) -> bool:
     return any(isinstance(p, dict) and "sync_revision" in p for p in profiles.values())
 
 
-def profile_needs_calibration(profile: Mapping[str, Any] | None) -> bool:
-    """Whether a node's next calibration window should measure this model."""
+def snapshot_is_metal(snapshot: Mapping[str, Any] | None) -> bool:
+    """Whether a worker's runtime snapshot reports the Metal backend."""
+    devices = ((snapshot or {}).get("runtime") or {}).get("devices") or {}
+    return devices.get("mode") == "metal"
+
+
+def profile_needs_calibration(profile: Mapping[str, Any] | None, *, metal: bool = False) -> bool:
+    """Whether a node's next calibration window should measure this model.
+
+    A Metal probe takes one measurement: no KV sweep and no sleep.
+    """
     if profile is None:
         return True
     if profile.get("calibration_unsupported"):
         return False
-    sleep_na = bool(profile.get("sleep_mode_disabled"))
+    sleep_na = metal or bool(profile.get("sleep_mode_disabled"))
     min_kv, max_kv = profile.get("min_kv_cache_mb"), profile.get("max_kv_cache_mb")
     collapsed_envelope = (
         profile.get("residency_source") == "calibrated"
@@ -97,7 +106,7 @@ def profile_needs_calibration(profile: Mapping[str, Any] | None) -> bool:
         profile.get("residency_source") != "calibrated"
         or (not sleep_na and profile.get("sleeping_residual_mb") is None)
         or (not sleep_na and profile.get("sleep_l1_transient_host_ram_mb") is None)
-        or (profile.get("residency_source") == "calibrated" and not profile.get("kv_cache_to_max_model_len_pairs"))
+        or (not metal and not profile.get("kv_cache_to_max_model_len_pairs"))
         or collapsed_envelope
         or bool(profile.get("calibration_stale"))
     )
@@ -121,7 +130,12 @@ def persistable_profile(profile: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def calibration_snapshot(profile: Mapping[str, Any]) -> dict[str, Any]:
-    return {key: profile[key] for key in CALIBRATION_FIELDS if key in profile}
+    snapshot = {key: profile[key] for key in CALIBRATION_FIELDS if key in profile}
+    # An operator's base override is no part of the stored profile; the
+    # footprint is the base as it was measured.
+    if profile.get("calibrated_footprint_mb") is not None:
+        snapshot["base_residency_mb"] = profile["calibrated_footprint_mb"]
+    return snapshot
 
 
 def is_new_local_calibration(profile: Mapping[str, Any]) -> bool:

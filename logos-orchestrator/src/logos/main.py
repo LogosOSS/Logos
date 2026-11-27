@@ -87,7 +87,7 @@ from logos.logosnode_snapshot import (
     resolve_proxy_model_from_deployments,
 )
 from logos.middleware import APIPrefixStripperMiddleware
-from logos.model_profile_store import profile_needs_calibration
+from logos.model_profile_store import profile_needs_calibration, snapshot_is_metal
 from logos.monitoring import prometheus_metrics as prom
 from logos.node_maintenance import NodeMaintenance
 from logos.pipeline.context_resolver import ContextResolver
@@ -5091,9 +5091,10 @@ def _find_uncalibrated_models_on_provider(provider_id: int) -> list[str]:
     raw_profiles = (snap.get("runtime") or {}).get("model_profiles")
     profiles = raw_profiles if isinstance(raw_profiles, dict) else {}
     uncalibrated: list[str] = []
+    metal = snapshot_is_metal(snap)
     for model_name in candidates:
         profile = profiles.get(model_name)
-        if profile_needs_calibration(profile if isinstance(profile, dict) else None):
+        if profile_needs_calibration(profile if isinstance(profile, dict) else None, metal=metal):
             uncalibrated.append(model_name)
     return uncalibrated
 

@@ -2214,7 +2214,7 @@ class LogosBridgeClient:
                 or profile.residency_source != "calibrated"
                 or (not sleep_na and profile.sleeping_residual_mb is None)
                 or (not sleep_na and profile.sleep_l1_transient_host_ram_mb is None)
-                or not profile.kv_cache_to_max_model_len_pairs
+                or (not is_metal_backend() and not profile.kv_cache_to_max_model_len_pairs)
                 or collapsed_envelope
                 # Measured under another hardware/vLLM/config key: keeps
                 # serving, but this window re-measures it.

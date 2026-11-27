@@ -119,6 +119,7 @@ def test_orchestrator_flags_collapsed_envelope_for_recalibration():
 
     orch = CalibrationOrchestrator.__new__(CalibrationOrchestrator)
     orch._facade = facade
+    orch._registry = MagicMock(peek_runtime_snapshot=lambda provider_id: None)
     assert orch._provider_has_uncalibrated_models(provider_id=42) is True
 
 
@@ -149,6 +150,7 @@ def test_orchestrator_skips_models_with_proper_envelope():
 
     orch = CalibrationOrchestrator.__new__(CalibrationOrchestrator)
     orch._facade = facade
+    orch._registry = MagicMock(peek_runtime_snapshot=lambda provider_id: None)
     assert orch._provider_has_uncalibrated_models(provider_id=42) is False
 
 
@@ -176,6 +178,7 @@ def test_orchestrator_flags_missing_kv_max_model_len_pairs_for_recalibration():
 
     orch = CalibrationOrchestrator.__new__(CalibrationOrchestrator)
     orch._facade = facade
+    orch._registry = MagicMock(peek_runtime_snapshot=lambda provider_id: None)
     assert orch._provider_has_uncalibrated_models(provider_id=42) is True
 
 

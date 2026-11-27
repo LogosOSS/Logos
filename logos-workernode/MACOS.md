@@ -206,7 +206,7 @@ Prefetch: downloading mlx-community/Qwen3.8-27B-4bit …
 capability profile and the registration:
 
 ```
-  ● mlx-community/Qwen3.8-27B-4bit [UNKNOWN]: base_residency=16680 MB | disk=15.0 GB | kv_per_token=138344 B | max_ctx=262144 | engine=vllm
+  ● mlx-community/Qwen3.8-27B-4bit [UNKNOWN]: base_residency=27000 MB | disk=15.0 GB | kv_per_token=138344 B | max_ctx=262144 | engine=vllm
 ══ BRIDGE CONNECTED ══ worker_id=<uuid> capabilities=['mlx-community/Qwen3.8-27B-4bit'] url=<websocket URL>
 ```
 
@@ -408,7 +408,7 @@ engines:
 
 model_profile_overrides:
   "Qwen/Qwen3-Embedding-8B":
-    base_residency_mb: 15400        # (15.13 + 0.64) GB -> 15039 MiB, rounded up
+    base_residency_mb: 22200        # (15.13 + 0.64 + 7.00) GB -> 21715 MiB, rounded up
     kv_per_token_bytes: 147456      # 36 layers x 2 x 8 kv_heads x 128 head_dim x 2 B
     max_context_length: 32768
     disk_size_bytes: 15134634568
@@ -418,9 +418,10 @@ model_profile_overrides:
 any of these numbers. Proof from the same machine: MLX reports
 `max_recommended_working_set_size = 26800603136` bytes, which is 26.80 GB
 decimal (24.96 GiB), and the lane logs `metal_limit=26.80GB`. So
-`base_residency_mb` is `(15.13 + 0.64) x 10^9 / 1024^2 = 15039 MiB`, rounded up
-to 15400. Reading those figures as GiB would inflate the profile by about
-1.1 GB and reject placements that in fact fit.
+`base_residency_mb` is `(15.13 + 0.64 + 7.00) x 10^9 / 1024^2 = 21715 MiB`,
+rounded up to 22200. It includes the KV budget, because a pinned base replaces
+the calibrated total. Reading those figures as GiB would inflate the profile
+by about 1.6 GB and reject placements that in fact fit.
 
 That lane reports `usable_metal=22.78GB`, `kv_budget=7.00GB` and
 `max_tokens_cached=47488` — 1.45x concurrency at the full 32k window. It

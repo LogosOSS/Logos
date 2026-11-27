@@ -332,11 +332,18 @@ def test_a_calibration_keeps_a_pinned_base_and_becomes_the_source():
     registry = ModelProfileRegistry(model_profile_overrides={"org/model": {"base_residency_mb": 7500.0}})
     registry.seed_capabilities(["org/model"])
 
-    registry.apply_calibration_result("org/model", {"base_residency_mb": 9000.0, "residency_source": "calibrated"})
+    registry.apply_calibration_result(
+        "org/model",
+        {"base_residency_mb": 9000.0, "calibrated_footprint_mb": 9000.0, "residency_source": "calibrated"},
+    )
 
     profile = registry.get_profile("org/model")
     assert profile.base_residency_mb == pytest.approx(7500.0)
+    assert profile.calibrated_footprint_mb == pytest.approx(9000.0)
     assert profile.residency_source == "calibrated"
+    echoed = registry.get_all_profiles()["org/model"]
+    assert echoed["overridden_fields"] == ["base_residency_mb"]
+    assert echoed["calibrated_footprint_mb"] == pytest.approx(9000.0)
 
 
 def test_calibrated_profile_not_overwritten_by_subsequent_load():

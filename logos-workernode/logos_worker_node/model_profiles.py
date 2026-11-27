@@ -119,8 +119,9 @@ class ModelProfileRecord:
     # Only a calibration sets it: a configured or observed cache never changes it, so the footprint
     # of another cache size can be worked out from the measured total.
     calibrated_kv_mb: float | None = None
-    # The footprint that cache belongs to: base_residency_mb as the calibration measured it. Live
-    # observations never change it, so the pair stays usable after the lane ran with another cache.
+    # base_residency_mb as the calibration measured it. Live observations and
+    # an operator's base override never change it, so the pair stays usable
+    # and shared calibrations keep the measurement.
     calibrated_footprint_mb: float | None = None
     # KV cache envelope discovered by calibration on this hardware. The planner
     # picks a runtime kv_cache_memory_bytes value inside [min, max] based on

@@ -1759,6 +1759,25 @@ def test_list_uncalibrated_skips_sleep_disabled_models_already_calibrated(tmp_pa
     assert client._list_uncalibrated_models() == []  # noqa: SLF001
 
 
+def test_list_uncalibrated_skips_a_metal_calibration_without_pairs(tmp_path, monkeypatch):
+    from logos_worker_node.model_profiles import ModelProfileRecord
+
+    monkeypatch.setattr("logos_worker_node.logos_bridge.is_metal_backend", lambda: True)
+    app = _make_app_for_calibration(tmp_path, vllm_disable_sleep=True)
+    cfg = LogosConfig(
+        enabled=True, logos_url="https://logos.example", shared_key="secret", configured_models=["mlx/model"]
+    )
+    client = LogosBridgeClient(app, cfg)
+    app.state.model_profiles._profiles["mlx/model"] = ModelProfileRecord(
+        residency_source="calibrated",
+        base_residency_mb=16680.0,
+        sleep_mode_disabled=True,
+        kv_cache_to_max_model_len_pairs=None,
+    )
+
+    assert client._list_uncalibrated_models() == []  # noqa: SLF001
+
+
 def test_list_uncalibrated_flags_calibrated_profile_missing_pairs(tmp_path):
     """Profiles calibrated before the pair sweep must be recalibrated."""
     from logos_worker_node.model_profiles import ModelProfileRecord

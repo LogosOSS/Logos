@@ -119,8 +119,10 @@ engines:
 #   max_tokens_cached=84672
 #   Hybrid cache initialized: 16 SDPA layers (108 blocks), 48 linear layers
 #
-#   base_residency_mb  ≈ (model_memory + overhead) in MiB
+#   base_residency_mb  ≈ (model_memory + overhead + kv_budget) x 10^9 / 1024^2
 #   kv_per_token_bytes ≈ kv_budget / max_tokens_cached
+#
+# A pinned base replaces the calibrated total, so it includes the KV budget.
 #
 # The 4bit values below come from that log for the 4bit build on a 36 GB
 # M3 Pro (measured 2026-08-26, vllm-metal 0.3.0.dev20260826 / vLLM 0.28.0).
@@ -135,7 +137,7 @@ engines:
 model_profile_overrides:
   # The default build — measured, not estimated.
   "mlx-community/Qwen3.8-27B-4bit":
-    base_residency_mb: 16680
+    base_residency_mb: 27000        # 27.73 GB = 26446 MiB, rounded up
     kv_per_token_bytes: 138344
     max_context_length: 262144
     disk_size_bytes: 16106127360
@@ -143,7 +145,6 @@ model_profile_overrides:
   # 8bit alternative for 64 GB+ Macs: weights scale by the quantization
   # ratio, KV cost is the same — re-measure on the target Mac and correct.
   "mlx-community/Qwen3.8-27B-8bit":
-    base_residency_mb: 29400
     kv_per_token_bytes: 138344
     max_context_length: 262144
     disk_size_bytes: 29527900160
