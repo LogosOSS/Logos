@@ -13,7 +13,7 @@ dev = [
     "pytest==9.2.0",
     "pytest-timeout==2.4.0",
     # Coverage of the test run, imported by the SonarQube Cloud analysis.
-    "coverage[toml]==7.17.4",
+    "coverage[toml]==7.17.5",
 ]
 
 [project.scripts]
