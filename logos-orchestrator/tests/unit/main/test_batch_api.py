@@ -559,12 +559,16 @@ class _FakeDB:
         self.ineligible = {}
         self.eligibility_records = []
         self.fail_registration = False
+        self.batch_submission_allowed = True
 
     def __enter__(self):
         return self
 
     def __exit__(self, *exc):
         return False
+
+    def can_create_batch(self, api_key_id):
+        return self.batch_submission_allowed
 
     # resolution
     def get_batch_provider_candidates(self, api_key_id):
@@ -848,6 +852,32 @@ def test_batch_routes_are_registered_before_the_catch_alls():
             assert f"/{prefix}/{operation}" in paths, f"missing route /{prefix}/{operation}"
         assert paths.index(f"/{prefix}/files") < paths.index(f"/{prefix}/{{path:path}}")
         assert paths.index(f"/{prefix}/batches") < paths.index(f"/{prefix}/{{path:path}}")
+
+
+@pytest.mark.parametrize("prefix", ["v1", "openai", "jobs/v1", "jobs/openai"])
+def test_batch_creation_requires_the_current_admin_role_before_it_reads_the_body(monkeypatch, prefix):
+    db = _FakeDB([AZURE_PROVIDER], AZURE_DEPLOYMENTS)
+    db.batch_submission_allowed = False
+    cached_admin = _auth()
+    cached_admin.role = "logos_admin"
+    seen = _patch_env(monkeypatch, db, lambda _: httpx.Response(200), auth=cached_admin)
+
+    response = client.post(f"/{prefix}/batches", content="not JSON", headers={"X-Logos-Role": "app_admin"})
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "batch_admin_required"
+    assert not seen and not db.registered and not db.local_batches and db.log_usage_kwargs is None
+
+
+def test_existing_own_batch_stays_visible_and_cancellable_without_the_submission_role(monkeypatch):
+    db = _FakeDB([OPENAI_PROVIDER], OPENAI_DEPLOYMENTS, owned={("batch", "batch-1"): _remote(1, OWN_TEAM)})
+    db.batch_submission_allowed = False
+    seen = _patch_env(monkeypatch, db, lambda _: httpx.Response(200, json={"id": "batch-1", "status": "cancelling"}))
+
+    assert client.get("/v1/batches/batch-1").status_code == 200
+    assert client.post("/openai/batches/batch-1/cancel").status_code == 200
+    assert client.post("/jobs/v1/batches/foreign-batch/cancel").status_code == 404
+    assert [request.method for request in seen] == ["GET", "POST"]
 
 
 def test_file_upload_forwards_the_rewritten_file_and_records_ownership(monkeypatch):

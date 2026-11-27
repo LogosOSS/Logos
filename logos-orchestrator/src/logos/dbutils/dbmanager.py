@@ -4175,6 +4175,27 @@ class DBManager:
         )
         return dict(row) if row else None
 
+    def can_create_batch(self, api_key_id: int) -> bool:
+        """Check the active key owner's current role, without the API key cache."""
+        return bool(
+            self.session.execute(
+                text("""
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM api_keys ak
+                        JOIN users u ON u.id = ak.user_id
+                        WHERE ak.id = :api_key_id
+                          AND ak.is_active = true
+                          AND ak.key_type = 'developer'
+                          AND ak.internal_service IS NULL
+                          AND u.is_active = true
+                          AND u.role IN ('app_admin', 'logos_admin')
+                    )
+                """),
+                {"api_key_id": int(api_key_id)},
+            ).scalar_one()
+        )
+
     def get_api_key_logging_context(self, api_key_id: int) -> Dict[str, Any]:
         """The environment and privacy level a key's log rows are written with.
 

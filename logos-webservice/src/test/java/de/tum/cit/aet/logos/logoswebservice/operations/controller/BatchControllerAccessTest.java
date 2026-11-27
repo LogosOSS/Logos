@@ -1,5 +1,6 @@
 package de.tum.cit.aet.logos.logoswebservice.operations.controller;
 
+import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 
@@ -18,6 +19,7 @@ import de.tum.cit.aet.logos.logoswebservice.TestContainersConfig;
 import de.tum.cit.aet.logos.logoswebservice.TestJwt;
 import de.tum.cit.aet.logos.logoswebservice.operations.service.BatchService;
 import de.tum.cit.aet.logos.logoswebservice.operations.service.BatchPriceService;
+import de.tum.cit.aet.logos.logoswebservice.operations.service.BatchHistoricalCostService;
 
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -50,6 +52,25 @@ class BatchControllerAccessTest {
     @MockitoBean JwtDecoder jwtDecoder;
     @MockitoBean BatchService batchService;
     @MockitoBean BatchPriceService batchPriceService;
+    @MockitoBean BatchHistoricalCostService historicalCosts;
+
+    @Test
+    void historicalCostsKeepExistingRoleGateAndReportOnlyTypedAverages() throws Exception {
+        when(historicalCosts.historicalCostsForKey(anyInt(), anyInt())).thenReturn(List.of(
+            new BatchHistoricalCostService.ModelCost("model", new BigDecimal("0.012"), null)));
+        mvc.perform(get("/logosdb/batches/historical-costs").param("apiKeyId", "3004").with(TestJwt.testUser()))
+            .andExpect(status().isForbidden());
+        for (var user : List.of(TestJwt.adminUser(), TestJwt.logosAdmin())) {
+            mvc.perform(get("/logosdb/batches/historical-costs").param("apiKeyId", "3004").with(user))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].model_name").value("model"))
+                .andExpect(jsonPath("$[0].provider_average_usd").value(0.012));
+        }
+        when(historicalCosts.historicalCostsForKey(anyInt(), anyInt()))
+            .thenThrow(new BatchService.KeyNotOwnedException("This API key does not belong to you."));
+        mvc.perform(get("/logosdb/batches/historical-costs").param("apiKeyId", "3004").with(TestJwt.adminUser()))
+            .andExpect(status().isForbidden());
+    }
 
     @Test
     void appDeveloperCannotReadPrices() throws Exception {

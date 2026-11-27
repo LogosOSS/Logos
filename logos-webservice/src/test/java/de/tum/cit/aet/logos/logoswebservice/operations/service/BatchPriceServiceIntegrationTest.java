@@ -25,6 +25,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 @Sql("/sql/seed-me-keys.sql")
 class BatchPriceServiceIntegrationTest {
     @Autowired BatchPriceService service;
+    @Autowired BatchHistoricalCostService history;
     @Autowired JdbcTemplate jdbc;
     @MockitoBean JwtDecoder jwtDecoder;
 
@@ -52,6 +53,61 @@ class BatchPriceServiceIntegrationTest {
                 }
             }
         }
+    }
+
+    @Test
+    void historyUsesFinalizedOwnedKeyRowsAndSeparatesNativeFromReplay() {
+        insertHistory(3101, 2101, 6101, "batch-1-a", "batch", 800_000, true, "success");
+        insertHistory(3101, 2101, 6101, "batch-1-b", "batch", 1_000_000, true, "success");
+        insertHistory(3101, 2101, 6101, "batch-1-c", "batch", 1_200_000, true, "success");
+        insertHistory(3101, 2101, 6101, "normal-1", "default", 1_000_000, true, "success");
+        insertHistory(3101, 2101, 6101, "normal-2", "default", 2_000_000, true, "success");
+        insertHistory(3101, 2101, 6101, "normal-3", "default", 3_000_000, true, "success");
+        insertHistory(3101, 2101, 6101, "pending", "default", 99_000_000, false, "success");
+        insertHistory(3101, 2101, 6101, "failed", "default", 99_000_000, true, "error");
+        insertHistory(3101, null, 6101, "other-tenant", "default", 99_000_000, true, "success");
+        insertHistory(3101, 2101, 6102, "old-provider", "default", 99_000_000, true, "success");
+        insertHistory(3101, 2101, 6101, "prior-window", "default", 99_000_000, true, "success");
+        jdbc.update("UPDATE log_entry SET timestamp_request = NOW() - INTERVAL '31 days' WHERE request_id = 'prior-window'");
+
+        insertHistory(3101, 2101, 6101, "prior-owner", "default", 99_000_000, true, "success");
+        jdbc.update("UPDATE log_entry SET user_id = 1102 WHERE request_id = 'prior-owner'");
+        insertHistory(3101, 2101, 6101, "cloud-unpriced", "default", 99_000_000, true, "success");
+        jdbc.update("UPDATE log_entry SET settled_cost_micro_cents = NULL WHERE request_id = 'cloud-unpriced'");
+
+        var rows = history.historicalCostsForKey(1101, 3101);
+        assertThat(rows).hasSize(1);
+        assertThat(rows.getFirst().model_name()).isEqualTo("test-model");
+        assertThat(rows.getFirst().provider_average_usd()).isEqualByComparingTo("0.01");
+        assertThat(rows.getFirst().logos_average_usd()).isEqualByComparingTo("0.02");
+        assertThatThrownBy(() -> history.historicalCostsForKey(1102, 3101))
+            .isInstanceOf(BatchService.KeyNotOwnedException.class);
+
+        jdbc.update("DELETE FROM log_entry WHERE request_id = 'batch-1-c'");
+        assertThat(history.historicalCostsForKey(1101, 3101).getFirst().provider_average_usd()).isNull();
+    }
+
+    @Test
+    void onlyKnownUnmeteredLocalHistoryCanMakeAnUnknownCostZero() {
+        jdbc.update("UPDATE providers SET provider_type = 'logosnode' WHERE id = 6101");
+        for (int i = 0; i < 3; i++) {
+            insertHistory(3101, 2101, 6101, "local-" + i, "default", 0, true, "success");
+        }
+        jdbc.update("UPDATE log_entry SET settled_cost_micro_cents = NULL WHERE request_id LIKE 'local-%'");
+        var row = history.historicalCostsForKey(1101, 3101).getFirst();
+        assertThat(row.logos_average_usd()).isEqualByComparingTo("0");
+        assertThat(row.provider_average_usd()).isNull();
+        jdbc.update("UPDATE providers SET provider_type = 'cloud' WHERE id = 6101");
+        assertThat(history.historicalCostsForKey(1101, 3101).getFirst().logos_average_usd()).isNull();
+    }
+
+    private void insertHistory(int key, Integer team, int provider, String request, String tier, long microCents,
+                               boolean finalized, String status) {
+        jdbc.update("""
+            INSERT INTO log_entry (api_key_id, team_id, user_id, model_id, provider_id, timestamp_request, timestamp_response,
+                request_id, result_status, service_tier, cost_finalized, settled_cost_micro_cents)
+            VALUES (?, ?, 1101, 5101, ?, NOW(), NOW(), ?, CAST(? AS result_status_enum), ?, ?, ?)
+            """, key, team, provider, request, status, tier, finalized, microCents);
     }
 
     @Test

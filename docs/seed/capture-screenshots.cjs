@@ -913,7 +913,24 @@ const SHOTS = [
   { file: "roles/app-admin-user-management.png", full: true, user: APP_ADMIN, go: (p) => p.goto(BASE + "/user-management") },
   { file: "roles/app-admin-team-management.png", full: true, user: APP_ADMIN, go: (p) => p.goto(BASE + "/team-management") },
   { file: "roles/app-admin-my-workspace.png", user: APP_ADMIN, go: (p) => p.goto(BASE + "/my-workspace") },
-  { file: "roles/batches.png", user: APP_ADMIN, full: true, go: (p) => p.goto(BASE + "/batches") },
+  {
+    file: "roles/batches.png",
+    user: APP_ADMIN,
+    full: true,
+    go: async (p) => {
+      await p.goto(BASE + "/batches");
+      await p.getByText("batch_docs_completed", { exact: true }).waitFor();
+      const lines = Array.from({ length: 4 }, (_, i) => JSON.stringify({
+        custom_id: `example-${i + 1}`, method: "POST", url: "/v1/chat/completions",
+        body: { model: "llama-3.1-8b-instruct", messages: [{ role: "user", content: "Hello" }] },
+      }));
+      await p.locator('input[type="file"]').setInputFiles({
+        name: "example-requests.jsonl", mimeType: "application/jsonl", buffer: Buffer.from(lines.join("\n")),
+      });
+      await p.getByText(/Provider batch:\s*\$0\.144/).waitFor();
+      await p.getByText(/Logos replay:\s*\$0\.288/).waitFor();
+    },
+  },
   { file: "roles/team-detail-overview.png", user: APP_ADMIN, go: (p, ids) => teamTab(p, ids, "Overview") },
   {
     file: "roles/team-members-csv.png",

@@ -313,9 +313,15 @@ at the progress of the job and download the result file. For the server-side
 process, see [batch processing](../batch-processing.md). The page is the same
 for every role that can open it (App Admin and Logos Admin).
 
-In **New batch**, select an API key and an input file.
-The form reads the model names from the file and shows an **Estimated cost**.
-Set **Average response length (tokens per request)** to change the estimate.
-The estimate uses standard token prices. It does not reserve budget, and actual costs can differ.
+In **New batch**, select your developer key and an input file. If you need
+help creating the file, select **Copy the batch setup prompt** under the file picker.
+The prompt guides the agent through preparing the file and estimating costs
+without submitting a batch.
 
-![Batches page](/img/roles/batches.png)
+The form counts requests per model and estimates the cost from recent
+successful requests on the selected key. Automatic mode shows separate
+estimates for provider batch and Logos replay. If any model lacks enough
+history for a mode, its estimate is unavailable. Actual cost can be higher:
+the estimate does not set a spending cap or reserve budget.
+
+![Batches page with separate provider batch and Logos replay estimates](/img/roles/batches.png)

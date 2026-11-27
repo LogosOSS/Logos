@@ -398,7 +398,7 @@ flows use a **concept** name (no role prefix); role-only list pages keep the
 | `team-detail-providers.png` | `tobias.wasner` (`logos_admin` only) | `/teams/<id>` — **Providers** | `roles/logos-admin.md#teams` |
 | `logos-admin-model-details-access.png` | `tobias.wasner` (`logos_admin` only) | `/models/<id>/details?tab=access` — **Access**, with the Azure auto provider label | `roles/logos-admin.md#access` |
 | `app-admin-my-workspace.png` | `alexandra.szuminska` | `/my-workspace` | `roles/app-admin.md` |
-| `batches.png` | any admin role | `/batches` | `roles/app-admin.md#batches` (Logos Admin links) |
+| `batches.png` | `alexandra.szuminska` | `/batches` — sample file loaded, cost estimates and warning visible | `roles/app-admin.md#batches` (Logos Admin links) |
 | `app-developer-models.png` | `henriette.huhn` | `/models` | `roles/app-developer.md` |
 | `app-developer-my-workspace.png` | `henriette.huhn` | `/my-workspace` | `roles/app-developer.md` |
 | `my-workspace-logging-choice.png` | `henriette.huhn` | `/my-workspace` — **Expand models** on the **Logos** developer key, before a logging choice | `roles/app-developer.md#choose-a-logging-level` |
