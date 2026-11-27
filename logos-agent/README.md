@@ -653,6 +653,7 @@ pytest              # capacity gating, state machine, branch derivation
 | `GET` | `/triggers` | Whether the runner reacts to the repository, and what it queued |
 | `GET` | `/repositories` | Linked team repositories with the coding agent enabled, for manual sessions |
 | `GET`/`POST` | `/workspaces` | List and create workspaces |
+| `GET` | `/workspace-storage` | Read Docker sizes by workspace ID and capacity of the runner artifact filesystem |
 | `DELETE` | `/workspaces/{id}` | Remove a workspace (refused while occupied) |
 | `GET`/`POST` | `/sessions` | List and queue sessions (`team_repository_id` targets a linked repository) |
 | `GET` | `/sessions/{id}` | One session |

@@ -25,6 +25,7 @@ import {
   SessionMessages,
   AgentTriggers,
   AgentWorkspace,
+  AgentWorkspaceStorage,
   isActive,
 } from '../../shared/models/agent.model';
 import { SelectComponent, AppSelectOption } from '../../shared/components/select/select';
@@ -33,6 +34,7 @@ import { SessionMessagesComponent } from './session-messages';
 
 /** How often the list and the open session are refreshed while work is live. */
 const POLL_MS = 4000;
+const STORAGE_POLL_MS = 60_000;
 
 /** Cap on rendered slot cells so a misreported ceiling cannot flood the page. */
 const SLOT_CELL_LIMIT = 64;
@@ -95,6 +97,7 @@ export class Agents implements OnInit {
   private lastSessionRequest = signal(0);
   private refreshSequence = 0;
   private appliedSequence = 0;
+  private storagePending = false;
   private readonly mib = new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 });
 
   formatRam(bytes: number | null | undefined): string {
@@ -102,6 +105,21 @@ export class Agents implements OnInit {
     const value = bytes / 1024 ** 2;
     return value > 0 && value < 0.1 ? '<0.1 MiB' : this.mib.format(value) + ' MiB';
   }
+
+  formatDisk(bytes: number): string {
+    if (bytes >= 1024 ** 4) return this.mib.format(bytes / 1024 ** 4) + ' TiB';
+    if (bytes >= 1024 ** 3) return this.mib.format(bytes / 1024 ** 3) + ' GiB';
+    if (bytes >= 1024 ** 2) return this.mib.format(bytes / 1024 ** 2) + ' MiB';
+    if (bytes >= 1024) return this.mib.format(bytes / 1024) + ' KiB';
+    return this.mib.format(bytes) + ' B';
+  }
+
+  filesystemAvailability = computed(() => {
+    const fs = this.workspaceStorage()?.artifact_filesystem;
+    if (!fs || fs.total_bytes <= 0) return null;
+    const freePercent = Math.min(100, Math.max(0, (100 * fs.available_bytes) / fs.total_bytes));
+    return { ...fs, freePercent, level: freePercent < 5 ? 'critical' : freePercent < 15 ? 'low' : 'ok' };
+  });
 
   liveRam(session: AgentSession): number | null {
     // Expire the last response if polling stalls while the page stays open.
@@ -111,6 +129,7 @@ export class Agents implements OnInit {
   // ── data ─────────────────────────────────────────────────────────────────
   sessions = signal<AgentSession[]>([]);
   workspaces = signal<AgentWorkspace[]>([]);
+  workspaceStorage = signal<AgentWorkspaceStorage | null>(null);
   repositories = signal<AgentRepository[]>([]);
   capacity = signal<AgentCapacity | null>(null);
   models = signal<AgentModels | null>(null);
@@ -323,9 +342,11 @@ export class Agents implements OnInit {
     this.now.set(Date.now());
     const clock = setInterval(() => this.now.set(Date.now()), 1000);
     const timer = setInterval(() => void this.tick(), POLL_MS);
+    const storageTimer = setInterval(() => void this.loadWorkspaceStorage(), STORAGE_POLL_MS);
     this.destroyRef.onDestroy(() => {
       clearInterval(clock);
       clearInterval(timer);
+      clearInterval(storageTimer);
       this.stopStream();
       this.resetScreenshots();
     });
@@ -356,7 +377,10 @@ export class Agents implements OnInit {
   }
 
   async refresh(options: { quiet?: boolean } = {}): Promise<void> {
-    if (!options.quiet) this.loading.set(true);
+    if (!options.quiet) {
+      this.loading.set(true);
+      void this.loadWorkspaceStorage();
+    }
     try {
       const sequence = ++this.refreshSequence;
       const requestedAt = Date.now();
@@ -380,6 +404,18 @@ export class Agents implements OnInit {
       this.error.set('Could not reach the agent runner.');
     } finally {
       this.loading.set(false);
+    }
+  }
+
+  private async loadWorkspaceStorage(): Promise<void> {
+    if (this.storagePending) return;
+    this.storagePending = true;
+    try {
+      this.workspaceStorage.set(await this.agentService.getWorkspaceStorage());
+    } catch {
+      this.workspaceStorage.set(null);
+    } finally {
+      this.storagePending = false;
     }
   }
 

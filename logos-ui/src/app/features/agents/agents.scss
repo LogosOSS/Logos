@@ -847,6 +847,62 @@
   }
 }
 
+.workspace-storage {
+  margin-bottom: 10px;
+
+  &__meter,
+  &__unavailable {
+    --disk-color: var(--color-accent-cyan);
+
+    display: inline-flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px 8px;
+    padding: 4px 12px;
+    border-radius: 12px;
+    border: 1px solid rgb(var(--disk-color) / var(--opacity-border));
+    color: rgb(var(--color-typography-500));
+    font-size: var(--font-size-sm);
+
+    .pi {
+      color: rgb(var(--disk-color));
+      font-size: var(--font-size-xs);
+    }
+
+    strong {
+      color: rgb(var(--color-typography-100));
+      font-weight: var(--font-weight-medium);
+    }
+  }
+
+  &__meter--low {
+    --disk-color: var(--color-warning);
+
+    background: rgb(var(--color-warning) / var(--opacity-soft));
+  }
+
+  &__meter--critical {
+    --disk-color: var(--color-error);
+
+    background: rgb(var(--color-error) / var(--opacity-soft));
+  }
+
+  &__track {
+    width: 64px;
+    height: 6px;
+    overflow: hidden;
+    border-radius: 9999px;
+    background: rgb(var(--color-typography-500) / 0.25);
+
+    > span {
+      display: block;
+      height: 100%;
+      border-radius: inherit;
+      background: rgb(var(--disk-color));
+    }
+  }
+}
+
 .workspace-list {
   list-style: none;
   margin: 0;
@@ -880,6 +936,20 @@
     white-space: nowrap;
     color: rgb(var(--color-typography-700));
     font-size: var(--font-size-sm);
+  }
+
+  &__disk {
+    min-width: max-content;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: rgb(var(--color-typography-700));
+    font-size: var(--font-size-sm);
+
+    .pi {
+      color: rgb(var(--color-accent-cyan));
+      font-size: var(--font-size-xs);
+    }
   }
 
   &__busy {
@@ -971,6 +1041,34 @@
   .session__queue {
     width: 100%;
     padding: 0 12px 8px;
+  }
+
+  .workspace {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    padding-block: 8px;
+
+    &__name,
+    &__branch {
+      overflow-wrap: anywhere;
+      white-space: normal;
+    }
+
+    &__branch,
+    &__disk {
+      grid-column: 2;
+    }
+
+    &__busy {
+      grid-column: 2 / -1;
+      max-width: 100%;
+      justify-self: start;
+    }
+
+    > .btn-icon {
+      grid-column: 3;
+      grid-row: 1;
+    }
   }
 
   .inline-input {

@@ -119,6 +119,16 @@ class Workspace(BaseModel):
     active_sessions: int = 0
 
 
+class ArtifactFilesystem(BaseModel):
+    total_bytes: int = Field(gt=0)
+    available_bytes: int = Field(ge=0)
+
+
+class WorkspaceStorage(BaseModel):
+    artifact_filesystem: ArtifactFilesystem | None = None
+    workspace_used_bytes: dict[int, int | None] = Field(default_factory=dict)
+
+
 # --- sessions -------------------------------------------------------------
 
 
