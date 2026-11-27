@@ -81,6 +81,7 @@ async function login(browser, user, dark = false) {
   });
   await ctx.addInitScript((theme) => localStorage.setItem("logos-theme", theme), dark ? "dark" : "light");
   const page = await ctx.newPage();
+  if (!user) return { ctx, page };
   await page.goto(BASE + "/");
   await page.getByText(/Sign in with TUM/i).first().click({ timeout: 30000 });
   await page.waitForSelector("#username", { timeout: 30000 });
@@ -105,8 +106,8 @@ async function markNotificationsRead(page) {
 }
 
 // Waits for fonts, for skeletons and spinners to disappear, then for paint.
-async function settle(page, extra = 1500) {
-  await page.locator(".shell-layout").waitFor();
+async function settle(page, extra = 1500, readySelector = ".shell-layout") {
+  await page.locator(readySelector).waitFor();
   await page.evaluate(() => document.fonts.ready);
   await page
     .waitForFunction(
@@ -161,7 +162,7 @@ async function nodeModel(page, ids, model) {
 // stretch fixed full-viewport layers (dialog backdrops) over the whole page.
 async function unlock(page) {
   await page.addStyleTag({
-    content: `html, body, .main-content { height: auto !important; max-height: none !important; overflow: visible !important; }
+    content: `html, body, .main-content, .public-stats-page { height: auto !important; max-height: none !important; overflow: visible !important; }
       .shell-layout { min-height: 100vh !important; height: auto !important; overflow: visible !important; align-items: stretch !important; }
       .sidebar { align-self: stretch !important; min-height: 100% !important; }`,
   });
@@ -370,6 +371,19 @@ const SHOTS = [
     },
     // Later shots should not show the unread badge.
     after: (p) => p.getByText("Mark all as read").first().evaluate((b) => b.click()),
+  },
+
+  {
+    file: "roles/public-stats-hourly-load.png",
+    user: null,
+    needs: "seed/public-hourly-request-load.sql and a public cache refresh",
+    full: true,
+    readySelector: ".public-stats-page",
+    go: async (p) => {
+      await p.goto(BASE + "/usage");
+      await p.getByRole("heading", { name: "Typical hourly request load" }).waitFor();
+      await p.locator(".hourly-public-hour").first().waitFor();
+    },
   },
 
   {
@@ -1005,12 +1019,12 @@ const SHOTS = [
     if (!session || session.key !== key) {
       if (session) await session.ctx.close();
       session = { key, ...(await login(browser, shot.user, shot.dark)) };
-      if (!shot.file.endsWith("benchmark-notification.png")) await markNotificationsRead(session.page);
+      if (shot.user && !shot.file.endsWith("benchmark-notification.png")) await markNotificationsRead(session.page);
     }
     const { page } = session;
     try {
       await shot.go(page, ids);
-      await settle(page);
+      await settle(page, undefined, shot.readySelector);
       if (shot.full) await unlock(page);
       const target = path.join(OUT, shot.file);
       fs.mkdirSync(path.dirname(target), { recursive: true });

@@ -5,6 +5,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.annotation.Import;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
@@ -50,7 +51,59 @@ import de.tum.cit.aet.logos.logoswebservice.TestJwt;
 class PublicStatsControllerTest {
 
     @Autowired MockMvc mvc;
+    @Autowired JdbcTemplate jdbc;
     @MockitoBean JwtDecoder jwtDecoder;
+
+    @Test
+    void publicHourlyBandsExcludeHiddenTeamsAndInternalTrafficAndNeverFollowTheWindow() throws Exception {
+        try {
+            jdbc.update("""
+                INSERT INTO teams (id, name, show_on_public_stats) VALUES
+                    (2201, 'Public team A', true), (2202, 'Public team B', true),
+                    (2203, 'Public team C', true), (2204, 'Hidden team', false)
+                """);
+            jdbc.update("""
+                WITH monday AS (
+                    SELECT DATE '1970-01-05' + 28 * FLOOR(
+                        (date_trunc('week', now() AT TIME ZONE 'Europe/Berlin')::date - 7 - DATE '1970-01-05') / 28.0
+                    )::int AS block_end
+                ), samples(team_id, hour, requests, result_status, internal) AS (
+                    VALUES (2201, 7, 200, 'success', false), (2202, 7, 200, 'success', false),
+                           (2203, 7, 200, 'success', false), (2204, 7, 1000, 'success', false),
+                           (2201, 7, 1000, 'error', false), (CAST(NULL AS integer), 7, 1000, 'success', false),
+                           (2201, 7, 1000, 'success', true), (2201, 8, 15, 'success', false),
+                           (2202, 8, 15, 'success', false), (2203, 8, 15, 'success', false),
+                           (2201, 9, 1000, 'success', false)
+                )
+                INSERT INTO log_entry (request_id, team_id, api_key_id, timestamp_request, result_status, environment)
+                SELECT 'public-hourly-test-' || nextval('log_entry_id_seq'), s.team_id,
+                    CASE WHEN s.internal THEN (SELECT id FROM api_keys WHERE internal_service = 'agent') END,
+                    (monday.block_end - 7 + make_time(s.hour, 0, 0)) AT TIME ZONE 'Europe/Berlin',
+                    s.result_status::result_status_enum,
+                    CASE WHEN team_id IS NULL THEN 'model-provider-benchmark' END
+                FROM samples s CROSS JOIN monday CROSS JOIN LATERAL generate_series(1, s.requests)
+                """);
+            for (String window : java.util.List.of("7", "all")) {
+                mvc.perform(get("/public/stats").param("days", window))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.successful_requests").value("all".equals(window) ? 1645 : 0))
+                    .andExpect(jsonPath("$.hourly_request_load.time_zone").value("Europe/Berlin"))
+                    .andExpect(jsonPath("$.hourly_request_load.band_size").value(5))
+                    .andExpect(jsonPath("$.hourly_request_load.hours.length()").value(24))
+                    .andExpect(jsonPath("$.hourly_request_load.hours[7].band_start").value(20))
+                    .andExpect(jsonPath("$.hourly_request_load.hours[8].band_start").value(0))
+                    .andExpect(jsonPath("$.hourly_request_load.hours[8].zero").value(false))
+                    .andExpect(jsonPath("$.hourly_request_load.hours[9].band_start").isEmpty())
+                    .andExpect(jsonPath("$.hourly_request_load.hours[9].zero").value(false))
+                    .andExpect(jsonPath("$.hourly_request_load.hours[10].zero").value(true))
+                    .andExpect(jsonPath("$.hourly_request_load.hours[7].requests").doesNotExist())
+                    .andExpect(jsonPath("$.hourly_request_load.hours[7].teams").doesNotExist());
+            }
+        } finally {
+            jdbc.update("DELETE FROM log_entry WHERE request_id LIKE 'public-hourly-test-%'");
+            jdbc.update("DELETE FROM teams WHERE id BETWEEN 2201 AND 2204");
+        }
+    }
 
     @Test
     @Sql(scripts = "/sql/seed-public-stats.sql", executionPhase = Sql.ExecutionPhase.BEFORE_TEST_METHOD)

@@ -31,6 +31,9 @@ describe('PublicStats page', () => {
     await fixture.whenStable();
     fixture.detectChanges();
     const root = fixture.nativeElement as HTMLElement;
+    expect(root.querySelector('header h1')?.textContent?.trim()).toBe('Public usage');
+    expect(root.querySelector('main .trends-grid app-public-stats-hourly')).not.toBeNull();
+    expect(root.querySelector('main .trends-grid app-public-stats-trend')).not.toBeNull();
     const values = Array.from(root.querySelectorAll('.kpi-grid .kpi-value')).map((el) => el.textContent!.trim());
     // Active people, regular users, published teams, requests, tokens, per-student average.
     expect(values).toEqual(['0', '0', '2', '5', '0', '1.2']);
@@ -86,8 +89,15 @@ describe('PublicStats page', () => {
     const root = fixture.nativeElement as HTMLElement;
 
     expect(root.querySelectorAll('.trend-bar')).toHaveLength(2);
-    // The marker sits on the month of the first Logos Agent session.
-    expect(root.querySelector('.trend-slot.marked .trend-marker-label')?.textContent?.trim()).toBe('Logos Agent');
+    // The launch date remains in the Agent card, not on the growth chart.
+    expect(root.querySelector('.trend-slot.marked, .trend-marker-label')).toBeNull();
+    expect(root.textContent).toContain('Running since 2026-09-03');
+    const agentMetric = [...root.querySelectorAll<HTMLButtonElement>('button')].find(
+      (button) => button.textContent?.trim() === 'Logos Agent sessions'
+    )!;
+    agentMetric.click();
+    fixture.detectChanges();
+    expect(root.querySelector('.trend-readout')?.textContent?.trim()).toMatch(/: 12$/);
     const firstRow = root.querySelector('.usage-table tbody tr')!;
     expect(firstRow.textContent).toContain('646');
     expect(root.querySelector('.table-note')).toBeNull();

@@ -267,13 +267,21 @@ default cloud and local rate limits. An owner can also delete the team here.
 The **Team privacy** section shows where the team’s requests can be processed. A Logos Admin can change it. See [Team privacy](logos-admin.md#team-privacy).
 
 Under **Public stats** you decide whether the team appears on the public
-statistics page (`/stats`). There you can also give the team a **Category**,
+statistics page (`/usage`). There you can also give the team a **Category**,
 for example "Research" or "Teaching". The public page groups teams by this
 label. Select an existing category from the list, explicitly create a new one, or
 select **Uncategorized** to clear it. Apply these choices with **Save Public Stats**
 in the same section; **Save Settings** below only saves the budget and rate limits.
 A confirmation appears after saving. The public page refreshes periodically, so
 changes may take up to 30 minutes to appear with the default cache setting.
+
+The public page also shows **Typical hourly request load**. It includes
+successful requests from published teams, but not internal requests. The
+chart uses the same four-week period for all time-window selections. Data
+appears at least one week after the period ends. The chart shows ranges and
+does not show hours with too little combined traffic. It does not show GPU use.
+
+![Public stats page with ranges for hourly request load](/img/roles/public-stats-hourly-load.png)
 
 Provider batches do not reserve budget. At batch creation, Logos checks only costs that it already settled.
 A provider batch counts against the budget only after it finishes and Logos settles its costs.
