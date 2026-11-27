@@ -234,7 +234,7 @@ configuration cannot alter the authoritative build. The finalizer checks the
 same tree ID before pushing. Neither
 the checkout baseline nor the authoritative check outcome comes from an
 agent-written result file. Failed or unavailable checks produce a draft PR with
-diagnostics and a failed session; deployment is not dispatched. Existing PRs
+diagnostics and a failed session; no deployment is ordered. Existing PRs
 are made drafts before such a push. Successful checks do not automatically
 mark an existing draft ready for review. Python and other services still need
 their normal tests; this automatic gate covers Java and Angular.
@@ -294,13 +294,33 @@ allowed — comment.
 
 **May not:** reach the Docker daemon, run as root, push to `main` or any
 protected branch, dispatch a workflow, or touch production. The deploy is
-dispatched *by this service*, with a token the container never receives, and
-only for `logos_deploy-dev.yml`; any other workflow is refused in code.
+ordered *by this service*, with a key the container never receives (see
+[Deploy to dev](#deploy-to-dev)).
 
 Branch names are derived from the session id, not chosen by the agent, so two
 sessions cannot collide and no workspace name can steer a push at a protected
 branch. The exception is a pull request handed to it, which keeps its own
 branch — checked against the protected list all the same.
+
+## Deploy to dev
+
+A session of the platform repository that is started by hand can ask for its
+result to be deployed to dev (**Deploy to the dev environment afterwards**).
+After the session succeeded, the runner
+
+1. waits for the image build of the pull request, tagged `pr-<number>`;
+2. orders a deployment of that tag from the Logos on dev
+   (`POST /api/deployments/agent/plans`), authenticated with the agent
+   deployment key. While another deployment runs there, or dev does not answer,
+   it repeats the order for up to 40 minutes;
+3. waits up to 20 minutes for the core step of that deployment (the worker nodes
+   of dev may still be updating);
+4. takes the screenshots, if the session asked for any.
+
+Dev takes such an order only for a pull request build, only with the key set as
+its `LOGOS_DEPLOYMENTS_AGENT_KEY`, and only while it is not protected. The setup
+is described in
+[Let the Logos agent deploy to Dev](../docs/deployment.md#let-the-logos-agent-deploy-to-dev).
 
 ## Stopping it, and slowing it down
 
@@ -393,7 +413,9 @@ unused and can be removed.
 | `LOGOS_AGENT_SESSION_TIMEOUT_S` | `0` | Wall-clock ceiling per session; `0` is none, which is the default |
 | `LOGOS_AGENT_SESSION_MODEL_URL` | `http://logos-agent-gateway` | Where sessions send model traffic — a gateway that exposes only the orchestrator's `/v1` model surface, so a session never reaches the rest of the internal network |
 | `LOGOS_AGENT_SESSION_GITHUB_TOKEN` | falls back to the token above | Given to containers; best without `workflow` scope |
-| `LOGOS_AGENT_DEPLOY_ENABLED` | `false` | Whether dev deploys may be dispatched at all |
+| `LOGOS_AGENT_DEPLOY_ENABLED` | `false` | Whether sessions may deploy to dev at all |
+| `LOGOS_AGENT_DEV_DEPLOYMENT_KEY` | — | The key dev accepts for deployments (see [Deploy to dev](#deploy-to-dev)). **Required** to deploy. |
+| `LOGOS_AGENT_DEV_BASE_URL` | `https://logos-dev.aet.cit.tum.de` | The Logos that sessions deploy to and photograph |
 | `LOGOS_AGENT_EGRESS_PROXY_URL` | `http://logos-agent-egress-proxy:3128` | The allowlisting HTTPS proxy for linked-repository sessions; empty turns internet access off for every session |
 
 ### The GitHub account
@@ -403,11 +425,11 @@ Everything this service does on GitHub happens as one account —
 comments are visibly the platform's own, whose access is withdrawn in one
 place, and which owns nothing a human contributor owns.
 
-A classic personal access token from that account needs exactly two scopes:
+A classic personal access token from that account needs these scopes:
 
 - **`repo`** — push branches, open pull requests, read commit status and checks.
-- **`workflow`** — dispatch the dev deploy, and let a session change files
-  under `.github/workflows/` like any other part of the repository.
+- **`workflow`** — only on a separate session token, if sessions may change
+  files under `.github/workflows/` like any other part of the repository.
 
 Nothing else: no `admin:repo_hook` (the runner polls rather than listening for
 webhooks, so it needs no inbound door), no package scopes, no organisation
@@ -421,11 +443,10 @@ rather than committing agent work under that person's name. The finalizer
 checks again inside the container, immediately before it pushes.
 
 **Two tokens if you can.** A second token of the same account *without*
-`workflow` scope, given to session containers, means a session cannot dispatch
-a deploy or edit a workflow file even if the agent tries — GitHub refuses such
-a push outright.
+`workflow` scope, given to session containers, means a session cannot edit a
+workflow file even if the agent tries — GitHub refuses such a push outright.
 
-With one token that scope is present, so the finalizer enforces the part that
+With one token GitHub may allow it, so the finalizer enforces the part that
 matters itself: a session whose diff touches `.github/workflows/` fails
 instead of pushing. A workflow file an agent wrote would otherwise run with
 the repository's own secrets as soon as its pull request opened, and losing a
@@ -729,11 +750,11 @@ an `Authorization` header, and the token is what authorises the read.
   no later pass finds that issue, review or question again.
 - **Nothing merges itself.** A person
   approves and merges exactly as they do for human work.
-- **Screenshots follow the deploy.** A session that asks for dev screenshots
-  gets them only after the runner has dispatched its dev deploy and watched
-  the environment serve again — the runner captures the pages in one-shot
-  containers, so the photos show the revision the session just deployed, not
-  the one that was live while the session ran.
+- **Screenshots follow the deploy.** A session that asks for a deployment and
+  dev screenshots gets them only after the core of dev runs its build and dev
+  answers again — the runner captures the pages in one-shot containers, so the
+  photos show the revision the session just deployed, not the one that was live
+  while the session ran.
 
 ### Coding in linked team repositories
 
@@ -763,7 +784,7 @@ tools or dependencies must be in the image or in the workspace cache described
 below. Missing tools or
 dependencies fail verification and allow only a draft PR. Repository instructions
 do not change the container image or install software on the runner. Linked
-coding sessions never invoke Logos image-build or deployment workflows.
+coding sessions never start a Logos image build or deployment.
 
 Disabling the link stops polling for new requests. Sessions already queued or
 running, their retries and pending replies retain their original repository and

@@ -98,6 +98,10 @@ public class SecurityConfig {
                 // checked in the controller. The key is not a JWT.
                 .requestMatchers(HttpMethod.POST, "/deployments/deployer/poll", "/deployments/deployer/report")
                     .permitAll()
+                // A Logos agent starts and follows its deployments with the agent deployment key,
+                // checked in the controller. The key is not a JWT.
+                .requestMatchers(HttpMethod.POST, "/deployments/agent/plans").permitAll()
+                .requestMatchers(HttpMethod.GET, "/deployments/agent/plans/*").permitAll()
                 // Inference gateway authenticates Logos API keys in-controller;
                 // Bearer values on these paths are API keys, not JWTs.
                 .requestMatchers("/v1", "/v1/**", "/openai", "/openai/**", "/jobs", "/jobs/**").permitAll()
@@ -265,7 +269,8 @@ public class SecurityConfig {
                     || "/internal/notifications".equals(path)
                     || path.equals("/internal/gateway_relay_stats")
                     || path.startsWith("/internal/gateway_relay_stats/")
-                    || path.startsWith("/deployments/deployer/")) {
+                    || path.startsWith("/deployments/deployer/")
+                    || path.startsWith("/deployments/agent/")) {
                 return null;
             }
             // Logos API keys often arrive as Authorization: Bearer <key>. Do not

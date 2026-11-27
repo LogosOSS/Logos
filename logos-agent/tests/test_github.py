@@ -1,9 +1,8 @@
-"""The runner's own GitHub calls: dispatch target, image tag, run selection.
+"""The runner's own GitHub calls: run selection and identity.
 
-These functions build small, fixed HTTP calls; the tests pin the URLs, the
-dispatch inputs, and which workflow run counts as "the" build so a refactor
-cannot quietly turn the dev deploy into a dispatch of the wrong workflow or
-the wrong image tag.
+These functions build small, fixed HTTP calls; the tests pin the URLs and which
+workflow run counts as "the" build, so a refactor cannot quietly hand a deploy
+the image of another commit.
 """
 
 from __future__ import annotations
@@ -44,10 +43,6 @@ def fake_client(monkeypatch, calls, runs=None):
         async def __aexit__(self, *args):
             return False
 
-        async def post(self, url, headers=None, json=None):
-            calls.append({"method": "POST", "url": url, "json": json})
-            return FakeResponse(201)
-
         async def get(self, url, headers=None, params=None):
             calls.append({"method": "GET", "url": url, "params": params})
             return FakeResponse(200, {"workflow_runs": runs or []})
@@ -63,26 +58,6 @@ def test_pr_number_from_url():
     assert github.pr_number_from_url("") is None
     assert github.pr_number_from_url("https://github.com/LogosOSS/Logos/issues/772") is None
     assert github.pr_number_from_url("https://github.com/LogosOSS/Logos/pull/not-a-number") is None
-
-
-async def test_dispatch_posts_the_pr_image_tag_on_the_trusted_ref(monkeypatch):
-    # The dispatch is what the deploy workflow pulls: the tag must be the one
-    # the caller resolved (the PR build's), forwarded as the image-tag input.
-    # The ref is the fixed trusted one, never a session branch — the workflow
-    # checks out the repository to copy the compose file to the dev host, so
-    # a branch ref would let the agent's own compose edits run there.
-    calls: list = []
-    fake_client(monkeypatch, calls)
-
-    url = await github.dispatch_dev_deploy(image_tag="pr-772")
-
-    post = calls[0]
-    assert post["method"] == "POST"
-    assert post["url"] == (
-        "https://api.github.com/repos/LogosOSS/Logos/actions/workflows/logos_deploy-dev.yml/dispatches"
-    )
-    assert post["json"] == {"ref": "main", "inputs": {"image-tag": "pr-772"}}
-    assert url.startswith("https://github.com/LogosOSS/Logos/actions/workflows/logos_deploy-dev.yml")
 
 
 async def test_wait_for_pr_builds_selects_the_branch_run(monkeypatch):
@@ -177,131 +152,6 @@ async def test_wait_for_pr_builds_accepts_the_run_of_the_pushed_commit(monkeypat
     assert "actions/runs/2" in detail
 
 
-async def test_wait_for_dev_deploy_ignores_runs_on_session_branches(monkeypatch):
-    # Deploys are dispatched on the trusted ref only, so the wait observes
-    # runs there: a completed run on a session branch (manual or leftover)
-    # must not end the wait, but the completed run on the trusted ref does.
-    calls: list = []
-    run = {
-        "head_branch": "main",
-        "status": "completed",
-        "conclusion": "success",
-        "html_url": "https://github.com/LogosOSS/Logos/actions/runs/9",
-    }
-    fake_client(
-        monkeypatch,
-        calls,
-        runs=[
-            {"head_branch": "agent/feature-work/session-7", "status": "completed", "conclusion": "success"},
-            run,
-        ],
-    )
-
-    status, detail = await github.wait_for_dev_deploy()
-
-    assert status == "success"
-    assert "actions/runs/9" in detail
-    # Same scoping as the build wait: the workflow-scoped runs endpoint, so a
-    # completed run of another workflow on the same ref is not the deploy.
-    assert calls[0]["url"] == (
-        "https://api.github.com/repos/LogosOSS/Logos/actions/workflows/logos_deploy-dev.yml/runs"
-    )
-    assert "workflow_id" not in calls[0]["params"]
-
-
-async def test_wait_for_dev_deploy_times_out_without_a_trusted_ref_run(monkeypatch):
-    # Without a run on the trusted ref there is no deploy to observe: the
-    # wait must time out, not hang, even when session-branch runs completed.
-    calls: list = []
-    fake_client(
-        monkeypatch,
-        calls,
-        runs=[
-            {"head_branch": "agent/feature-work/session-7", "status": "completed", "conclusion": "success"},
-            {"head_branch": "other-branch", "status": "in_progress"},
-        ],
-    )
-
-    status, detail = await github.wait_for_dev_deploy(timeout_s=0.05, poll_s=0.01)
-
-    assert status == "timeout"
-    assert "still running" in detail
-
-
-async def test_latest_dev_deploy_run_id_reads_the_newest_trusted_ref_run(monkeypatch):
-    # The marker counts runs on the trusted ref only: a run on a session
-    # branch, however new, is not a deploy the environment can be serving.
-    calls: list = []
-    fake_client(
-        monkeypatch,
-        calls,
-        runs=[
-            {"id": 42, "head_branch": "agent/feature-work/session-7", "status": "in_progress"},
-            {"id": 41, "head_branch": "main", "status": "completed", "conclusion": "success"},
-        ],
-    )
-
-    assert await github.latest_dev_deploy_run_id() == 41
-
-
-async def test_wait_for_dev_deploy_rejects_a_completed_run_from_before_the_dispatch(monkeypatch):
-    # The newest completed run on the trusted ref can be a deploy that
-    # predates the dispatch: with the pre-dispatch marker the wait must skip
-    # it — settling on it would pass the old revision off as the one the
-    # session just deployed.
-    calls: list = []
-    fake_client(
-        monkeypatch,
-        calls,
-        runs=[
-            {
-                "id": 41,
-                "head_branch": "main",
-                "status": "completed",
-                "conclusion": "success",
-                "html_url": "https://github.com/LogosOSS/Logos/actions/runs/41",
-            },
-        ],
-    )
-
-    status, detail = await github.wait_for_dev_deploy(after_run_id=41, timeout_s=0.05, poll_s=0.01)
-
-    assert status == "timeout"
-    assert "still running" in detail
-
-
-async def test_wait_for_dev_deploy_accepts_only_a_run_newer_than_the_marker(monkeypatch):
-    # The run the dispatch created is the one newer than the marker: a
-    # completed run of an earlier session (older) is skipped even though it
-    # is the newest completed one, and the wait ends with the newer run.
-    calls: list = []
-    fake_client(
-        monkeypatch,
-        calls,
-        runs=[
-            {
-                "id": 42,
-                "head_branch": "main",
-                "status": "completed",
-                "conclusion": "success",
-                "html_url": "https://github.com/LogosOSS/Logos/actions/runs/42",
-            },
-            {
-                "id": 41,
-                "head_branch": "main",
-                "status": "completed",
-                "conclusion": "success",
-                "html_url": "https://github.com/LogosOSS/Logos/actions/runs/41",
-            },
-        ],
-    )
-
-    status, detail = await github.wait_for_dev_deploy(after_run_id=41)
-
-    assert status == "success"
-    assert "actions/runs/42" in detail
-
-
 async def test_wait_for_pr_builds_times_out_when_no_build_ran(monkeypatch):
     # Without a pull request (or without logos/** changes) no build run
     # exists for the branch: the wait must time out, not hang, so the caller
@@ -323,8 +173,8 @@ class TestAgentIdentity:
     """Every token this service holds must be the agent account's.
 
     A token belonging to a person would put agent commits, pull requests,
-    and deploy dispatches under that person's name — which nothing later can
-    undo, so it is checked before the service accepts any work.
+    and comments under that person's name — which nothing later can undo, so
+    it is checked before the service accepts any work.
     """
 
     @staticmethod

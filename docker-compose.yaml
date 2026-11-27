@@ -436,6 +436,9 @@ services:
       # on Dev and Test. See docs/deployment.md#deployments-from-logos.
       LOGOS_DEPLOYMENTS_PROTECTED: "${LOGOS_DEPLOYMENTS_PROTECTED:-true}"
       LOGOS_DEPLOYMENTS_SILENCE_LIMIT: "${LOGOS_DEPLOYMENTS_SILENCE_LIMIT:-30m}"
+      # The key with which a Logos agent deploys the build of a pull request on this Logos. Empty: no agent can. A
+      # protected Logos refuses the key. See docs/deployment.md#let-the-logos-agent-deploy-to-dev.
+      LOGOS_DEPLOYMENTS_AGENT_KEY: "${LOGOS_DEPLOYMENTS_AGENT_KEY:-}"
       # Origins the webservice accepts browser requests from. Browsers attach an
       # Origin header to POST requests and WebSocket handshakes even when the UI
       # and API share an origin, so the Spring CorsFilter rejects every POST/WS
@@ -701,7 +704,7 @@ services:
       LOGOS_AGENT_START_BELOW_LOAD: "${LOGOS_AGENT_START_BELOW_LOAD:-0.60}"
       LOGOS_AGENT_PAUSE_ABOVE_LOAD: "${LOGOS_AGENT_PAUSE_ABOVE_LOAD:-0.85}"
 
-      # What a session may reach. The workflow-scoped token stays here; the
+      # What a session may reach. The runner's token stays here; the
       # session token below should carry contents + pull-request write only.
       LOGOS_AGENT_REPO_URL: "${LOGOS_AGENT_REPO_URL:-https://github.com/LogosOSS/Logos.git}"
       LOGOS_AGENT_REPO_SLUG: "${LOGOS_AGENT_REPO_SLUG:-LogosOSS/Logos}"
@@ -722,6 +725,8 @@ services:
       LOGOS_AGENT_TRIGGERS_ENABLED: "${LOGOS_AGENT_TRIGGERS_ENABLED:-true}"
       LOGOS_AGENT_DEPLOY_ENABLED: "${LOGOS_AGENT_DEPLOY_ENABLED:-false}"
       LOGOS_AGENT_DEV_BASE_URL: "${LOGOS_AGENT_DEV_BASE_URL:-https://logos-dev.aet.cit.tum.de}"
+      # The key with which the Logos at the address above accepts deployments. Empty: sessions cannot deploy.
+      LOGOS_AGENT_DEV_DEPLOYMENT_KEY: "${LOGOS_AGENT_DEV_DEPLOYMENT_KEY:-}"
       # The volume that backs the runner's per-session state (the pause mark).
       # It must name the *actual* Docker volume behind the mount below. A
       # compose volume with no explicit name is project-scoped

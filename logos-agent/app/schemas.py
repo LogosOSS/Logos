@@ -131,7 +131,7 @@ class SessionCreate(BaseModel):
     # Open a pull request when the work finishes and the diff is non-empty.
     open_pull_request: bool = True
     # Deploy the resulting build to the dev environment after the PR is opened.
-    # Refused unless the service is configured with deploy_enabled.
+    # Refused unless the service has deploys enabled and the key for dev.
     deploy_to_dev: bool = False
     # URLs (paths on the dev environment) to screenshot once deployed.
     screenshot_paths: list[str] = Field(default_factory=list, max_length=10)

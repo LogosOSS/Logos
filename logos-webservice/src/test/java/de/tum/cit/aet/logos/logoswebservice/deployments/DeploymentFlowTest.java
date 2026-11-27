@@ -1,6 +1,7 @@
 package de.tum.cit.aet.logos.logoswebservice.deployments;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -18,6 +19,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.oauth2.jwt.BadJwtException;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
@@ -53,6 +55,7 @@ import org.springframework.transaction.support.TransactionTemplate;
     "logos.auth.roles.app-admin=chair-member",
     "logos.auth.sync-debounce-minutes=5",
     "logos.deployments.protect=false",
+    "logos.deployments.agent-key=agent-deployment-key-of-the-test",
 })
 @Sql(scripts = "/sql/seed-identity.sql", executionPhase = Sql.ExecutionPhase.BEFORE_TEST_METHOD)
 @Sql(statements = {
@@ -68,6 +71,7 @@ class DeploymentFlowTest {
     /** The logosnode provider of the worker of most tests, and the worker key that its node manager presents. */
     private static final int WORKER_PROVIDER = 9201;
     private static final String WORKER_KEY = "worker-key-of-dev-worker";
+    private static final String AGENT_KEY = "agent-deployment-key-of-the-test";
 
     @Autowired MockMvc mvc;
     @Autowired JdbcTemplate jdbc;
@@ -129,6 +133,17 @@ class DeploymentFlowTest {
             .with(TestJwt.logosAdmin())
             .contentType("application/json")
             .content(json.writeValueAsString(Map.of("tag", tag))));
+    }
+
+    private ResultActions rawAgentStart(String key, String tag) throws Exception {
+        return mvc.perform(post("/deployments/agent/plans")
+            .header("Authorization", "Bearer " + key)
+            .contentType("application/json")
+            .content(json.writeValueAsString(Map.of("tag", tag))));
+    }
+
+    private ResultActions rawAgentPlan(String key, String id) throws Exception {
+        return mvc.perform(get("/deployments/agent/plans/" + id).header("Authorization", "Bearer " + key));
     }
 
     private JsonNode plan(String id) throws Exception {
@@ -595,5 +610,60 @@ class DeploymentFlowTest {
         mvc.perform(get("/deployments/overview").with(TestJwt.logosAdmin()))
             .andExpect(jsonPath("$.suggested_tags[0]").value("latest"))
             .andExpect(jsonPath("$.suggested_tags[1]").value("pr-94"));
+    }
+
+    // ------------------------------------------------------------------ a Logos agent
+
+    @Test
+    void aLogosAgentStartsAPullRequestBuildAndFollowsIt() throws Exception {
+        String[] keys = coreAndWorker();
+
+        JsonNode started = body(rawAgentStart(AGENT_KEY, "pr-93").andExpect(status().isCreated()));
+
+        assertThat(started.get("initiator").asText()).isEqualTo("Logos agent");
+        assertThat(poll(keys[0]).get("orders").get(0).get("tag").asText()).isEqualTo("pr-93");
+
+        String planId = started.get("id").asText();
+        String coreId = step(plan(planId), "dev-core").get("id").asText();
+        report(keys[0], snapshot(coreId, "done", "succeeded", "now running tag pr-93"));
+
+        // The agent sees how each step stands, but none of the reports and logs of the hosts.
+        rawAgentPlan(AGENT_KEY, planId)
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.status").value("running"))
+            .andExpect(jsonPath("$.steps[0].kind").value("core"))
+            .andExpect(jsonPath("$.steps[0].status").value("succeeded"))
+            .andExpect(jsonPath("$.step_details").isEmpty());
+    }
+
+    @Test
+    void aLogosAgentCanStartOnlyPullRequestBuilds() throws Exception {
+        coreAndWorker();
+
+        for (String tag : List.of("latest", "1.0.2", "pr-", "pr-93-patched")) {
+            rawAgentStart(AGENT_KEY, tag).andExpect(status().isBadRequest());
+        }
+        assertThat(body(mvc.perform(get("/deployments/plans").with(TestJwt.logosAdmin())))).isEmpty();
+    }
+
+    @Test
+    void theKeyOfALogosAgentOpensNothingElse() throws Exception {
+        String[] keys = coreAndWorker();
+        String adminPlan = body(rawStart("pr-93").andExpect(status().isCreated())).get("id").asText();
+
+        // A plan of an admin does not exist for the agent.
+        rawAgentPlan(AGENT_KEY, adminPlan).andExpect(status().isNotFound());
+        // The key is neither a login nor a deployer key. As a login it is no token at all, which the real decoder says.
+        when(jwtDecoder.decode(AGENT_KEY)).thenThrow(new BadJwtException("not a token"));
+        mvc.perform(get("/deployments/plans").header("Authorization", "Bearer " + AGENT_KEY))
+            .andExpect(status().isUnauthorized());
+        mvc.perform(post("/deployments/plans/" + adminPlan + "/abandon").header("Authorization", "Bearer " + AGENT_KEY))
+            .andExpect(status().isUnauthorized());
+        rawPoll(AGENT_KEY).andExpect(status().isUnauthorized());
+        // And no other key opens the door of the agent.
+        for (String key : List.of("not-the-key", keys[0], keys[1])) {
+            rawAgentStart(key, "pr-93").andExpect(status().isUnauthorized());
+        }
+        mvc.perform(get("/deployments/agent/plans/" + adminPlan)).andExpect(status().isUnauthorized());
     }
 }

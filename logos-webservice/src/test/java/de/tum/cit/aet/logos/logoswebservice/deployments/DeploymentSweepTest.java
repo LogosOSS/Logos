@@ -13,7 +13,7 @@ class DeploymentSweepTest {
 
     private final DeploymentReportService reports = mock(DeploymentReportService.class);
     private final DeploymentSweep sweep =
-        new DeploymentSweep(new DeploymentProperties(false, null, null, null, null), reports);
+        new DeploymentSweep(new DeploymentProperties(false, null, null, null, null, null), reports);
 
     @Test
     void endsTheSilentSteps() {

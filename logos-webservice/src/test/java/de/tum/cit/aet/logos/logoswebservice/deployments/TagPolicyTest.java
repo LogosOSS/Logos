@@ -12,9 +12,9 @@ import de.tum.cit.aet.logos.logoswebservice.deployments.service.TagPolicy;
 class TagPolicyTest {
 
     /** Prod. */
-    private final TagPolicy protectedLogos = new TagPolicy(new DeploymentProperties(true, null, null, null, null));
+    private final TagPolicy protectedLogos = new TagPolicy(new DeploymentProperties(true, null, null, null, null, null));
     /** Dev and Test. */
-    private final TagPolicy open = new TagPolicy(new DeploymentProperties(false, null, null, null, null));
+    private final TagPolicy open = new TagPolicy(new DeploymentProperties(false, null, null, null, null, null));
 
     @ParameterizedTest
     @ValueSource(strings = {"latest", "1.0.2", "2026.10.4", "1.2.3-rc1", "1.2.3-rc.1"})
@@ -72,7 +72,7 @@ class TagPolicyTest {
 
     @Test
     void theRestrictedPatternCanBeSet() {
-        TagPolicy custom = new TagPolicy(new DeploymentProperties(true, "stable-[0-9]+", null, null, null));
+        TagPolicy custom = new TagPolicy(new DeploymentProperties(true, "stable-[0-9]+", null, null, null, null));
 
         assertThatCode(() -> custom.check("stable-4")).doesNotThrowAnyException();
         assertThatThrownBy(() -> custom.check("latest")).isInstanceOf(IllegalArgumentException.class);

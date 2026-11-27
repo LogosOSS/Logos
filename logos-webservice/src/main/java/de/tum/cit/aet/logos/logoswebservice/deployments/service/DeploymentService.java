@@ -10,6 +10,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 import org.springframework.dao.DataIntegrityViolationException;
@@ -39,12 +40,18 @@ import de.tum.cit.aet.logos.logoswebservice.identity.repository.UserRepository;
  *
  * <p>A plan is the core first, then all workers (see {@link PlanSequencer}). Only one plan may run: a second start is
  * refused, and a plan that is stuck ends by the silence limit or by an admin who abandons it.
+ *
+ * <p>A Logos agent can do less than an admin: start the build of a pull request, and look at the plans it started.
  */
 @Service
 public class DeploymentService {
 
     private static final int MAX_LIST = 50;
     private static final int MAX_SUGGESTED_TAGS = 12;
+    /** The tag of the build of a pull request, the only kind that a Logos agent may deploy. */
+    private static final Pattern PULL_REQUEST_TAG = Pattern.compile("pr-[0-9]+");
+    /** The name in the history for a plan that a Logos agent started. Such a plan has no user. */
+    private static final String AGENT_NAME = "Logos agent";
 
     private final DeploymentProperties properties;
     private final TagPolicy tagPolicy;
@@ -110,6 +117,15 @@ public class DeploymentService {
         return views.detail(plan, steps.findByPlanIdOrderByPositionAscDeployerNameAsc(id));
     }
 
+    /** A plan that a Logos agent started, without the reports and logs of its steps. Other plans do not exist here. */
+    @Transactional(readOnly = true)
+    public PlanDTO planForAgent(UUID id) {
+        DeploymentPlan plan = plans.findById(id)
+            .filter(found -> found.getInitiatorUserId() == null && AGENT_NAME.equals(found.getInitiator()))
+            .orElseThrow(() -> new NotFoundException("There is no such deployment."));
+        return views.brief(plan, steps.findByPlanIdOrderByPositionAscDeployerNameAsc(id));
+    }
+
     // ------------------------------------------------------------------ Starting and abandoning
 
     /**
@@ -120,6 +136,26 @@ public class DeploymentService {
     @Transactional
     public PlanDTO start(String tag, AuthContext auth) {
         tagPolicy.check(tag);
+        Started started = open(tag, initiatorName(auth), auth == null ? null : auth.userId());
+        return views.detail(started.plan(), started.steps());
+    }
+
+    /** Start the build of a pull request for a Logos agent, under the same rules as the start of an admin. */
+    @Transactional
+    public PlanDTO startForAgent(String tag) {
+        tagPolicy.check(tag);
+        if (!PULL_REQUEST_TAG.matcher(tag).matches()) {
+            throw new IllegalArgumentException(
+                "An agent can deploy only pull request builds such as 'pr-93', not '" + tag + "'.");
+        }
+        Started started = open(tag, AGENT_NAME, null);
+        return views.brief(started.plan(), started.steps());
+    }
+
+    private record Started(DeploymentPlan plan, List<DeploymentStep> steps) {}
+
+    /** Save a new plan with a step for each deployer. The tag is checked already. */
+    private Started open(String tag, String initiator, Integer initiatorUserId) {
         Instant now = clock.instant();
         List<Deployer> all = deployers.list();
         Optional<DeploymentPlan> running = plans.findFirstByStatus(PlanStatus.running);
@@ -133,8 +169,8 @@ public class DeploymentService {
         plan.setNumber(plans.nextNumber());
         plan.setTag(tag);
         plan.setStatus(PlanStatus.running);
-        plan.setInitiator(initiatorName(auth));
-        plan.setInitiatorUserId(auth == null ? null : auth.userId());
+        plan.setInitiator(initiator);
+        plan.setInitiatorUserId(initiatorUserId);
         plan.setCreatedAt(now);
         plan.setLastActivityAt(now);
 
@@ -159,7 +195,7 @@ public class DeploymentService {
             throw new ConflictException("A deployment is running.");
         }
         steps.saveAll(planSteps);
-        return views.detail(plan, planSteps);
+        return new Started(plan, planSteps);
     }
 
     /**
