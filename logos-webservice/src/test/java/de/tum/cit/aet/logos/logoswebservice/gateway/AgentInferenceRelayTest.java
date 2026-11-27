@@ -79,8 +79,9 @@ class AgentInferenceRelayTest {
     static void createFixture() throws Exception {
         db = new JdbcTemplate(new DriverManagerDataSource(postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword()));
         db.execute("""
+            CREATE TYPE cloud_provider_type_enum AS ENUM ('openai', 'anthropic', 'logos');
             CREATE TABLE providers(id integer primary key, base_url text, api_key text,
-                                   provider_type text, cloud_provider_type text);
+                                   provider_type text, cloud_provider_type cloud_provider_type_enum);
             CREATE TABLE models(id integer primary key, name text);
             CREATE TABLE model_provider(provider_id integer, model_id integer, api_key text,
                                         primary key(provider_id, model_id));
@@ -154,7 +155,7 @@ class AgentInferenceRelayTest {
     @BeforeEach
     void seed() {
         db.execute("TRUNCATE agent_sessions, model_provider, models, providers");
-        db.update("INSERT INTO providers VALUES (3, ?, 'wrong-provider-key', 'cloud', 'other')", allowedOrigin);
+        db.update("INSERT INTO providers VALUES (3, ?, 'wrong-provider-key', 'cloud', 'logos')", allowedOrigin);
         db.update("INSERT INTO models VALUES (4, 'claude-test')");
         db.update("INSERT INTO model_provider VALUES (3, 4, ?)", PROVIDER_KEY);
         db.update("INSERT INTO agent_sessions VALUES (2, 'starting', null, ?, null, 3, 4)", HASH);
@@ -219,7 +220,10 @@ class AgentInferenceRelayTest {
         db.update("UPDATE providers SET base_url = ? WHERE id=3", allowedOrigin + "/v1");
         mvc.perform(relayRequest(MESSAGES, JSON)).andExpect(status().isServiceUnavailable());
         assertThat(CALLS).hasValue(0);
-        db.update("UPDATE providers SET base_url = ? WHERE id=3", allowedOrigin);
+        db.update("UPDATE providers SET base_url = ?, cloud_provider_type='anthropic' WHERE id=3", allowedOrigin);
+        mvc.perform(relayRequest(MESSAGES, JSON)).andExpect(status().isUnauthorized());
+        assertThat(CALLS).hasValue(0);
+        db.update("UPDATE providers SET cloud_provider_type='logos' WHERE id=3");
         MODE.set("redirect");
         var result = mvc.perform(relayRequest(MESSAGES, JSON)).andExpect(request().asyncStarted()).andReturn();
         var response = mvc.perform(asyncDispatch(result)).andExpect(status().isBadGateway())

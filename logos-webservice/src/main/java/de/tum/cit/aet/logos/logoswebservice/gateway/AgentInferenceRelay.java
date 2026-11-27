@@ -110,7 +110,7 @@ final class AgentInferenceRelay {
                 JOIN providers p ON p.id = s.inference_provider_id
                 JOIN model_provider mp ON mp.provider_id = p.id AND mp.model_id = m.id
                 WHERE s.inference_grant_hash = :hash AND s.inference_client_tag = :tag
-                    AND p.provider_type = 'cloud' AND p.cloud_provider_type = 'other'
+                    AND p.provider_type = 'cloud' AND p.cloud_provider_type = 'logos'
                     AND
                 """ + ACTIVE, identity, rs -> {
                     if (!rs.next()) throw denied();
@@ -185,7 +185,7 @@ final class AgentInferenceRelay {
                 JOIN model_provider mp ON mp.provider_id = s.inference_provider_id
                                       AND mp.model_id = s.inference_model_id
                 JOIN providers p ON p.id = s.inference_provider_id
-                WHERE s.id IN (:sessions) AND p.provider_type = 'cloud' AND p.cloud_provider_type = 'other'
+                WHERE s.id IN (:sessions) AND p.provider_type = 'cloud' AND p.cloud_provider_type = 'logos'
                     AND
                 """ + ACTIVE, Map.of("sessions", sessions), rs -> {
                     long id = rs.getLong("id");
