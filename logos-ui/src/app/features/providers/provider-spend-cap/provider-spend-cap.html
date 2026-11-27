@@ -56,7 +56,7 @@
               <p class="warning">Enter a nonnegative USD amount with up to 8 decimals.</p>
             }
           }
-          <p class="hint">Changes apply now and continue each month unless a scheduled change replaces them.</p>
+          <p class="hint">Applies to this month and carries forward unless another limit is scheduled.</p>
           <div class="actions">
             <button type="submit" class="btn-primary" [disabled]="enabled() && !limitValid()">
               {{ saving() ? 'Saving…' : 'Save changes' }}
