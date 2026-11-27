@@ -106,7 +106,7 @@ async def test_missing_disk_is_recorded_as_failed_verification_for_the_exact_tre
     monkeypatch.setattr(
         sessions,
         "settings",
-        replace(sessions.settings, verification_scratch_host_path="", verification_scratch_volume=""),
+        replace(sessions.settings, verification_scratch_volume=""),
     )
     monkeypatch.setattr(
         manager, "_read_result", lambda _sid: {"candidate_tree": TREE, "candidate_paths": ["logos-ui/a.ts"]}
@@ -118,7 +118,7 @@ async def test_missing_disk_is_recorded_as_failed_verification_for_the_exact_tre
     result = await manager._verify_before_push(7, {"volume_name": "workspace"}, {}, "/artifacts/7")
     assert result["LOGOS_SESSION_VERIFICATION"] == "failed"
     assert result["LOGOS_SESSION_VERIFIED_TREE"] == TREE
-    assert "provision dedicated verification storage" in result["LOGOS_SESSION_VERIFICATION_OUTPUT"]
+    assert "requires the name of its local Docker volume" in result["LOGOS_SESSION_VERIFICATION_OUTPUT"]
     assert [call.kwargs["phase"] for call in helper.await_args_list] == ["snapshot"]
     proof = json.loads((sessions.state_dir(7) / "verification.json").read_text())
     assert proof["tree"] == TREE and proof["exit_code"] == 1 and proof["status"] == "failed"
@@ -356,7 +356,7 @@ async def test_verify_container_cannot_modify_candidate_or_access_network(monkey
 async def test_verify_container_refuses_to_create_without_disk_scratch(monkeypatch):
     request = AsyncMock()
     monkeypatch.setattr(docker_engine, "_request", request)
-    with pytest.raises(ValueError, match="dedicated disk scratch reservation"):
+    with pytest.raises(ValueError, match="private disk scratch reservation"):
         await docker_engine.create_session_container(
             name="verify",
             image="workspace",

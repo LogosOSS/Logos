@@ -1,4 +1,4 @@
-"""Verifier disk scratch is bounded, isolated, and removed only after Docker releases it."""
+"""Verifier disk scratch is monitored, isolated, and removed only after Docker releases it."""
 
 from __future__ import annotations
 
@@ -15,8 +15,8 @@ import pytest
 from app import docker_engine, sessions
 from app import verification_scratch as scratch
 
-HOST = "/srv/logos-verifier-scratch"
-VOLUME = "logos_agent_verifier_scratch_disk"
+HOST = "/var/lib/docker/volumes/logos_agent_verifier_scratch/_data"
+VOLUME = "logos_agent_verifier_scratch"
 MOUNTPOINT = f"/var/lib/docker/volumes/{VOLUME}/_data"
 IDENTITY = "a" * 12
 MARKER = "a" * 64
@@ -26,7 +26,8 @@ MARKER = "a" * 64
 def pool(monkeypatch, tmp_path):
     monkeypatch.setattr(scratch, "ROOT", tmp_path)
     monkeypatch.setattr(scratch, "_validate_mount", lambda *_args: None)
-    monkeypatch.setattr(scratch, "_validate_daemon_bind", AsyncMock(return_value=Path(MOUNTPOINT)))
+    monkeypatch.setattr(scratch, "_available", lambda: (100 * scratch.GIB, 50_000))
+    monkeypatch.setattr(scratch, "_validate_daemon_volume", AsyncMock(return_value=Path(MOUNTPOINT)))
     monkeypatch.setattr(scratch.docker_engine, "list_managed_containers", AsyncMock(return_value=[]))
     # The runner is root in Compose, unlike a local pytest process.
     real_os = os
@@ -79,7 +80,7 @@ async def test_cancelled_lock_open_closes_the_eventual_descriptor(monkeypatch, t
 
 
 async def test_reservations_are_exclusive_fresh_and_cleaned(pool):
-    async with scratch.reserve(VOLUME, HOST, "20", timeout_s=0) as first:
+    async with scratch.reserve(VOLUME, "20", "10", timeout_s=0) as first:
         local = pool / Path(first.host_path).name
         marker = local / scratch.MARKER
         assert marker.read_text() == first.marker
@@ -88,10 +89,10 @@ async def test_reservations_are_exclusive_fresh_and_cleaned(pool):
         assert Path(first.host_path).parent == Path(MOUNTPOINT)
         (local / "prover-output").write_text("private")
         with pytest.raises(RuntimeError, match="slot was still busy"):
-            async with scratch.reserve(VOLUME, HOST, "20", timeout_s=0):
+            async with scratch.reserve(VOLUME, "20", "10", timeout_s=0):
                 pytest.fail("must not allow another verifier")
     assert not local.exists()
-    async with scratch.reserve(VOLUME, HOST, "20", timeout_s=0) as second:
+    async with scratch.reserve(VOLUME, "20", "10", timeout_s=0) as second:
         assert second.host_path != first.host_path
         assert second.marker != first.marker
         assert not (pool / Path(second.host_path).name / "prover-output").exists()
@@ -99,7 +100,7 @@ async def test_reservations_are_exclusive_fresh_and_cleaned(pool):
 
 @pytest.mark.parametrize("labelled", [False, True])
 async def test_recovery_retains_directories_owned_by_orphaned_docker_helpers(pool, labelled):
-    async with scratch.reserve(VOLUME, HOST, "20", timeout_s=0) as first:
+    async with scratch.reserve(VOLUME, "20", "10", timeout_s=0) as first:
         scratch.docker_engine.list_managed_containers.return_value = [
             {"Labels": {scratch.LABEL: "true"}} if labelled else {"Mounts": [{"Source": first.host_path}]}
         ]
@@ -108,11 +109,11 @@ async def test_recovery_retains_directories_owned_by_orphaned_docker_helpers(poo
 
     assert stale.exists()
     with pytest.raises(RuntimeError, match="previous verification scratch is still"):
-        async with scratch.reserve(VOLUME, HOST, "20", timeout_s=0):
+        async with scratch.reserve(VOLUME, "20", "10", timeout_s=0):
             pytest.fail("must not clear an orphaned verifier's scratch data")
     assert (stale / "retained").exists()
     scratch.docker_engine.list_managed_containers.return_value = []
-    async with scratch.reserve(VOLUME, HOST, "20", timeout_s=0):
+    async with scratch.reserve(VOLUME, "20", "10", timeout_s=0):
         assert not stale.exists()
 
 
@@ -121,22 +122,22 @@ async def test_cleanup_does_not_follow_verifier_symlinks(pool):
     outside.mkdir()
     protected = outside / "keep"
     protected.touch()
-    async with scratch.reserve(VOLUME, HOST, "20", timeout_s=0) as slot:
+    async with scratch.reserve(VOLUME, "20", "10", timeout_s=0) as slot:
         (pool / Path(slot.host_path).name / "malicious").symlink_to(outside)
     assert protected.exists()
 
 
 @pytest.mark.parametrize("value", ["bad", "0", "-1", "20GiB", "99999"])
 async def test_rejects_invalid_explicit_cap(pool, value):
-    with pytest.raises(RuntimeError, match="positive integer"):
-        async with scratch.reserve(VOLUME, HOST, value, timeout_s=0):
+    with pytest.raises(RuntimeError, match="positive integers"):
+        async with scratch.reserve(VOLUME, value, "10", timeout_s=0):
             pytest.fail("invalid limits must fail closed")
 
 
 async def test_rejects_extraneous_files_on_shared_device(pool):
     (pool / "other-service").mkdir()
     with pytest.raises(RuntimeError, match="only runner files"):
-        async with scratch.reserve(VOLUME, HOST, "20", timeout_s=0):
+        async with scratch.reserve(VOLUME, "20", "10", timeout_s=0):
             pytest.fail("must not use shared storage")
 
 
@@ -149,105 +150,90 @@ async def test_binds_must_match_daemon_inspection(monkeypatch):
         "Name": VOLUME,
         "Driver": "local",
         "Mountpoint": MOUNTPOINT,
-        "Options": {"device": HOST, "type": "none", "o": "bind"},
+        "Options": None,
     }
     volume = AsyncMock(return_value=info.copy())
     monkeypatch.setattr(docker_engine, "inspect_volume", volume)
-    assert await scratch._validate_daemon_bind(VOLUME, HOST) == Path(MOUNTPOINT)
+    assert await scratch._validate_daemon_volume(VOLUME) == Path(MOUNTPOINT)
     for change in ({"Type": "bind"}, {"Source": "/wrong/path"}, {"RW": False}, {"Name": "other-volume"}):
         inspect.return_value["Mounts"] = [{**mount, **change}]
         with pytest.raises(RuntimeError, match="Docker volume mount"):
-            await scratch._validate_daemon_bind(VOLUME, HOST)
-    for options in (None, {}, {**info["Options"], "device": "/"}):
+            await scratch._validate_daemon_volume(VOLUME)
+    for options in ({"type": "tmpfs"}, {"device": "/", "type": "none", "o": "bind"}):
         volume.return_value = {**info, "Options": options}
-        with pytest.raises(RuntimeError, match="explicitly provisioned"):
-            await scratch._validate_daemon_bind(VOLUME, HOST)
+        with pytest.raises(RuntimeError, match="plain local Docker volume"):
+            await scratch._validate_daemon_volume(VOLUME)
 
 
 @pytest.mark.parametrize(
-    ("filesystem", "root", "dev", "options", "size_gib", "backed", "nested", "shared", "valid"),
+    ("filesystem", "dev", "options", "superopts", "nested", "valid"),
     [
-        ("ext4", "/", "253:1", "rw,nosuid,nodev", 20, True, False, False, True),
-        ("xfs", "/", "253:1", "rw,nosuid,nodev", 20, True, False, False, True),
-        ("ext4", "/", "253:1", "rw,nosuid,nodev", 21, True, False, False, False),
-        ("ext4", "/", "253:1", "rw,nosuid,nodev", 0, True, False, False, False),
-        ("tmpfs", "/", "253:1", "rw,nosuid,nodev", 2, True, False, False, False),
-        ("ext4", "/shared", "253:1", "rw,nosuid,nodev", 20, True, False, False, False),
-        ("ext4", "/", "253:2", "rw,nosuid,nodev", 20, True, False, False, False),
-        ("ext4", "/", "253:1", "rw,nosuid", 20, True, False, False, False),
-        ("ext4", "/", "253:1", "rw,nosuid,nodev,noexec", 20, True, False, False, False),
-        ("ext4", "/", "253:1", "rw,nosuid,nodev", 20, False, False, False, False),
-        ("ext4", "/", "253:1", "rw,nosuid,nodev", 20, True, True, False, False),
-        ("ext4", "/", "253:1", "rw,nosuid,nodev", 20, True, False, True, False),
+        ("ext4", "253:1", "rw,relatime", "rw", False, True),
+        ("xfs", "253:1", "rw,relatime", "rw", False, True),
+        ("tmpfs", "253:1", "rw,nosuid,nodev", "rw", False, False),
+        ("ext4", "253:2", "rw,nosuid,nodev", "rw", False, False),
+        ("ext4", "253:1", "ro,relatime", "rw", False, False),
+        ("ext4", "253:1", "rw,relatime", "ro", False, False),
+        ("ext4", "253:1", "rw,nosuid,nodev,noexec", "rw", False, False),
+        ("ext4", "253:1", "rw,nosuid,nodev", "rw", True, False),
     ],
 )
-def test_mount_requires_a_bounded_dedicated_block_filesystem(
-    monkeypatch, filesystem, root, dev, options, size_gib, backed, nested, shared, valid
+def test_mount_requires_a_writable_disk_backed_docker_volume(
+    monkeypatch, filesystem, dev, options, superopts, nested, valid
 ):
     target = Path("/agent/scratch")
-    info = f"123 456 {dev} {root} {target} {options} - {filesystem} /dev/mapper/disk rw\n"
+    info = f"123 456 {dev} /var/lib/docker/volumes/vol/_data {target} {options} - {filesystem} /dev/disk {superopts}\n"
     if nested:
         info += f"124 123 0:3 / {target}/subdir rw - tmpfs tmpfs rw\n"
     metadata = SimpleNamespace(st_dev=os.makedev(253, 1), st_mode=stat.S_IFDIR | 0o700, st_uid=0)
     monkeypatch.setattr(Path, "lstat", lambda path: metadata)
     monkeypatch.setattr(Path, "resolve", lambda path: path)
     monkeypatch.setattr(Path, "read_text", lambda path: info)
-    monkeypatch.setattr(
-        os, "stat", lambda path: SimpleNamespace(st_dev=metadata.st_dev if shared else os.makedev(8, 1))
-    )
-    monkeypatch.setattr(
-        os, "statvfs", lambda path: SimpleNamespace(f_blocks=size_gib, f_frsize=scratch.GIB, f_bavail=1)
-    )
-    monkeypatch.setattr(scratch, "_disk_device", lambda dev_id: backed)
     if valid:
-        scratch._validate_mount(target, 20)
+        scratch._validate_mount(target)
     else:
         with pytest.raises(RuntimeError, match="verification scratch"):
-            scratch._validate_mount(target, 20)
+            scratch._validate_mount(target)
 
 
-@pytest.mark.parametrize("device,major", [("ram0", "1"), ("zram0", "251")])
-def test_ram_block_devices_are_rejected(tmp_path, device, major):
-    disk = tmp_path / device
-    disk.mkdir()
-    (disk / "dev").write_text(f"{major}:0")
-    (tmp_path / f"{major}:0").symlink_to(disk)
-    assert not scratch._disk_device(f"{major}:0", tmp_path)
+@pytest.mark.parametrize(("free", "inodes"), [(11, 30_000), (100, 16_384)])
+async def test_pressure_refuses_a_slot_before_verifier_start(pool, monkeypatch, free, inodes):
+    monkeypatch.setattr(scratch, "_available", lambda: (free * scratch.GIB, inodes))
+    with pytest.raises(RuntimeError, match="insufficient free space or inodes"):
+        async with scratch.reserve(VOLUME, "20", "10", timeout_s=0):
+            pytest.fail("must not admit a verifier")
+    assert list(pool.glob("verifier-*")) == []
 
 
-@pytest.mark.parametrize("available,superopts,valid", [(1, "rw", True), (0, "rw", False), (1, "ro", False)])
-def test_readonly_deployment_probe_checks_real_backing_mode_and_capacity(monkeypatch, available, superopts, valid):
-    root = Path("/agent/scratch")
-    dev = os.makedev(8, 1)
-    metadata = SimpleNamespace(st_dev=dev, st_mode=stat.S_IFDIR | 0o700, st_uid=0)
-    monkeypatch.setattr(Path, "lstat", lambda path: metadata)
-    monkeypatch.setattr(Path, "resolve", lambda path: path)
-    monkeypatch.setattr(
-        Path, "read_text", lambda path: f"1 2 8:1 / {root} ro,nosuid,nodev - ext4 /dev/sdb {superopts}\n"
-    )
-    monkeypatch.setattr(os, "stat", lambda path: SimpleNamespace(st_dev=os.makedev(0, 10)))
-    monkeypatch.setattr(
-        os, "statvfs", lambda path: SimpleNamespace(f_blocks=20, f_frsize=scratch.GIB, f_bavail=available)
-    )
-    monkeypatch.setattr(scratch, "_disk_device", lambda dev_id: True)
-    if valid:
-        scratch._validate_mount(root, 20, read_only=True)
-    else:
-        with pytest.raises(RuntimeError, match="verification scratch"):
-            scratch._validate_mount(root, 20, read_only=True)
+@pytest.mark.parametrize(("start", "after", "inodes"), [(100, 80, 50_000), (12, 10, 50_000), (100, 99, 16_384)])
+async def test_pressure_stops_an_in_flight_operation(pool, monkeypatch, start, after, inodes):
+    available = [start * scratch.GIB, 50_000]
+    monkeypatch.setattr(scratch, "_available", lambda: tuple(available))
+    monkeypatch.setattr(scratch, "CHECK_INTERVAL_S", 0.001)
+    cancelled = asyncio.Event()
+
+    async def running():
+        available[:] = [after * scratch.GIB, inodes]
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    async with scratch.reserve(VOLUME, "20", "10", timeout_s=0) as slot:
+        with pytest.raises(RuntimeError, match="disk pressure limit reached"):
+            await asyncio.wait_for(slot.monitor(running), timeout=1)
+        assert cancelled.is_set()
 
 
-def test_devices_backed_by_a_loop_are_rejected(tmp_path):
-    dm = tmp_path / "253:1"
-    (dm / "slaves").mkdir(parents=True)
-    (dm / "dev").write_text("253:1")
-    disk = tmp_path / "7:1"
-    disk.mkdir()
-    (disk / "dev").write_text("8:1")
-    (dm / "slaves" / "inner").symlink_to(disk)
-    assert scratch._disk_device("253:1", tmp_path)
-    (disk / "dev").write_text("7:1")
-    assert not scratch._disk_device("253:1", tmp_path)
+async def test_pressure_detected_at_successful_exit_still_fails(pool, monkeypatch):
+    async with scratch.reserve(VOLUME, "20", "10", timeout_s=0) as slot:
+
+        async def done():
+            monkeypatch.setattr(scratch, "_available", lambda: (80 * scratch.GIB, 50_000))
+            return 0
+
+        with pytest.raises(RuntimeError, match="disk pressure limit reached"):
+            await slot.monitor(done)
 
 
 async def test_bad_provisioning_fails_verification_without_tmpfs_fallback(monkeypatch):
@@ -257,9 +243,9 @@ async def test_bad_provisioning_fails_verification_without_tmpfs_fallback(monkey
     monkeypatch.setattr(
         sessions,
         "settings",
-        replace(sessions.settings, verification_scratch_host_path=HOST, verification_scratch_volume=VOLUME),
+        replace(sessions.settings, verification_scratch_volume=VOLUME),
     )
-    monkeypatch.setattr(scratch, "_validate_daemon_bind", AsyncMock(return_value=Path(MOUNTPOINT)))
+    monkeypatch.setattr(scratch, "_validate_daemon_volume", AsyncMock(return_value=Path(MOUNTPOINT)))
     monkeypatch.setattr(scratch, "_validate_mount", lambda *_args: (_ for _ in ()).throw(RuntimeError("not mounted")))
 
     code = await manager._run_helper(
@@ -277,26 +263,35 @@ async def test_unprovisioned_runner_fails_verification_but_still_runs_normal_hel
     monkeypatch.setattr(
         sessions,
         "settings",
-        replace(sessions.settings, verification_scratch_host_path="", verification_scratch_volume=""),
+        replace(sessions.settings, verification_scratch_volume=""),
     )
     options = dict(session_id=42, env={}, workspace_volume="workspace", artifact_host_path="/artifacts/42")
     assert await manager._run_helper(phase="verify", **options) == 1
-    assert "provision dedicated verification storage" in manager._last_helper_output[42]
+    assert "requires the name of its local Docker volume" in manager._last_helper_output[42]
     helper.assert_not_awaited()
     assert await manager._run_helper(phase="prepare", **options) == 0
     helper.assert_awaited_once_with(phase="prepare", cache_volume=None, **options)
 
 
-async def test_runner_verifier_starts_with_real_reservation_and_cleans_after_removal(monkeypatch, pool):
+@pytest.mark.parametrize("pressure", [False, True])
+async def test_runner_verifier_cleans_after_removal_even_on_pressure(monkeypatch, pool, pressure):
     manager = sessions.SessionManager()
     monkeypatch.setattr(
         sessions,
         "settings",
-        replace(sessions.settings, verification_scratch_host_path=HOST, verification_scratch_volume=VOLUME),
+        replace(sessions.settings, verification_scratch_volume=VOLUME),
     )
     monkeypatch.setattr(sessions.db, "get_session", AsyncMock(return_value={"status": "finalizing"}))
     monkeypatch.setattr(docker_engine, "start_container", AsyncMock())
-    monkeypatch.setattr(docker_engine, "wait_container", AsyncMock(return_value=0))
+
+    async def wait(*_args, **_kwargs):
+        if pressure:
+            monkeypatch.setattr(scratch, "_available", lambda: (80 * scratch.GIB, 50_000))
+            await asyncio.Event().wait()
+        return 0
+
+    monkeypatch.setattr(scratch, "CHECK_INTERVAL_S", 0.001)
+    monkeypatch.setattr(docker_engine, "wait_container", wait)
     monkeypatch.setattr(manager, "_what_it_printed", AsyncMock(return_value="verified"))
     mounted = []
 
@@ -313,18 +308,18 @@ async def test_runner_verifier_starts_with_real_reservation_and_cleans_after_rem
 
     monkeypatch.setattr(docker_engine, "create_session_container", create)
     monkeypatch.setattr(docker_engine, "remove_container", remove)
-    assert (
-        await manager._run_helper(
+    assert await asyncio.wait_for(
+        manager._run_helper(
             phase="verify",
             session_id=42,
             env={"LOGOS_SESSION_PHASE": "verify"},
             workspace_volume="workspace",
             artifact_host_path="/artifacts/42",
-        )
-        == 0
-    )
+        ),
+        timeout=1,
+    ) == (1 if pressure else 0)
     assert len(mounted) == 1 and not mounted[0].exists()
-    assert manager._last_helper_output[42] == "verified"
+    assert manager._last_helper_output[42].endswith("verification aborted" if pressure else "verified")
 
 
 async def test_scratch_is_mounted_only_as_a_private_verifier_tmp(monkeypatch):
@@ -354,6 +349,7 @@ async def test_scratch_is_mounted_only_as_a_private_verifier_tmp(monkeypatch):
     assert host_config["SecurityOpt"] == ["no-new-privileges:true"]
     assert host_config["Memory"] == host_config["MemorySwap"] == 3513 * 1024 * 1024
     assert "Tmpfs" not in host_config
+    assert host_config["Ulimits"] == [{"Name": "fsize", "Soft": 8 * scratch.GIB, "Hard": 8 * scratch.GIB}]
     assert host_config["LogConfig"] == {"Type": "local", "Config": {"max-size": "10m", "max-file": "2"}}
     assert host_config["Mounts"] == [
         {

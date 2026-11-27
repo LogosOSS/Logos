@@ -50,7 +50,6 @@ class FakeProject:
         self.service_names = list(SERVICES)
         self.replica_count = 1
         self.pull_error: str | None = None
-        self.preflight_errors: dict[bool, str] = {}
         self.up_error: str | None = None
         # What ``up`` does to the containers. None: replace the two Logos services. A function can do anything else.
         self.on_up = self.replace_logos_services
@@ -69,12 +68,6 @@ class FakeProject:
         ]
 
     # ------------------------------------------------------------------ the ProjectDocker interface
-
-    def preflight_verifier_scratch(self, tag: str, *, mount: bool = False) -> CommandResult:
-        error = self.preflight_errors.get(mount)
-        if error:
-            return CommandResult(("preflight",), 1, stderr=error)
-        return CommandResult(("preflight",), 0)
 
     def pull_project(self, tag: str) -> CommandResult:
         self.calls.append(("pull_project", tag))
@@ -243,15 +236,6 @@ def test_the_replica_count_is_passed_to_the_scaled_service(make_core, project):
 
     assert record.outcome is Outcome.SUCCEEDED
     assert ("up_project", "v2", 2) in project.calls
-
-
-@pytest.mark.parametrize("mount, expected", [(False, []), (True, ["pull_project"])])
-def test_bad_verifier_storage_never_swaps_running_services(make_core, project, mount, expected):
-    project.preflight_errors[mount] = "unsafe scratch"
-    result = run(make_core)
-    assert result.outcome is Outcome.FAILED
-    assert "unsafe scratch" in result.message
-    assert [call[0] for call in project.calls] == expected
 
 
 def test_a_failed_pull_leaves_the_services_alone(make_core, project):

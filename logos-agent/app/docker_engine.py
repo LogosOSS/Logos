@@ -238,7 +238,7 @@ async def create_session_container(
     if verifying and any(key in env for key in ("GITHUB_TOKEN", "GH_TOKEN", "GIT_SSH_COMMAND", "ANTHROPIC_AUTH_TOKEN")):
         raise ValueError("verification cannot receive credentials")
     if verifying and verification_scratch is None:
-        raise ValueError("verification requires a dedicated disk scratch reservation")
+        raise ValueError("verification requires a private disk scratch reservation")
     mount_mode = ":ro" if verifying else ""
     binds = [
         f"{workspace_volume}:/workspace{mount_mode}",
@@ -282,7 +282,7 @@ async def create_session_container(
 
     if not verifying:
         # Keep the ordinary agent and trusted helpers' isolated temporary
-        # storage. The verifier only gets a dedicated disk mount.
+        # storage. The verifier only gets a private disk mount.
         host_config["Tmpfs"] = {
             "/tmp": "rw,exec,nosuid,size=2g",  # NOSONAR - a private tmpfs inside the container, not a host directory
             "/home/agent/.cache": "rw,nosuid,size=2g",
@@ -295,6 +295,10 @@ async def create_session_container(
         # Docker writes stdout/stderr outside the scratch filesystem. Keep
         # diagnostics without letting build output fill that other disk.
         host_config["LogConfig"] = {"Type": "local", "Config": {"max-size": "10m", "max-file": "2"}}
+        # A hard per-file limit complements (but cannot replace) the host
+        # pressure guard: multiple files still consume the same filesystem.
+        file_limit = 8 * 1024**3
+        host_config["Ulimits"] = [{"Name": "fsize", "Soft": file_limit, "Hard": file_limit}]
         host_config["Mounts"] = [
             {
                 "Type": "bind",

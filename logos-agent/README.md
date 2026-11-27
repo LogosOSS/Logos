@@ -777,76 +777,41 @@ gets. Deploys and screenshots stay with the platform repository. An idle
 workspace that last worked on another repository is moved to the link's branch;
 a busy one is refused.
 
-#### Bounded disk scratch for verification
+#### Disk scratch for verification
 
-The runner's authoritative verifier always uses a dedicated disk filesystem
-for temporary files. It mounts only a private directory and points `TMPDIR`
-and Java's temporary directory there. The verifier's `/tmp` is read-only;
-repository verification commands should use `$TMPDIR`, not a hard-coded
-`/tmp`. The disk capacity is the hard ceiling, including the copied candidate,
-cache and build output. This does **not** increase session RAM, modify the
-workspace cache, or bypass verification. Only one verifier can use the
-filesystem at a time; a contender waits up to `LOGOS_AGENT_HELPER_TIMEOUT_S`
-for a slot before failing. Its actual verification timeout starts separately.
+The bundled Compose configuration automatically creates the plain local Docker
+volume `logos_agent_verifier_scratch` when the `agent` profile is enabled.
+Deploying from Logos does not require a separate disk or host configuration.
+An independently deployed runner must mount that volume at
+`/var/lib/logos-agent/verification-scratch` and set
+`LOGOS_AGENT_VERIFICATION_SCRATCH_VOLUME` to its actual Docker name.
 
-Provision and configure the filesystem before relying on verified publication.
-Missing, invalid, full, or inaccessible scratch fails verification and allows
-only a draft PR. There is no tmpfs fallback. Normal agent containers and manual
-checks run inside them as before, but a manual check cannot replace the
-runner's verification.
+The verifier mounts only a private directory on that volume and points
+`TMPDIR` and Java's temporary directory there. Its root, workspace, cache
+and artifacts stay read-only, with no network or credentials. There is no
+RAM-backed fallback. Only one verifier may use the volume at a time; a
+contender waits up to `LOGOS_AGENT_HELPER_TIMEOUT_S` for the slot. The runner
+deletes scratch only after Docker releases its container and reconciles
+orphaned helpers on restart.
 
-1. On the Linux Docker host, provision a dedicated, capacity-reserved
-   partition or thick logical volume (for example 20 GiB) and format **only
-   that new device** as ext4 or XFS. Do not use a sparse file, a loop device,
-   a thin LV without guaranteed backing space, a directory on an existing
-   filesystem, or a shared workspace/data volume.
-2. Mount that filesystem at a dedicated absolute path, for example
-   `/srv/logos-verifier-scratch`, using persistent boot configuration (e.g.
-   `UUID=<new-filesystem-uuid> /srv/logos-verifier-scratch ext4 defaults,nodev,nosuid 0 2`
-   in `/etc/fstab`). It must allow execution of scratch build tools and be
-   owned by root with no group/other write access. Leave it empty apart from
-   filesystem metadata such as ext4's `lost+found`. Keep the mounting path
-   private and make deployment depend on the mount being available. Verify
-   with `findmnt --mountpoint /srv/logos-verifier-scratch` and
-   `df -B1 /srv/logos-verifier-scratch`. The host filesystem's reported
-   capacity must not exceed the configured cap. Size the device for the
-   repository copy, required offline caches, and peak build output together.
-3. On that host, register the mounted filesystem as a new Docker volume:
-   ```sh
-   docker volume create --driver local \
-     --opt type=none --opt o=bind --opt device=/srv/logos-verifier-scratch \
-     logos_agent_verifier_scratch_disk
-   ```
-   Check `docker volume inspect logos_agent_verifier_scratch_disk` for the
-   exact path and options. Do not reuse the name of an ordinary local volume.
-4. Deploy the release from Logos. The bundled Compose file uses the fixed
-   volume name, mount point, and 20 GiB limit shown above. No deployment
-   environment changes are needed. The volume is external and only required
-   when the `agent` profile is enabled. Compose refuses to create it on the
-   root disk. The agent's health check validates its actual mount, and a
-   current core deployer checks the named volume before pulling the services
-   and probes its backing filesystem before replacing any running service.
-   If the deployer is older, validate the disk before the first deployment;
-   the agent's health check alone cannot prevent an earlier service swap.
+A verifier will not start unless its volume's filesystem has more than the
+configured free-space floor plus 1 GiB, and more than 16,384 free inodes.
+While starting and running the verifier, the runner samples space and inodes
+every 250 ms. It force-removes the verifier if available space drops by
+`LOGOS_AGENT_VERIFICATION_SCRATCH_MAX_GIB` (default 20 GiB) from its admission
+sample, hits `LOGOS_AGENT_VERIFICATION_SCRATCH_MIN_FREE_GIB` (default 10 GiB),
+or falls to the inode floor. Individual files are limited to 8 GiB by the
+verifier's kernel file-size limit; Docker rotates logs separately. Missing
+storage, failed checks or exhausted headroom fail verification and allow
+only a draft PR.
 
-For a manual deployment with non-default infrastructure, all three settings
-can still be overridden: `LOGOS_AGENT_VERIFICATION_SCRATCH_VOLUME`,
-`LOGOS_AGENT_VERIFICATION_SCRATCH_HOST_PATH`, and
-`LOGOS_AGENT_VERIFICATION_SCRATCH_MAX_GIB`. Use the same name and mount
-point when registering the external volume.
-
-Only the individual verifier's scratch directory is mounted read/write from
-disk; the workspace, artefacts, cache and root remain read-only, with no
-credentials or network. Docker rotates the verifier's logs separately.
-The runner removes scratch after Docker confirms no container owns it. On
-restart it reconciles orphaned helpers before retrying; if Docker cannot
-confirm the old helper is gone, scratch stays reserved rather than being
-reused. Do not manually delete it while a verifier is mounted. A host
-without this filesystem must not deploy the `agent` profile with this release. Leave the mounted filesystem
-intact until the runner and every verifier using it are gone. To validate
-activation, run a linked repository verification, check the verification
-result and diagnostics, then verify that its `verifier-*` directory has been
-removed.
+Docker local volumes share the host filesystem. These checks are **not a hard
+aggregate quota**: unrelated writers can trigger them, unrelated deletions can
+mask verifier growth, and rapid writes or delayed Docker removal can
+overshoot between samples. If the runner crashes, monitoring depends on
+restarting it and cleaning up its orphaned containers. Monitor host free
+space as usual. Normal agent
+sessions are unaffected; a manual check cannot replace the runner's verification.
 
 #### Working the way the repository asks
 

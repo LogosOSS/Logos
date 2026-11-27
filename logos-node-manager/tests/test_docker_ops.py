@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from logos_node_manager.docker_ops import Docker, ProjectDocker, describe_registry_login, self_docker, split_image_ref
+from logos_node_manager.docker_ops import Docker, describe_registry_login, self_docker, split_image_ref
 from logos_node_manager.errors import DockerError
 from logos_node_manager.runner import CommandResult
 
@@ -351,73 +351,3 @@ def test_the_docker_of_the_worker_does_not_widen_the_profiles(settings):
     docker.pull("v2")
 
     assert runner.calls[0][2] == {"IMAGE_TAG": "v2"}
-
-
-VERIFIER_VOLUME = "logos_agent_verifier_scratch_disk"
-VERIFIER_ROOT = "/srv/logos-verifier-scratch"
-
-
-def verifier_config(*, profile=True, external=True):
-    return json.dumps(
-        {
-            "services": (
-                {
-                    "logos-agent": {
-                        "image": "ghcr.io/logososs/logos-agent:v2",
-                        "environment": {
-                            "SAMPLE_SECRET": "never-return-this",
-                            "LOGOS_AGENT_VERIFICATION_SCRATCH_VOLUME": VERIFIER_VOLUME,
-                            "LOGOS_AGENT_VERIFICATION_SCRATCH_HOST_PATH": VERIFIER_ROOT,
-                            "LOGOS_AGENT_VERIFICATION_SCRATCH_MAX_GIB": "20",
-                        },
-                    },
-                }
-                if profile
-                else {}
-            ),
-            "volumes": {"agent_verification_scratch": {"name": VERIFIER_VOLUME, "external": external}},
-        },
-    )
-
-
-@pytest.mark.parametrize("profile,external", [(False, True), (True, False)])
-def test_deployer_skips_probe_without_active_external_verifier(settings, profile, external):
-    runner = FakeRunner(ok(verifier_config(profile=profile, external=external)))
-    assert ProjectDocker(settings, runner).preflight_verifier_scratch("v2", mount=True).ok
-    assert len(runner.calls) == 1
-
-
-def test_missing_volume_fails_without_exposing_compose_environment(settings):
-    runner = FakeRunner(ok(verifier_config()), failed("missing"))
-    result = ProjectDocker(settings, runner).preflight_verifier_scratch("v2")
-    assert not result.ok
-    assert "provision the dedicated disk first" in result.tail()
-    assert "never-return-this" not in result.tail()
-    assert runner.calls[1][0] == ("docker", "volume", "inspect", VERIFIER_VOLUME)
-
-
-def test_deployer_rejects_plain_named_volume_with_correct_name(settings):
-    volume = [{"Name": VERIFIER_VOLUME, "Driver": "local", "Options": None}]
-    runner = FakeRunner(ok(verifier_config()), ok(json.dumps(volume)))
-    assert not ProjectDocker(settings, runner).preflight_verifier_scratch("v2", mount=True).ok
-    assert len(runner.calls) == 2
-
-
-def test_backing_probe_does_not_inherit_compose_environment_or_create_mountpoint(settings):
-    volume = [
-        {
-            "Name": VERIFIER_VOLUME,
-            "Driver": "local",
-            "Options": {"device": VERIFIER_ROOT, "type": "none", "o": "bind"},
-        }
-    ]
-    runner = FakeRunner(ok(verifier_config()), ok(json.dumps(volume)), ok())
-    assert ProjectDocker(settings, runner).preflight_verifier_scratch("v2", mount=True).ok
-    argv, _, env = runner.calls[2]
-    assert argv[:5] == ("docker", "run", "--rm", "--pull", "never")
-    assert "--read-only" in argv and argv[argv.index("--network") + 1] == "none"
-    assert argv[argv.index("--cap-drop") + 1] == "ALL"
-    assert argv[argv.index("--mount") + 1].endswith("readonly,bind-recursive=disabled")
-    assert "type=bind,source=/srv/logos-verifier-scratch" in argv[argv.index("--mount") + 1]
-    assert "--volume-probe" in argv and "never-return-this" not in str(argv)
-    assert env == {}

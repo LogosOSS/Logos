@@ -5,8 +5,8 @@ container with ``docker compose up`` and never rebuilds that definition through 
 
 Two rules hold for everything in this module:
 
-* The output of ``docker compose config`` must not be logged. Even in JSON
-  mode it can include the complete resolved project environment.
+* ``docker compose config`` prints the resolved environment, secrets included. It is only called with ``--images``
+  and ``--hash``, which print image names and a hash, and no output of it is logged.
 * The requested image tag reaches Compose as the ``IMAGE_TAG`` process variable. A variable in the process environment
   beats the same variable in the ``.env`` file, so a later rewrite of that file cannot change what an earlier request
   deploys.
@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -333,90 +332,6 @@ class ProjectDocker(Docker):
     the ones that changed. Nothing here removes an image or a container by name, apart from what Compose itself does
     (``--remove-orphans``) and the prune of images no container uses.
     """
-
-    def preflight_verifier_scratch(self, tag: str, *, mount: bool = False) -> CommandResult:
-        """Check only opt-in releases with an active external verifier volume."""
-        argv = self._compose("config", "--format", "json")
-        config = self._runner.run(argv, timeout_s=CONFIG_TIMEOUT_S, env=self._tag_env(tag))
-
-        def result(message: str = "") -> CommandResult:
-            # Compose's JSON contains credentials. Return only our own diagnostics.
-            return CommandResult(tuple(argv), int(bool(message)), stderr=message)
-
-        if not config.ok:
-            return result("cannot read the selected Compose configuration for the verifier storage preflight")
-        try:
-            project = json.loads(config.stdout)
-            agent = project.get("services", {}).get("logos-agent")
-            volume = project.get("volumes", {}).get("agent_verification_scratch")
-            if not agent or not volume or volume.get("external") is not True:
-                return result()
-            env = agent["environment"]
-            name = volume["name"]
-            host_path = env["LOGOS_AGENT_VERIFICATION_SCRATCH_HOST_PATH"]
-            limit = env["LOGOS_AGENT_VERIFICATION_SCRATCH_MAX_GIB"]
-            image = agent["image"]
-            if (
-                name != env["LOGOS_AGENT_VERIFICATION_SCRATCH_VOLUME"]
-                or not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]{1,127}", name)
-                or not isinstance(host_path, str)
-                or not re.fullmatch(r"/[a-zA-Z0-9._/-]+", host_path)
-                or str(Path(host_path)) != host_path
-                or host_path.startswith("//")
-                or ".." in Path(host_path).parts
-                or not re.fullmatch(r"[1-9][0-9]{0,3}", limit)
-                or not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.:/@-]+", image)
-            ):
-                raise ValueError
-        except (KeyError, AttributeError, TypeError, ValueError):
-            return result("invalid verifier storage declaration in the selected Compose configuration")
-
-        inspected = self._runner.run(["docker", "volume", "inspect", name], timeout_s=QUERY_TIMEOUT_S)
-        if not inspected.ok:
-            return result(f"cannot inspect external verifier volume {name}; provision the dedicated disk first")
-        try:
-            (info,) = json.loads(inspected.stdout)
-            if (
-                info["Name"] != name
-                or info["Driver"] != "local"
-                or info["Options"] != {"device": host_path, "type": "none", "o": "bind"}
-            ):
-                raise ValueError
-        except (KeyError, TypeError, ValueError):
-            return result(f"external verifier volume {name} is not backed by the expected local filesystem")
-        if not mount:
-            return result()
-
-        # Compose pull has already supplied the selected tag's runner image.
-        # No socket, no secrets, no network and no changes to the disk.
-        return self._runner.run(
-            [
-                "docker",
-                "run",
-                "--rm",
-                "--pull",
-                "never",
-                "--network",
-                "none",
-                "--read-only",
-                "--cap-drop",
-                "ALL",
-                "--security-opt",
-                "no-new-privileges:true",
-                "--mount",
-                f"type=bind,source={host_path},target=/var/lib/logos-agent/verification-scratch,"
-                "readonly,bind-recursive=disabled",
-                "--env",
-                f"LOGOS_AGENT_VERIFICATION_SCRATCH_MAX_GIB={limit}",
-                "--entrypoint",
-                "python",
-                image,
-                "-m",
-                "app.verification_scratch",
-                "--volume-probe",
-            ],
-            timeout_s=QUERY_TIMEOUT_S,
-        )
 
     def pull_project(self, tag: str) -> CommandResult:
         """Download the images of every service of the project for ``tag``."""

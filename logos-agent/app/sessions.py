@@ -1994,8 +1994,8 @@ class SessionManager:
         try:
             async with verification_scratch.reserve(
                 settings.verification_scratch_volume,
-                settings.verification_scratch_host_path,
                 settings.verification_scratch_max_gib,
+                settings.verification_scratch_min_free_gib,
                 timeout_s=settings.helper_timeout_s,
             ) as scratch:
                 return await self._run_helper_container(**kwargs, scratch=scratch)
@@ -2101,14 +2101,15 @@ class SessionManager:
                 # removes it.
                 helper.started.set()
                 return 137
-            try:
-                await docker_engine.start_container(container_id)
-            finally:
-                # The start has settled: from here on a stop is a real
-                # stop, not a 304 against a container that is not running
-                # yet.
-                helper.started.set()
-            code = await docker_engine.wait_container(container_id, timeout_s=settings.helper_timeout_s)
+
+            async def start_and_wait() -> int | None:
+                try:
+                    await docker_engine.start_container(container_id)
+                finally:
+                    helper.started.set()
+                return await docker_engine.wait_container(container_id, timeout_s=settings.helper_timeout_s)
+
+            code = await scratch.monitor(start_and_wait) if scratch else await start_and_wait()
             if code is None:
                 logger.warning("helper %s for session %s timed out; stopping it", phase, session_id)
                 await docker_engine.stop_container(container_id)
@@ -2125,6 +2126,7 @@ class SessionManager:
                 )
             return code
         finally:
+            helper.started.set()
             remaining = helper.container_id
             try:
                 if remaining:

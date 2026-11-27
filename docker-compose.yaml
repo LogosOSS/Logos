@@ -729,9 +729,9 @@ services:
       # a literal name and this matches it. That is what keeps the child's bind
       # source on the same storage the runner writes the mark into.
       LOGOS_AGENT_STATE_VOLUME: "${LOGOS_AGENT_STATE_VOLUME:-logos_agent_state}"
-      LOGOS_AGENT_VERIFICATION_SCRATCH_VOLUME: "${LOGOS_AGENT_VERIFICATION_SCRATCH_VOLUME:-logos_agent_verifier_scratch_disk}"
-      LOGOS_AGENT_VERIFICATION_SCRATCH_HOST_PATH: "${LOGOS_AGENT_VERIFICATION_SCRATCH_HOST_PATH:-/srv/logos-verifier-scratch}"
+      LOGOS_AGENT_VERIFICATION_SCRATCH_VOLUME: "${LOGOS_AGENT_VERIFICATION_SCRATCH_VOLUME:-logos_agent_verifier_scratch}"
       LOGOS_AGENT_VERIFICATION_SCRATCH_MAX_GIB: "${LOGOS_AGENT_VERIFICATION_SCRATCH_MAX_GIB:-20}"
+      LOGOS_AGENT_VERIFICATION_SCRATCH_MIN_FREE_GIB: "${LOGOS_AGENT_VERIFICATION_SCRATCH_MIN_FREE_GIB:-10}"
     volumes:
       # Needed to create session containers. This is the one privileged thing
       # the runner holds — and precisely what it never passes on: session
@@ -746,17 +746,6 @@ services:
         target: /var/lib/logos-agent/verification-scratch
         volume:
           nocopy: true
-    healthcheck:
-      test:
-        - CMD-SHELL
-        - >-
-          python -m app.verification_scratch &&
-          python -c 'import json,sys,urllib.request;
-          sys.exit(json.load(urllib.request.urlopen("http://127.0.0.1:8082/health", timeout=4))["status"] != "ok")'
-      interval: 30s
-      timeout: 10s
-      start_period: 20s
-      retries: 3
     expose:
       - "8082"
     # On purpose *not* attached to the agent network: the runner controls
@@ -884,11 +873,10 @@ volumes:
   # child mounts a directory the runner never writes the pause mark into.
   agent_state:
     name: logos_agent_state
-  # Infrastructure owns this volume. Compose must not create a root-disk
-  # substitute when the dedicated filesystem has not been provisioned.
+  # Compose creates this plain local volume for the verifier on the Docker host.
   agent_verification_scratch:
-    external: true
-    name: "${LOGOS_AGENT_VERIFICATION_SCRATCH_VOLUME:-logos_agent_verifier_scratch_disk}"
+    driver: local
+    name: "${LOGOS_AGENT_VERIFICATION_SCRATCH_VOLUME:-logos_agent_verifier_scratch}"
 
 networks:
   internal:
