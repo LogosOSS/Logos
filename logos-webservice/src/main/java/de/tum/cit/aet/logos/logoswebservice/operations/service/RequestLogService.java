@@ -91,8 +91,9 @@ public class RequestLogService {
 
     /** Unfiltered newest page of the range, without a row count — the live push. */
     public Map<String, Object> getLatestRequests(String startDate, String endDate) {
-        return getLatestRequests(startDate, endDate, null, null, null, false, null, null, null,
-                                 LATEST_REQUESTS_PAGE_SIZE, false);
+        return readLatestRequests(startDate, endDate,
+            new FeedSelection(null, null, null, null, false, null, List.of(), List.of()),
+            null, null, LATEST_REQUESTS_PAGE_SIZE, false);
     }
 
     /**
@@ -123,33 +124,15 @@ public class RequestLogService {
      * @param cursorId  {@code request_id} of that row, breaking timestamp ties
      * @param limit     rows to return, clamped to 1..50
      */
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
     public Map<String, Object> getLatestRequests(String startDate, String endDate,
                                                  Integer userId, Integer teamId,
                                                  String status,
                                                  String cursorTs, String cursorId,
                                                  int limit, boolean withTotal) {
-        return getLatestRequests(startDate, endDate, userId, teamId, null, false, status,
-                                 cursorTs, cursorId, limit, withTotal);
-    }
-
-    public Map<String, Object> getLatestRequests(String startDate, String endDate,
-                                                 Integer userId, Integer teamId,
-                                                 Integer providerId, boolean errorsOnly,
-                                                 String status,
-                                                 String cursorTs, String cursorId,
-                                                 int limit, boolean withTotal) {
-        return getLatestRequests(startDate, endDate, userId, teamId, providerId, errorsOnly,
-            status, cursorTs, cursorId, limit, withTotal, List.of(), List.of());
-    }
-
-    public Map<String, Object> getLatestRequests(String startDate, String endDate,
-                                                 Integer userId, Integer teamId,
-                                                 Integer providerId, boolean errorsOnly,
-                                                 String status, String cursorTs, String cursorId,
-                                                 int limit, boolean withTotal,
-                                                 List<Integer> modelIds, List<Integer> providerIds) {
-        return getLatestRequests(startDate, endDate, userId, teamId, providerId, null, errorsOnly,
-            status, cursorTs, cursorId, limit, withTotal, modelIds, providerIds);
+        return readLatestRequests(startDate, endDate,
+            new FeedSelection(userId, teamId, null, null, false, status, List.of(), List.of()),
+            cursorTs, cursorId, limit, withTotal);
     }
 
     /** Same as above, additionally narrowed to one API key ({@code null} for every key). */
@@ -160,6 +143,18 @@ public class RequestLogService {
                                                  String status, String cursorTs, String cursorId,
                                                  int limit, boolean withTotal,
                                                  List<Integer> modelIds, List<Integer> providerIds) {
+        return readLatestRequests(startDate, endDate,
+            new FeedSelection(userId, teamId, providerId, apiKeyId, errorsOnly, status, modelIds, providerIds),
+            cursorTs, cursorId, limit, withTotal);
+    }
+
+    private record FeedSelection(Integer userId, Integer teamId, Integer providerId, Integer apiKeyId,
+                                 boolean errorsOnly, String status, List<Integer> modelIds, List<Integer> providerIds) {}
+
+    // The public entry points with counts open one snapshot for the page and its total.
+    private Map<String, Object> readLatestRequests(String startDate, String endDate,
+                                                   FeedSelection selection, String cursorTs, String cursorId,
+                                                   int limit, boolean withTotal) {
         ZonedDateTime endDt = parseInstantOrNow(endDate);
         // Same lenient parse as the end: a malformed range must fall back to the
         // default window, not surface as a 500.
@@ -183,9 +178,11 @@ public class RequestLogService {
         // One row beyond the page: its presence is the has_more answer, and it is
         // dropped before the rows go out.
         List<Map<String, Object>> fetched = logEntryRepository
-            .findLatestRequests(startTs, endTs, userId, teamId, providerId, apiKeyId, errorsOnly,
-                                modelIds.isEmpty(), queryIds(modelIds), providerIds.isEmpty(), queryIds(providerIds),
-                                status, cursor, cursorRequestId, pageSize + 1)
+            .findLatestRequests(startTs, endTs, selection.userId(), selection.teamId(), selection.providerId(),
+                                selection.apiKeyId(), selection.errorsOnly(),
+                                selection.modelIds().isEmpty(), queryIds(selection.modelIds()),
+                                selection.providerIds().isEmpty(), queryIds(selection.providerIds()),
+                                selection.status(), cursor, cursorRequestId, pageSize + 1)
             .stream()
             .map(p -> {
                 Map<String, Object> m = new LinkedHashMap<>();
@@ -241,8 +238,10 @@ public class RequestLogService {
         }
         if (withTotal) {
             Long total = logEntryRepository.countRequestsInRange(
-                startTs, endTs, userId, teamId, providerId, apiKeyId, errorsOnly,
-                modelIds.isEmpty(), queryIds(modelIds), providerIds.isEmpty(), queryIds(providerIds), status);
+                startTs, endTs, selection.userId(), selection.teamId(), selection.providerId(),
+                selection.apiKeyId(), selection.errorsOnly(),
+                selection.modelIds().isEmpty(), queryIds(selection.modelIds()),
+                selection.providerIds().isEmpty(), queryIds(selection.providerIds()), selection.status());
             // The feed shows a window onto the range, so it has to say how big
             // the range is — "1-10 of 4,312" is the difference between a capped
             // list and a list the operator reads as complete.
