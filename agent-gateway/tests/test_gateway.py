@@ -5,6 +5,7 @@ RUN_AGENT_GATEWAY_TESTS=1 python -m pytest agent-gateway/tests
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -209,19 +210,24 @@ def test_remote_gateway_only_exposes_messages_and_replaces_control_headers(gatew
         "Anthropic-Version": "2023-06-01",
         "Anthropic-Beta": "test-beta",
     }
-    for suffix in ("", "/count_tokens"):
-        with urlopen(Request(base + "/v1/messages" + suffix, data=b"{}", headers=request_headers), timeout=5) as response:
-            body = json.load(response)
-            assert response.headers.get("Authorization") is None
-            assert response.headers.get("X-Logos-Agent-Relay-Secret") is None
-        assert body["authorization"] == "Bearer opaque-session-grant"
-        assert body["secret"] == SECRET
-        assert body["tag"].startswith("agent:") and body["tag"] != "spoofed"
-        assert body["alternative"] == body["anthropic"] == ""
-        assert body["anthropic_version"] == "2023-06-01"
-        assert body["anthropic_beta"] == "test-beta"
-        assert body["path"] == "/internal/agent-inference/" + (suffix.lstrip("/") or "messages")
-    for path in ("/v1/models", "/internal/agent-inference/messages", "/internal/agent_credentials", "/v1/chat/completions"):
+    with urlopen(Request(base + "/v1/messages", data=b"{}", headers=request_headers), timeout=5) as response:
+        body = json.load(response)
+        assert response.headers.get("Authorization") is None
+        assert response.headers.get("X-Logos-Agent-Relay-Secret") is None
+    assert body["authorization"] == "Bearer opaque-session-grant"
+    assert body["secret"] == SECRET
+    assert body["tag"].startswith("agent:") and body["tag"] != "spoofed"
+    assert body["alternative"] == body["anthropic"] == ""
+    assert body["anthropic_version"] == "2023-06-01"
+    assert body["anthropic_beta"] == "test-beta"
+    assert body["path"] == "/internal/agent-inference/messages"
+    for path in (
+        "/v1/models",
+        "/internal/agent-inference/messages",
+        "/internal/agent_credentials",
+        "/v1/chat/completions",
+        "/v1/messages/count_tokens",
+    ):
         with pytest.raises(HTTPError) as exc:
             urlopen(Request(base + path, data=b"{}"), timeout=5)
         assert exc.value.code == 404
@@ -229,3 +235,36 @@ def test_remote_gateway_only_exposes_messages_and_replaces_control_headers(gatew
         urlopen(base + "/v1/messages", timeout=5)
     assert exc.value.code == 403
     assert authorizations(upstream) == []
+
+
+def test_remote_workspace_cannot_reach_the_local_model_gateway_in_compose():
+    compose = Path(__file__).resolve().parents[2] / "docker-compose.yaml"
+    env = {key: os.environ[key] for key in ("PATH", "HOME", "DOCKER_HOST") if key in os.environ}
+    required = re.findall(r"\$\{([A-Z0-9_]+):\?", compose.read_text())
+    env.update({key: "synthetic-test" for key in required})
+    result = subprocess.check_output(
+        [
+            "docker",
+            "compose",
+            "--env-file",
+            "/dev/null",
+            "-f",
+            str(compose),
+            "--profile",
+            "agent",
+            "config",
+            "--format",
+            "json",
+        ],
+        env=env,
+        text=True,
+    )
+    fixture = json.loads(result)
+    services = fixture["services"]
+    assert fixture["networks"]["agent"]["internal"]
+    assert fixture["networks"]["agent-remote"]["internal"]
+    assert set(services["logos-agent-gateway"]["networks"]) == {"internal", "agent"}
+    assert set(services["logos-agent-remote-gateway"]["networks"]) == {"internal", "agent-remote"}
+    assert set(services["logos-agent"]["networks"]) == {"internal"}
+    assert set(services["logos-agent-egress-proxy"]["networks"]) == {"internal", "agent", "agent-remote"}
+    assert not services["logos-agent-remote-gateway"].get("ports")

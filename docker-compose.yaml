@@ -665,7 +665,7 @@ services:
       LOGOS_AGENT_DEFAULT_MODEL: "${LOGOS_AGENT_DEFAULT_MODEL:-}"
       # Approved compatible Logos inference origins, not URLs submitted by the UI.
       LOGOS_AGENT_REMOTE_ALLOWED_ORIGINS: "${LOGOS_AGENT_REMOTE_ALLOWED_ORIGINS:-}"
-      LOGOS_AGENT_REMOTE_SESSION_NETWORK: "${LOGOS_AGENT_REMOTE_SESSION_NETWORK:-logos-agent-remote-net}"
+      LOGOS_AGENT_REMOTE_NETWORK: "${LOGOS_AGENT_REMOTE_NETWORK:-logos-agent-remote-net}"
       LOGOS_AGENT_REMOTE_SESSION_MODEL_URL: "http://logos-agent-remote-gateway"
 
       # Sessions run in this image, on this network, under these ceilings.
@@ -811,7 +811,6 @@ services:
     networks:
       - internal
       - agent
-      - agent-remote
 
   # Separate bridge so a remote session cannot opt into the local model credential.
   logos-agent-remote-gateway:
@@ -868,6 +867,7 @@ services:
     networks:
       - internal
       - agent
+      - agent-remote
 
   logos-ui:
     image: ${REGISTRY:-ghcr.io/logososs}/logos-ui:${IMAGE_TAG:-latest}
@@ -925,7 +925,7 @@ networks:
     driver: bridge
     internal: true
   agent-remote:
-    name: ${LOGOS_AGENT_REMOTE_SESSION_NETWORK:-logos-agent-remote-net}
+    name: ${LOGOS_AGENT_REMOTE_NETWORK:-logos-agent-remote-net}
     driver: bridge
     internal: true
   # The runner's trusted helper containers (checkout preparation, post-agent

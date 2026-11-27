@@ -15,11 +15,6 @@ server {
         proxy_pass http://logos-webservice:8081/internal/agent-inference/messages;
     }
 
-    location = /v1/messages/count_tokens {
-        include /etc/nginx/conf.d/includes/remote-model-proxy.conf;
-        proxy_pass http://logos-webservice:8081/internal/agent-inference/count_tokens;
-    }
-
     location = /healthz {
         return 200;
     }
