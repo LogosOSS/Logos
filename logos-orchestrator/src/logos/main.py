@@ -12,6 +12,7 @@ import secrets
 import threading
 import time
 from contextlib import aclosing, asynccontextmanager, nullcontext, suppress
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional, Set
 
@@ -458,6 +459,56 @@ def _materialize_log_id(db, log_ref) -> Optional[int]:
         # on the write-behind queue before enqueue metrics landed.
         return db.ensure_log_usage(**log_ref.fields)
     return int(log_ref) if log_ref else None
+
+
+@dataclass
+class _RoutingSettlement:
+    # A scheduling timestamp is written before context resolution. Once
+    # execution has ownership, however, an outbound request might already
+    # exist even if its provider timestamp is not yet persisted.
+    execution_owns_request: bool = False
+
+
+_routing_settlement: ContextVar[Optional[_RoutingSettlement]] = ContextVar("routing_settlement", default=None)
+
+
+async def _route_with_settlement(settlement: _RoutingSettlement, **kwargs):
+    token = _routing_settlement.set(settlement)
+    try:
+        return await route_and_execute(**kwargs)
+    finally:
+        _routing_settlement.reset(token)
+
+
+def _discard_interrupted_monitoring(request_id: Optional[str]) -> None:
+    pipeline = globals().get("_pipeline")
+    if request_id and pipeline is not None:
+        try:
+            pipeline.take_monitoring_buffer(request_id)
+        except Exception:  # noqa: BLE001 — monitoring must never break a request
+            logger.debug("Failed to drain monitoring buffer for %s", request_id, exc_info=True)
+    _discard_in_flight(request_id, "error")
+
+
+def _close_interrupted_request(
+    log_ref, request_id: Optional[str], settlement: Optional[_RoutingSettlement] = None
+) -> None:
+    """Settle a pre-execution interruption without writing usage or a payload."""
+    if settlement is not None and settlement.execution_owns_request:
+        return
+    if not log_ref:
+        _discard_interrupted_monitoring(request_id)
+        return
+    try:
+        with DBManager() as db:
+            log_id = _materialize_log_id(db, log_ref)
+            closed = log_id is not None and db.close_unforwarded_request_log(
+                log_id, "Request interrupted before it was forwarded."
+            )
+        if closed:
+            _discard_interrupted_monitoring(request_id)
+    except Exception:
+        logger.exception("Failed to close interrupted request %s", request_id)
 
 
 def _insert_pending_log_row(fields: Dict[str, Any]) -> None:
@@ -3530,7 +3581,12 @@ async def _execute_resource_mode(
     # dispatch and response points — not here — because payload preparation
     # and, for LogosNode streams, the deferred WebSocket dispatch happen in
     # between. Stamping before them would count that logos-side work as
-    # provider time.
+    # provider time. Transfer settlement ownership before awaiting an
+    # executor; once it can dispatch, the routing wrapper may not close
+    # the row even if that executor has only buffered its timings.
+    settlement = _routing_settlement.get()
+    if settlement is not None:
+        settlement.execution_owns_request = True
     try:
         if is_async_job:
             # Async jobs are always non-streaming - use helper
@@ -4034,12 +4090,19 @@ async def _execute_cancelling_on_disconnect(request: Request, **kwargs):
     over — it listens for the disconnect while the body is consumed and cancels
     the generator, which unwinds the same stream context.
     """
-    work = asyncio.create_task(route_and_execute(**kwargs))
+    settlement = _RoutingSettlement()
+    work = asyncio.create_task(_route_with_settlement(settlement, **kwargs))
     watcher = asyncio.create_task(_wait_for_client_disconnect(request))
     try:
         done, _ = await asyncio.wait({work, watcher}, return_when=asyncio.FIRST_COMPLETED)
     except asyncio.CancelledError:
-        await _settle(work)
+        completed = None
+        try:
+            completed = await _settle(work)
+            await _discard_response(completed)
+        finally:
+            if completed is None:
+                _close_interrupted_request(kwargs.get("log_id"), kwargs.get("request_id"), settlement)
         raise
     finally:
         watcher.cancel()
@@ -4453,9 +4516,22 @@ async def _keepalive_streaming_response(request: Request, **execute_kwargs):
     log_id = execute_kwargs.get("log_id")
     path = execute_kwargs.get("path")
     headers = {"X-Request-ID": request_id} if request_id else None
+    pipeline_finished = False
+    response_closed = False
+    settlement = _RoutingSettlement()
+
+    def close_pending_request() -> None:
+        nonlocal response_closed
+        if response_closed:
+            return
+        response_closed = True
+        if not pipeline_finished:
+            _close_interrupted_request(log_id, request_id, settlement)
+        _live_streams.finish(request_id)
 
     async def gen():
-        work = asyncio.create_task(route_and_execute(**execute_kwargs))
+        nonlocal pipeline_finished
+        work = asyncio.create_task(_route_with_settlement(settlement, **execute_kwargs))
         watcher = asyncio.create_task(_wait_for_client_disconnect(request))
         producer: Optional[asyncio.Task] = None
         inner_iterator = None
@@ -4474,6 +4550,7 @@ async def _keepalive_streaming_response(request: Request, **execute_kwargs):
                     # task wins: streaming into a closed socket would be lost
                     # either way.
                     if watcher in done:
+                        pipeline_finished = True
                         logger.info(
                             "Cancelled request %s: client disconnected before the response was ready", request_id
                         )
@@ -4490,6 +4567,7 @@ async def _keepalive_streaming_response(request: Request, **execute_kwargs):
                         await _discard_response(await _settle(work))
                         return
                     if work in done:
+                        pipeline_finished = True
                         response = work.result()
                         break
                     yield _KEEPALIVE_BYTES
@@ -4557,35 +4635,38 @@ async def _keepalive_streaming_response(request: Request, **execute_kwargs):
                 for frame in _instream_sync_frames(response, path):
                     yield frame
         finally:
-            watcher.cancel()
-            with suppress(asyncio.CancelledError, Exception):
-                await watcher
-            completed = response
-            if not work.done():
-                work.cancel()
-            with suppress(asyncio.CancelledError, Exception):
-                settled = await work
-                if completed is None:
-                    completed = settled
-            if producer is not None:
-                if not producer.done():
-                    producer.cancel()
+            try:
+                watcher.cancel()
                 with suppress(asyncio.CancelledError, Exception):
-                    await producer
-            # Discard transfers prefetched provider work to its usage drain.
-            # A worker stream that never started only releases its reservation.
-            if completed is not None:
-                await _discard_response(completed)
-            elif inner_iterator is not None:
-                with suppress(Exception):
-                    await inner_iterator.aclose()
-            # handle_sync_request hands the live-feed entry to this generator for
-            # StreamingResponse; without finish here a cancel before the body
-            # producer starts (or any path that never enters a streamer finally)
-            # leaves the request registered forever.
-            _live_streams.finish(request_id)
+                    await watcher
+                completed = response
+                if not work.done():
+                    work.cancel()
+                with suppress(asyncio.CancelledError, Exception):
+                    settled = await work
+                    if completed is None:
+                        completed = settled
+                if producer is not None:
+                    if not producer.done():
+                        producer.cancel()
+                    with suppress(asyncio.CancelledError, Exception):
+                        await producer
+                # Discard transfers prefetched provider work to its usage drain.
+                # A worker stream that never started only releases its reservation.
+                if completed is not None:
+                    pipeline_finished = True
+                    await _discard_response(completed)
+                elif inner_iterator is not None:
+                    with suppress(Exception):
+                        await inner_iterator.aclose()
+            finally:
+                # If ASGI closes the body during a keepalive, the watcher may
+                # never have observed the disconnect. Settle after cancelling
+                # upstream work, before handing any later cleanup to recovery.
+                close_pending_request()
 
-    return UsageDrainResponse(gen(), media_type="text/event-stream", headers=headers)
+    # Sending the response headers can fail before the body ever starts.
+    return UsageDrainResponse(gen(), media_type="text/event-stream", headers=headers, on_close=close_pending_request)
 
 
 async def handle_sync_request(path: str, request: Request):
@@ -4610,6 +4691,7 @@ async def handle_sync_request(path: str, request: Request):
 
     log_id: Optional[int] = None
     response = None
+    handed_off = False
     try:
         try:
             # Authenticate with profile-based auth (REQUIRED for v1/openai/jobs
@@ -4689,8 +4771,13 @@ async def handle_sync_request(path: str, request: Request):
         ):
             response = await _keepalive_streaming_response(request, **execute_kwargs)
             return response
+        handed_off = True
         response = await _execute_cancelling_on_disconnect(request, **execute_kwargs)
         return response
+    except asyncio.CancelledError:
+        if not handed_off:
+            _close_interrupted_request(log_id, request_id)
+        raise
     finally:
         # A streaming response hands the live entry to its generator: the
         # streamer drops it when the stream ends. Every other outcome — sync
