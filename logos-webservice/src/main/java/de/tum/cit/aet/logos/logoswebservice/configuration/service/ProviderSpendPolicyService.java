@@ -123,12 +123,12 @@ public class ProviderSpendPolicyService {
     }
 
     private Map<String, Object> readPolicy(int provider, LocalDate month, boolean exact) {
-        String condition = exact ? "effective_month = :month" : "effective_month <= :month";
         return jdbc.query("""
             SELECT effective_month, limit_micro_cents FROM provider_spend_policies
-             WHERE provider_id = :provider AND %s
+             WHERE provider_id = :provider AND effective_month <= :month
+               AND (NOT :exact OR effective_month = :month)
              ORDER BY effective_month DESC LIMIT 1
-            """.formatted(condition), Map.of("provider", provider, "month", month), rs -> {
+            """, Map.of("provider", provider, "month", month, "exact", exact), rs -> {
                 if (!rs.next()) {
                     return null;
                 }
@@ -147,9 +147,14 @@ public class ProviderSpendPolicyService {
     }
 
     private void requireCloudProvider(int providerId, boolean lock) {
-        String query = "SELECT id FROM providers WHERE id = :provider AND provider_type = 'cloud'";
-        Boolean exists = jdbc.query(lock ? query + " FOR UPDATE" : query, Map.of("provider", providerId),
-            rs -> { return rs.next(); });
+        var params = Map.of("provider", providerId);
+        Boolean exists = lock
+            ? jdbc.query("""
+                SELECT id FROM providers WHERE id = :provider AND provider_type = 'cloud' FOR UPDATE
+                """, params, rs -> { return rs.next(); })
+            : jdbc.queryForObject("""
+                SELECT EXISTS (SELECT 1 FROM providers WHERE id = :provider AND provider_type = 'cloud')
+                """, params, Boolean.class);
         if (!Boolean.TRUE.equals(exists)) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Cloud provider not found");
         }

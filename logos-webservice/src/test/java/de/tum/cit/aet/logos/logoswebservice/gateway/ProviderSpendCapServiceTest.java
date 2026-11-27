@@ -6,6 +6,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -126,4 +127,33 @@ class ProviderSpendCapServiceTest {
             .thenReturn(attempt);
         assertThat(controller.reserve("Bearer synthetic-secret", request).attemptId()).isEqualTo(attempt);
     }
+
+    @Test
+    void settleChecksSecretAndAllowsOnlyReportedUseOrExplicitNoDispatch() {
+        var controller = new InternalProviderSpendController(service, mapper, "synthetic-secret");
+        UUID attempt = UUID.randomUUID();
+        String auth = "Bearer synthetic-secret";
+        Map<String, Long> usage = Map.of("prompt_tokens", 2L, "completion_tokens", 4L);
+        assertThatThrownBy(() -> controller.settle("Bearer wrong",
+            new InternalProviderSpendController.Settle(attempt, usage, null, false)))
+            .isInstanceOfSatisfying(ResponseStatusException.class, e -> assertThat(e.getStatusCode().value()).isEqualTo(401));
+        assertThatThrownBy(() -> controller.settle(auth,
+            new InternalProviderSpendController.Settle(null, usage, null, false)))
+            .isInstanceOfSatisfying(ResponseStatusException.class, e -> assertThat(e.getStatusCode().value()).isEqualTo(400));
+        assertThatThrownBy(() -> controller.reserve(auth,
+            new InternalProviderSpendController.Reserve(0, 2, null, Map.of())))
+            .isInstanceOfSatisfying(ResponseStatusException.class, e -> assertThat(e.getStatusCode().value()).isEqualTo(400));
+        assertThatThrownBy(() -> controller.reserve(auth,
+            new InternalProviderSpendController.Reserve(1, -2, null, Map.of())))
+            .isInstanceOfSatisfying(ResponseStatusException.class, e -> assertThat(e.getStatusCode().value()).isEqualTo(400));
+        verifyNoInteractions(ledger);
+
+        controller.settle(auth, new InternalProviderSpendController.Settle(attempt, usage, "flex", false));
+        verify(ledger).settle(attempt, usage, "flex", false);
+        doThrow(new DataAccessResourceFailureException("synthetic ledger unavailable"))
+            .when(ledger).settle(attempt, null, null, true);
+        controller.settle(auth, new InternalProviderSpendController.Settle(attempt, null, null, true));
+        verify(ledger).settle(attempt, null, null, true);
+    }
+
 }

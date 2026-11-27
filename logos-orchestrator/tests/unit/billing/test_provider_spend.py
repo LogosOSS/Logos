@@ -5,6 +5,7 @@ import pytest
 from fastapi import HTTPException
 
 from logos.billing import provider_spend
+from logos.billing.provider_spend import _call as real_call
 
 
 def response(status, json=None):
@@ -93,3 +94,100 @@ async def test_release_requires_no_dispatch_and_settle_requires_real_report(monk
         ("settle", {"attempt_id": str(attempt), "usage": reported, "tier": "flex", "undispatched": False}),
         ("settle", {"attempt_id": str(attempt), "undispatched": True}),
     ]
+
+
+@pytest.mark.parametrize(
+    "base,secret",
+    [
+        ("", "test-secret"),
+        ("ftp://ledger.test", "test-secret"),
+        ("http:/no-host", "test-secret"),
+        ("http://user@ledger.test", "test-secret"),
+        ("http://ledger.test?settings=1", "test-secret"),
+        ("http://ledger.test#local", "test-secret"),
+        ("http://ledger.test", ""),
+    ],
+)
+async def test_endpoint_configuration_fails_closed_before_opening_a_connection(monkeypatch, base, secret):
+    monkeypatch.setenv("LOGOS_WEBSERVICE_URL", base)
+    monkeypatch.setenv("LOGOS_INTERNAL_SECRET", secret)
+    monkeypatch.setattr(provider_spend, "_call", real_call)
+    with pytest.raises(HTTPException) as exc:
+        await provider_spend.reserve(22)
+    assert exc.value.status_code == 503
+
+
+async def test_internal_wire_uses_only_configured_client_and_routes(monkeypatch):
+    seen = []
+    attempt = uuid.uuid4()
+
+    def handler(request):
+        seen.append((request.url.path, request.headers.get("Authorization"), request.content))
+        if request.url.path.endswith("/reserve"):
+            return httpx.Response(200, json={"attempt_id": str(attempt)})
+        return httpx.Response(200)
+
+    real_client = httpx.AsyncClient
+
+    def client(**settings):
+        assert settings == {"timeout": 5, "follow_redirects": False, "trust_env": False}
+        return real_client(transport=httpx.MockTransport(handler), **settings)
+
+    monkeypatch.setenv("LOGOS_WEBSERVICE_URL", "http://ledger.test:8081/")
+    monkeypatch.setenv("LOGOS_INTERNAL_SECRET", "local-test-secret")
+    monkeypatch.setattr(provider_spend, "_call", real_call)
+    monkeypatch.setattr(provider_spend.httpx, "AsyncClient", client)
+    assert (
+        await provider_spend.reserve(
+            22,
+            3,
+            url="https://api.openai.com/v1/responses",
+            payload={"model": "fixture-revision", "input": "private prompt", "max_output_tokens": 10},
+        )
+        == attempt
+    )
+    await provider_spend.settle(attempt, {"prompt_tokens": 5, "completion_tokens": 3}, None)
+    await provider_spend.release_undispatched(attempt)
+
+    assert [path for path, _, _ in seen] == [
+        "/internal/provider-spend/reserve",
+        "/internal/provider-spend/settle",
+        "/internal/provider-spend/settle",
+    ]
+    assert {auth for _, auth, _ in seen} == {"Bearer local-test-secret"}
+    assert b"private prompt" not in seen[0][2]
+
+
+async def test_settlement_connection_failure_does_not_release_or_retry(monkeypatch, caplog):
+    checked = []
+
+    async def call(operation, body):
+        checked.append((operation, body))
+        raise httpx.ConnectError("synthetic connection failure")
+
+    monkeypatch.setattr(provider_spend, "_call", call)
+    await provider_spend.settle(uuid.uuid4(), {"prompt_tokens": 8, "completion_tokens": 1}, "flex")
+    assert [operation for operation, _ in checked] == ["settle"]
+    assert checked[0][1]["undispatched"] is False
+    assert "keeping reservation" in caplog.text
+
+
+def test_request_shape_fences_nested_or_oversized_unknown_metadata():
+    nested = {"text": "not carried"}
+    for _ in range(9):
+        nested = {"stream_options": nested}
+    response = provider_spend._shape(
+        {
+            "model": "x" * 201,
+            "messages": [{"role": "user", "content": [{"type": "image", "text": "not carried"}]}],
+            "max_tokens": 2**31,
+            "n": True,
+            "stream_options": nested,
+        }
+    )
+    assert response["model"] == ""
+    assert response["max_tokens"] is None
+    assert response["n"] is None
+    assert response["messages"] == [{"role": "", "content": [{"type": "", "text": ""}]}]
+    assert "unsupported" in str(response["stream_options"])
+    assert "not carried" not in str(response)

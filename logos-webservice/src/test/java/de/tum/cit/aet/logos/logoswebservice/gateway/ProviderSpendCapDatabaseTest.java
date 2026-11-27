@@ -176,10 +176,10 @@ class ProviderSpendCapDatabaseTest {
             Long.class, extraBilled)).isNull();
         assertThat(ledger.reserve(UUID.randomUUID(), provider, model, messages, request)).isEqualTo(exhausted);
 
-        checkAdminPolicy(jdbc, provider, ledger);
+        checkAdminPolicy(jdbc, provider, model, ledger);
     }
 
-    private static void checkAdminPolicy(JdbcTemplate jdbc, int provider, ProviderSpendLedger ledger) {
+    private static void checkAdminPolicy(JdbcTemplate jdbc, int provider, int model, ProviderSpendLedger ledger) {
         var audit = mock(AuditLogService.class);
         var service = new ProviderSpendPolicyService(new NamedParameterJdbcTemplate(jdbc), audit, ledger);
         var controller = new ProviderSpendPolicyController(service);
@@ -199,6 +199,21 @@ class ProviderSpendCapDatabaseTest {
             assertThatThrownBy(() -> controller.schedule(provider, invalid))
                 .isInstanceOf(ResponseStatusException.class).hasMessageContaining("400");
         }
+
+        String official = "https://api.anthropic.com/v1/messages";
+        var evidence = new ProviderSpendLedger.BoundReview(official, MODEL, "max_tokens",
+            1000000, 64000, "https://platform.claude.com/docs/en/models/overview");
+        assertThat(controller.removeReviewedBound(provider, model, official)).containsEntry("bounded_deployments", 0);
+        assertThatThrownBy(() -> controller.removeReviewedBound(provider, model, "https://example.test/messages"))
+            .isInstanceOf(ResponseStatusException.class).hasMessageContaining("400");
+        assertThatThrownBy(() -> controller.recordReviewedBound(provider, model,
+            new ProviderSpendLedger.BoundReview(official, MODEL, "max_tokens", 0, 0, evidence.evidenceUrl())))
+            .isInstanceOf(ResponseStatusException.class).hasMessageContaining("400");
+        assertThatThrownBy(() -> controller.recordReviewedBound(Integer.MAX_VALUE, model, evidence))
+            .isInstanceOf(ResponseStatusException.class).hasMessageContaining("404");
+        assertThat(controller.recordReviewedBound(provider, model, evidence)).containsEntry("bounded_deployments", 1);
+        assertThatThrownBy(() -> controller.schedule(Integer.MAX_VALUE, new Change(false, null)))
+            .isInstanceOf(ResponseStatusException.class).hasMessageContaining("404");
 
         boolean nearRollover = Boolean.TRUE.equals(jdbc.queryForObject("""
             SELECT clock_timestamp() AT TIME ZONE 'UTC' + interval '1 minute'

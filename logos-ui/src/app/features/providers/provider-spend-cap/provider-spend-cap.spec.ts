@@ -107,4 +107,44 @@ describe('ProviderSpendCap', () => {
     await detect();
     expect(host.textContent).toContain('Remove cap');
   });
+
+  it('formats numeric and exact string amounts without changing a cancelled policy', async () => {
+    const page = fixture.componentInstance;
+    expect(page.usdLabel(null)).toBe('Unavailable');
+    expect(page.usdLabel('0.00000000')).toBe('$0.00');
+    expect(page.usdLabel('10000')).toBe('$10,000.00');
+    expect(page.usdLabel('999999.10101000')).toBe('$999,999.10101');
+    expect(page.usdLabel(1234567.25)).toBe('$1,234,567.25');
+    await page.load(); // A pending load does not start a second request.
+    await load({ ...status, current: { ...status.current!, limit_usd: 1234567.25 }, scheduled: null, bounded_deployments: 1 });
+    expect(host.textContent).toContain('Verified cost bounds: 1 deployment.');
+    button('Edit spend cap').click();
+    fixture.detectChanges();
+    expect(host.querySelector<HTMLInputElement>('[inputmode="decimal"]')?.value).toBe('1234567.25');
+    typeLimit('500');
+    button('Cancel').click();
+    await page.save(); // Cannot write outside the editor.
+    await detect();
+    expect(host.textContent).toContain('$1,234,567.25');
+    expect(host.querySelector('[inputmode="decimal"]')).toBeNull();
+  });
+
+  it('keeps a pending write protected from cancel or duplicate submits', async () => {
+    await load({ ...status, current: null, scheduled: null, bounded_deployments: 2 });
+    button('Edit spend cap').click();
+    fixture.detectChanges();
+    expect(host.querySelector<HTMLInputElement>('[inputmode="decimal"]')?.value).toBe('');
+    await fixture.componentInstance.save();
+    typeLimit('0');
+    button('Schedule change').click();
+    const req = http.expectOne({ method: 'PUT', url });
+    expect(req.request.body).toEqual({ enabled: true, limit_usd: '0' });
+    fixture.componentInstance.cancel();
+    await fixture.componentInstance.save();
+    expect(fixture.componentInstance.editing()).toBe(true);
+    req.flush({ ...status, scheduled: { ...status.scheduled!, limit_usd: '0' } });
+    await detect();
+    expect(host.textContent).toContain('$0.00 limit');
+  });
+
 });

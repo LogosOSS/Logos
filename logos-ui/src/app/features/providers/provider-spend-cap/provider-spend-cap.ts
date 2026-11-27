@@ -66,12 +66,23 @@ export class ProviderSpendCap implements OnInit {
   usdLabel(value: number | string | null | undefined): string {
     if (value == null) return 'Unavailable';
     const [whole, fraction = ''] = this.usdDecimal(value).split('.');
-    return '$' + whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',') + '.' + fraction.padEnd(2, '0');
+    const first = whole.length % 3 || 3;
+    const groups = [whole.slice(0, first)];
+    for (let index = first; index < whole.length; index += 3) {
+      groups.push(whole.slice(index, index + 3));
+    }
+    return '$' + groups.join(',') + '.' + fraction.padEnd(2, '0');
   }
 
   private usdDecimal(value: number | string): string {
     const decimal = typeof value === 'string' ? value : value.toFixed(8);
-    return decimal.includes('.') ? decimal.replace(/0+$/, '').replace(/\.$/, '') : decimal;
+    const point = decimal.indexOf('.');
+    if (point === -1) return decimal;
+    let end = decimal.length;
+    while (end > point + 1 && decimal[end - 1] === '0') {
+      end--;
+    }
+    return decimal.slice(0, end === point + 1 ? point : end);
   }
 
   cancel(): void {
