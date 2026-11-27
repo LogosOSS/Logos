@@ -4,7 +4,7 @@
     <h1 class="page-title">Agent Sessions</h1>
     <p class="page-subtitle">
       Coding agents running in isolated containers on capacity Logos is not otherwise using.
-      Sessions act on the dev environment only, and every change arrives as a pull request.
+      Sessions can keep results in Logos or publish changes for review. Sessions do not deploy changes.
     </p>
     <div class="page-header__actions">
       <button type="button" class="btn-primary" (click)="openForm()" [disabled]="showForm()">
@@ -148,8 +148,8 @@
         <div>
           <h2 class="card__title" id="new-session-title">Start a session</h2>
           <p class="card__subtitle">
-            The agent works unattended in the selected workspace and reports back as a pull
-            request.
+            The agent works in the selected workspace. You can keep the result in Logos
+            without publishing it to GitHub.
           </p>
         </div>
         <button
@@ -254,9 +254,9 @@
             placeholder="/dashboard /models"
             [ngModel]="formScreenshots()"
             (ngModelChange)="formScreenshots.set($event)"
-            [disabled]="linkedRepositorySelected()"
+            [disabled]="linkedRepositorySelected() || formNoPush()"
           />
-          <span class="field__hint">Pages on the dev environment to capture after deploying.</span>
+          <span class="field__hint">Pages on the current Dev instance. Capturing them does not deploy these changes.</span>
         </label>
 
         <label class="field">
@@ -287,24 +287,24 @@
             <label class="checkbox">
               <input
                 type="checkbox"
-                [ngModel]="formOpenPr()"
-                (ngModelChange)="formOpenPr.set($event)"
+                [ngModel]="formNoPush()"
+                (ngModelChange)="formNoPush.set($event)"
               />
-              <span>Open a pull request when finished</span>
+              <span>Private session: no GitHub writes</span>
             </label>
             <label class="checkbox">
               <input
                 type="checkbox"
-                [ngModel]="formDeploy()"
-                (ngModelChange)="formDeploy.set($event)"
-                [disabled]="linkedRepositorySelected()"
+                [ngModel]="!formNoPush() && formOpenPr()"
+                [disabled]="formNoPush()"
+                (ngModelChange)="formOpenPr.set($event)"
               />
-              <span>Deploy to the dev environment afterwards</span>
+              <span>Open a pull request when finished</span>
             </label>
           </div>
           @if (linkedRepositorySelected()) {
             <p class="field__hint">
-              Deploy to dev and screenshots are available only for the platform repository.
+              Dev screenshots are available only for the platform repository.
             </p>
           }
         </div>

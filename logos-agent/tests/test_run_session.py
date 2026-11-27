@@ -1939,6 +1939,41 @@ def test_main_reports_success_only_after_result_is_persisted(tmp_path, monkeypat
 class TestSuccessiveSessionsOnAFork:
     """A second session in a workspace whose first session published to the agent's fork."""
 
+    def test_private_session_reuses_a_fork_checkout_without_a_push_remote(self, tmp_path, monkeypatch):
+        origin, _ = _remote_with_a_feature(tmp_path)
+        fork = tmp_path / "fork.git"
+        subprocess.run(["git", "clone", "--quiet", "--bare", str(origin), str(fork)], check=True)
+        first = "logos/agent/ws/session-1"
+        second = "logos/agent/ws/session-2"
+        seed = tmp_path / "seed"
+        _git("checkout", "--quiet", "-b", first, "main", cwd=seed)
+        _git("commit", "--quiet", "--allow-empty", "-m", "published only to the fork", cwd=seed)
+        _git("push", "--quiet", str(fork), first, cwd=seed)
+
+        workspace = tmp_path / "ws"
+        _patch_workspace(monkeypatch, workspace)
+        monkeypatch.setenv("LOGOS_SESSION_REPOSITORY_BRANCH", "main")
+        monkeypatch.setenv("LOGOS_PUSH_REPO_URL", f"file://{fork}")
+        run_session.prepare_checkout(f"file://{origin}", first, first, "a-token")
+        checkout = workspace / "repo"
+        assert _git("remote", cwd=checkout).stdout.split() == ["origin", "push"]
+
+        monkeypatch.delenv("LOGOS_PUSH_REPO_URL")
+        monkeypatch.setenv("LOGOS_CHECKOUT_FORK_URL", f"file://{fork}")
+        monkeypatch.setenv("LOGOS_REPO_URL", f"file://{origin}")
+        monkeypatch.setenv("LOGOS_SESSION_BASE_BRANCH", first)
+        monkeypatch.setenv("LOGOS_SESSION_BRANCH", second)
+        result = Result()
+        run_session.run_prepare(result)
+
+        assert result.data["checkout_sha"] == _git("rev-parse", first, cwd=seed).stdout.strip()
+        assert result.data["checkout_comparison_sha"] == _git("rev-parse", "main", cwd=seed).stdout.strip()
+        assert result.data["checkout_pr_base_branch"] == "main"
+        assert not result.data["checkout_branch_sha"]
+        assert _git("remote", cwd=checkout).stdout.split() == ["origin"]
+        assert _git("symbolic-ref", "--short", "HEAD", cwd=checkout).stdout.strip() == second
+        assert not _git("ls-remote", str(fork), f"refs/heads/{second}", cwd=checkout).stdout
+
     def test_the_second_session_starts_from_the_fork_and_targets_the_repository(self, tmp_path, monkeypatch):
         import run_session
 
