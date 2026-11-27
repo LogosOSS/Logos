@@ -176,6 +176,8 @@
                   <i class="pi pi-spin pi-spinner" aria-hidden="true"></i>
                   Loading…
                 </div>
+              } @else if (keyPermissions.hasExpandError(k.id)) {
+                <span class="expand-empty">Could not load this key’s permissions. Reopen to try again.</span>
               } @else {
                 <div class="expand-label">
                   {{ k.use_custom_permissions ? 'Custom Permissions' : 'Team Permissions' }}
@@ -385,6 +387,8 @@
                   <i class="pi pi-spin pi-spinner" aria-hidden="true"></i>
                   Loading…
                 </div>
+              } @else if (keyPermissions.hasExpandError(k.id)) {
+                <span class="expand-empty">Could not load this key’s permissions. Reopen to try again.</span>
               } @else {
                 <div class="expand-label">
                   {{ k.use_custom_permissions ? 'Custom Permissions' : 'Team Permissions' }}

@@ -20,8 +20,8 @@ import { formatLastUsed as formatLastUsedLabel } from '../../shared/utils/date';
 
 /**
  * Admin view for a single model: where it is hosted, and which teams /
- * custom-permission keys actually have both the model grant and a grant for
- * a hosting provider. Orphaned grants (model grant without any reachable
+ * custom-permission keys can reach it through manual or automatic grants.
+ * Orphaned grants (model grant without any reachable
  * provider) are highlighted, and team-provider grants can be granted or
  * revoked right here by toggling a checkbox — each change is one atomic
  * backend operation that keeps the team's other grants.

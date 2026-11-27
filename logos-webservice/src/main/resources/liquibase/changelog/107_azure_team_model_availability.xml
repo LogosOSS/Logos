@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+    <changeSet id="107-azure-team-model-availability" author="LogosOSS">
+        <sql><![CDATA[
+            CREATE TABLE team_azure_model_auto_access (
+                team_id INTEGER NOT NULL,
+                provider_id INTEGER NOT NULL,
+                PRIMARY KEY (team_id, provider_id),
+                FOREIGN KEY (team_id, provider_id)
+                    REFERENCES team_provider_permissions (team_id, provider_id) ON DELETE CASCADE
+            );
+            ALTER TABLE model_provider
+                ADD COLUMN azure_synced_endpoint TEXT,
+                ADD COLUMN azure_synced_provider_url TEXT;
+
+            -- Keep these as predicates on each eligible deployment pair. A
+            -- distinct UNION would aggregate grants from unrelated teams before
+            -- the caller's team can constrain this view.
+            CREATE VIEW allowed_team_model_deployments AS
+            SELECT tpp.team_id, mp.model_id, mp.provider_id
+            FROM allowed_team_provider_grants tpp
+            JOIN model_provider mp ON mp.provider_id = tpp.provider_id
+            WHERE EXISTS (
+                SELECT 1 FROM team_model_permissions tmp
+                WHERE tmp.team_id = tpp.team_id AND tmp.model_id = mp.model_id
+            ) OR (
+                mp.endpoint = mp.azure_synced_endpoint
+                AND EXISTS (
+                    SELECT 1 FROM team_azure_model_auto_access preference
+                    JOIN providers p ON p.id = preference.provider_id
+                    WHERE preference.team_id = tpp.team_id AND preference.provider_id = mp.provider_id
+                      AND p.provider_type = 'cloud' AND p.cloud_provider_type = 'azure'
+                      AND p.base_url = mp.azure_synced_provider_url
+                )
+            );
+
+            CREATE VIEW allowed_key_model_deployments AS
+            SELECT ak.id AS api_key_id, tmd.model_id, tmd.provider_id
+            FROM api_keys ak
+            JOIN allowed_team_model_deployments tmd ON tmd.team_id = ak.team_id
+            WHERE ak.is_active AND NOT ak.use_custom_permissions AND ak.internal_service IS NULL
+            UNION ALL
+            SELECT ak.id AS api_key_id, mp.model_id, mp.provider_id
+            FROM api_keys ak
+            JOIN api_key_model_permissions kmp ON kmp.api_key_id = ak.id
+            JOIN model_provider mp ON mp.model_id = kmp.model_id
+            JOIN allowed_key_provider_grants kpp ON kpp.api_key_id = ak.id AND kpp.provider_id = mp.provider_id
+            WHERE ak.is_active AND ak.use_custom_permissions AND ak.internal_service IS NULL;
+        ]]></sql>
+        <rollback>
+            <sql>
+                DROP VIEW allowed_key_model_deployments;
+                DROP VIEW allowed_team_model_deployments;
+                ALTER TABLE model_provider DROP COLUMN azure_synced_endpoint, DROP COLUMN azure_synced_provider_url;
+                DROP TABLE team_azure_model_auto_access;
+            </sql>
+        </rollback>
+    </changeSet>
+</databaseChangeLog>
