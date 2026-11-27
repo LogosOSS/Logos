@@ -9,6 +9,7 @@ public interface LatestRequestProjection {
     String getResultStatus();
     Instant getTimestampRequest();
     Instant getTimestampForwarding();
+    Instant getTimestampProviderCall();
     Instant getTimestampResponse();
     Boolean getWasColdStart();
     String getInitialPriority();
@@ -26,6 +27,8 @@ public interface LatestRequestProjection {
     String getApiKeyType();
     String getEnvironment();
     Boolean getBenchmark();
+    Boolean getCloud();
+    String getLifecycleState();
     Long getPromptTokens();
     /** Body-derived stand-in when the upstream never reported prompt_tokens. */
     Long getEstimatedPromptTokens();

@@ -22,6 +22,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import org.assertj.core.data.Offset;
 
 import de.tum.cit.aet.logos.logoswebservice.TestContainersConfig;
+import de.tum.cit.aet.logos.logoswebservice.operations.service.RequestLogService;
 import de.tum.cit.aet.logos.logoswebservice.operations.service.RequestLogStatsRefreshService;
 import de.tum.cit.aet.logos.logoswebservice.operations.service.RequestLogStatsService;
 
@@ -62,6 +63,7 @@ import de.tum.cit.aet.logos.logoswebservice.operations.service.RequestLogStatsSe
 class RequestLogStatsRollupTest {
 
     @Autowired RequestLogStatsService statsService;
+    @Autowired RequestLogService requestLogService;
     @Autowired RequestLogStatsRefreshService refreshService;
     @Autowired JdbcTemplate jdbc;
     @MockitoBean JwtDecoder jwtDecoder;
@@ -163,17 +165,24 @@ class RequestLogStatsRollupTest {
                 """);
 
             assertRollupIsEmpty();
-            var live = stats(statsService.getRequestLogStats(start(), end(), 24, null, null, null, false, List.of(5002)));
+            var live = stats(statsService.getRequestLogStats(
+                start(), end(), 24, null, null, null, null, false, List.of(5002), "finished", List.of(6001, 6401)));
+            assertThat(requestLogService.countFeedRows(
+                start(), end(), null, null, null, null, false, "finished", List.of(5002), List.of(6001, 6401)))
+                .isEqualTo(8L);
             populateRollup();
             assertThat(rolledUpRowsForHour(6)).isGreaterThan(0);
             assertThat(rolledUpRowsForHour(0)).isZero();
             assertThat(jdbc.queryForObject("""
-                SELECT SUM(benchmark_requests) FROM log_entry_hourly_stats WHERE model_id = 5002
+                SELECT SUM(requests) FROM log_entry_hourly_stats WHERE model_id = 5002 AND is_benchmark
                 """, Long.class)).isEqualTo(2L);
-            var mixed = stats(statsService.getRequestLogStats(start(), end(), 24, null, null, null, false, List.of(5002)));
+            var mixed = stats(statsService.getRequestLogStats(
+                start(), end(), 24, null, null, null, null, false, List.of(5002), "finished", List.of(6001, 6401)));
+            assertThat(requestLogService.countFeedRows(
+                start(), end(), null, null, null, null, false, "finished", List.of(5002), List.of(6001, 6401)))
+                .isEqualTo(8L);
+            assertThat(mixed).isEqualTo(live);
 
-            assertThat(mixed.get("timeSeries")).isEqualTo(live.get("timeSeries"));
-            assertThat(mixed.get("modelTimeSeries")).isEqualTo(live.get("modelTimeSeries"));
             var volume = (List<Map<String, Object>>) mixed.get("timeSeries");
             var modelVolume = (List<Map<String, Object>>) mixed.get("modelTimeSeries");
             var populated = volume.stream().filter(b -> ((Number) b.get("total")).longValue() > 0).toList();
@@ -189,7 +198,7 @@ class RequestLogStatsRollupTest {
             });
 
             var totals = (Map<String, Object>) mixed.get("totals");
-            assertThat(((Number) totals.get("requests")).longValue()).isEqualTo(8L);
+            assertThat(((Number) totals.get("requests")).longValue()).isEqualTo(4L);
             var keyScoped = stats(statsService.getRequestLogStats(
                 start(), end(), 24, null, null, null, 3001, false, List.of(5002)));
             assertThat((List<Map<String, Object>>) keyScoped.get("modelTimeSeries")).hasSize(2).allSatisfy(
@@ -379,12 +388,80 @@ class RequestLogStatsRollupTest {
     }
 
     @Test
-    void a_row_that_moves_to_a_later_hour_leaves_no_count_behind() {
-        // A request enqueued at the end of one hour and forwarded in the next
-        // changes which bucket it belongs to, because the effective timestamp
-        // prefers timestamp_forwarding. The pass has to recompute the hour it
-        // left as well as the one it joined, or the old hour keeps counting it
-        // and the request shows up twice.
+    @SuppressWarnings("unchecked")
+    void changed_closed_hour_agrees_with_recent_before_the_next_rollup_pass() {
+        Instant arrivalHour = Instant.now().truncatedTo(ChronoUnit.HOURS).minus(9, ChronoUnit.HOURS);
+        String rangeStart = arrivalHour.toString();
+        String rangeEnd = arrivalHour.plus(1, ChronoUnit.HOURS).toString();
+        var modelIds = List.of(5002);
+        var providerIds = List.of(6001);
+        try {
+            jdbc.update("""
+                INSERT INTO log_entry (
+                    id, request_id, api_key_id, user_id, team_id, model_id, provider_id,
+                    timestamp_request, benchmark_job_id
+                )
+                VALUES
+                    (9681, 'roll-dirty-ordinary', 3001, 1001, 2001, 5002, 6001,
+                        CAST(? AS timestamptz) + interval '1 minute', NULL),
+                    (9682, 'roll-dirty-benchmark', NULL, NULL, NULL, 5002, 6001,
+                        CAST(? AS timestamptz) + interval '2 minutes', 42)
+                """, rangeStart, rangeStart);
+            populateRollup();
+            assertThat(jdbc.queryForObject("""
+                SELECT SUM(requests) FROM log_entry_hourly_stats
+                WHERE bucket_hour = CAST(? AS timestamptz) AND model_id = 5002 AND lifecycle_state = 'queued'
+                """, Long.class, rangeStart)).isEqualTo(2L);
+            assertThat(requestLogService.countFeedRows(
+                rangeStart, rangeEnd, null, null, null, null, false, "error", modelIds, providerIds))
+                .isZero();
+
+            // This is a historical hour covered by the watermark. The stored
+            // grain must still say queued until the next pass. Reads must use
+            // the dirty hour's current rows, not the stored grain.
+            jdbc.update("""
+                UPDATE log_entry
+                SET result_status = CASE WHEN id = 9681 THEN 'timeout'::result_status_enum
+                                         ELSE 'error'::result_status_enum END,
+                    timestamp_response = CURRENT_TIMESTAMP
+                WHERE id IN (9681, 9682)
+                """);
+
+            Map<String, Object> currentErrorStats = stats(statsService.getRequestLogStats(
+                rangeStart, rangeEnd, 1, null, null, null, null, false, modelIds, "error", providerIds));
+            assertThat((Map<String, Object>) currentErrorStats.get("totals")).containsEntry("requests", 1L);
+            assertThat((Map<String, Object>) currentErrorStats.get("statusCounts")).containsOnlyKeys("timeout")
+                .containsEntry("timeout", 1);
+            assertThat((List<Map<String, Object>>) currentErrorStats.get("timeSeries"))
+                .extracting(row -> ((Number) row.get("total")).longValue()).containsExactly(1L, 0L);
+            assertThat((List<Map<String, Object>>) currentErrorStats.get("modelTimeSeries")).singleElement()
+                .satisfies(row -> assertThat(row).containsEntry("count", 1L));
+
+            Map<String, Object> recent = requestLogService.getLatestRequests(
+                rangeStart, rangeEnd, null, null, null, null, false, "error", null, null,
+                10, true, modelIds, providerIds);
+            assertThat(recent).containsEntry("total", 2L);
+            assertThat((List<Map<String, Object>>) recent.get("requests")).satisfiesExactly(
+                row -> assertThat(row).containsEntry("request_id", "roll-dirty-benchmark")
+                    .containsEntry("benchmark", true),
+                row -> assertThat(row).containsEntry("request_id", "roll-dirty-ordinary")
+                    .containsEntry("benchmark", false));
+            assertThat(requestLogService.countFeedRows(
+                rangeStart, rangeEnd, null, null, null, null, false, "queued", modelIds, providerIds))
+                .isZero();
+            assertThat(jdbc.queryForObject("""
+                SELECT SUM(requests) FROM log_entry_hourly_stats
+                WHERE bucket_hour = CAST(? AS timestamptz) AND model_id = 5002 AND lifecycle_state = 'queued'
+                """, Long.class, rangeStart)).isEqualTo(2L);
+        } finally {
+            jdbc.update("DELETE FROM log_entry WHERE id IN (9681, 9682)");
+        }
+    }
+
+    @Test
+    void a_later_forward_keeps_the_request_in_its_arrival_hour() {
+        // A request forwarded in another hour changes lifecycle state, not
+        // its arrival bucket. The cursor feed and aggregates use that hour.
         jdbc.update("""
             INSERT INTO log_entry (id, request_id, api_key_id, model_id, provider_id, result_status,
                                    timestamp_request, timestamp_forwarding, timestamp_response,
@@ -408,10 +485,13 @@ class RequestLogStatsRollupTest {
                 """);
             assertThat(refreshService.refreshNow()).isTrue();
 
-            // Counted once, in its new hour, and the hour it left is empty again.
             assertThat(totalRequests()).isEqualTo(before);
-            assertThat(rolledUpRowsForHour(7)).isZero();
-            assertThat(rolledUpRowsForHour(6)).isGreaterThan(0);
+            assertThat(rolledUpRowsForHour(7)).isGreaterThan(0);
+            assertThat(rolledUpRowsForHour(6)).isZero();
+            assertThat(jdbc.queryForObject("""
+                SELECT lifecycle_state FROM log_entry_hourly_stats
+                WHERE bucket_hour = date_trunc('hour', NOW()) - INTERVAL '7 hours'
+                """, String.class)).isEqualTo("finished");
         } finally {
             jdbc.update("DELETE FROM log_entry WHERE id = 9410");
         }

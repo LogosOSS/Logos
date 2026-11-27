@@ -110,7 +110,7 @@
               </div>
             }
             @if (tokensLabelOf(item)) {
-              <div class="rr-card__meta rr-card__tokens" [class.rr-card__tokens--live]="item.streaming">
+              <div class="rr-card__meta rr-card__tokens" [class.rr-card__tokens--live]="isStreamingOf(item)">
                 {{ tokensLabelOf(item) }} tokens
                 @if (rateLabelOf(item)) {
                   <span class="rr-card__rate">{{ rateLabelOf(item) }}</span>
@@ -137,12 +137,22 @@
             }
             @if (stageOf(item) === 'complete') {
               <div class="rr-card__complete-top">
-                @if (!item.is_cloud) {
+                @if (failureOf(item); as failure) {
                   <span
                     class="rr-badge"
-                    [class.rr-badge--cold]="item.cold_start"
-                    [class.rr-badge--hot]="!item.cold_start"
-                  >{{ item.cold_start ? 'Cold' : 'Hot' }}</span>
+                    [class.rr-badge--error]="failure === 'error'"
+                    [class.rr-badge--timeout]="failure === 'timeout'"
+                  >{{ failure === 'timeout' ? 'Timeout' : 'Error' }}</span>
+                } @else if (item.status === 'success') {
+                  @if (!item.is_cloud) {
+                    <span
+                      class="rr-badge"
+                      [class.rr-badge--cold]="item.cold_start"
+                      [class.rr-badge--hot]="!item.cold_start"
+                    >{{ item.cold_start ? 'Cold' : 'Hot' }}</span>
+                  }
+                } @else {
+                  <span class="rr-badge rr-badge--finished">Finished</span>
                 }
                 <span class="rr-card__total-time">{{ totalTimeLabelOf(item) }}</span>
               </div>
@@ -153,7 +163,7 @@
               }
             }
           </div>
-          @if (stageOf(item) === 'complete' && item.status === 'error' && item.error_message) {
+          @if (failureOf(item) && item.error_message) {
             <details class="rr-card__error">
               <summary class="rr-card__error-summary" aria-label="Error details" [title]="item.error_message">
                 <i class="pi pi-chevron-right" aria-hidden="true"></i>

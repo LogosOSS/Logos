@@ -1,5 +1,10 @@
 package de.tum.cit.aet.logos.logoswebservice.operations;
 
+import java.util.LinkedHashMap;
+import java.util.Map;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -11,6 +16,7 @@ import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.context.jdbc.Sql;
 import org.springframework.test.web.servlet.MockMvc;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -51,6 +57,116 @@ class RequestLogStatsControllerTest {
            .andExpect(jsonPath("$.stats.totals.requests").isNumber())
            .andExpect(jsonPath("$.stats.timeSeries").isArray())
            .andExpect(jsonPath("$.stats.modelBreakdown").isArray());
+    }
+
+    @Test
+    void sharedRequestFilters_countTheSameOrdinaryRequestsAndKeepBenchmarksOnlyInRecent() throws Exception {
+        jdbc.update("INSERT INTO providers (id, name, base_url, provider_type, privacy_level, auth_name, auth_format) "
+            + "VALUES (6002, 'stats-second-provider', 'https://example.org', 'cloud', 'LOCAL', "
+            + "'Authorization', 'Bearer {}')");
+        try {
+            jdbc.update("""
+                INSERT INTO log_entry (
+                    id, request_id, api_key_id, model_id, provider_id, user_id, team_id, benchmark_job_id,
+                    result_status, timestamp_request, timestamp_forwarding, timestamp_response
+                )
+                VALUES
+                    (9921, 'shared-error', 3001, 5001, 6001, 1001, 2001, NULL, 'error',
+                        '2025-01-14T08:05:00Z', '2025-01-14T09:01:00Z', '2025-01-14T09:05:00Z'),
+                    (9922, 'shared-timeout', 3001, 5001, 6001, 1001, 2001, NULL, 'timeout',
+                        '2025-01-14T08:10:00Z', NULL, NULL),
+                    (9923, 'shared-benchmark', NULL, 5001, 6001, NULL, NULL, 555, 'error',
+                        '2025-01-14T08:15:00Z', '2025-01-14T08:15:01Z', '2025-01-14T08:15:02Z'),
+                    (9924, 'shared-success', 3001, 5001, 6001, 1001, 2001, NULL, 'success',
+                        '2025-01-14T08:20:00Z', '2025-01-14T08:20:01Z', '2025-01-14T08:20:02Z'),
+                    (9925, 'shared-early-arrival', 3001, 5001, 6001, 1001, 2001, NULL, 'error',
+                        '2025-01-14T07:55:00Z', '2025-01-14T08:25:00Z', '2025-01-14T08:30:00Z'),
+                    (9926, 'shared-other-user', 3001, 5001, 6001, 1002, 2001, NULL, 'error',
+                        '2025-01-14T08:25:00Z', NULL, '2025-01-14T08:30:00Z'),
+                    (9927, 'shared-other-team', 3001, 5001, 6001, 1001, 2002, NULL, 'error',
+                        '2025-01-14T08:30:00Z', NULL, '2025-01-14T08:35:00Z'),
+                    (9928, 'shared-other-key', 3003, 5001, 6001, 1001, 2001, NULL, 'error',
+                        '2025-01-14T08:35:00Z', NULL, '2025-01-14T08:40:00Z'),
+                    (9929, 'shared-other-model', 3001, 5002, 6001, 1001, 2001, NULL, 'error',
+                        '2025-01-14T08:40:00Z', NULL, '2025-01-14T08:45:00Z'),
+                    (9930, 'shared-other-provider', 3001, 5001, 6002, 1001, 2001, NULL, 'error',
+                        '2025-01-14T08:45:00Z', NULL, '2025-01-14T08:50:00Z'),
+                    (9931, NULL, 3001, 5001, 6001, 1001, 2001, NULL, 'error',
+                        '2025-01-14T08:50:00Z', NULL, '2025-01-14T08:55:00Z')
+                """);
+
+            // Both routes see the same provider/model/status/date population.
+            // The Recent paginator intentionally includes the one benchmark.
+            var scope = new LinkedHashMap<String, Object>();
+            scope.put("start", "2025-01-14T08:00:00Z");
+            scope.put("end", "2025-01-14T09:00:00Z");
+            scope.put("start_date", scope.get("start"));
+            scope.put("end_date", scope.get("end"));
+            scope.put("status", "error");
+            scope.put("provider_ids", java.util.List.of(6001));
+            scope.put("model_ids", java.util.List.of(5001));
+            scope.put("limit", 2);
+
+            assertSharedAggregates(scope, 5, 4);
+            JsonNode page = postStatistics("/logosdb/latest_requests", scope);
+            assertThat(page.path("total").asInt()).isEqualTo(6);
+            assertThat(page.path("requests").size()).isEqualTo(2);
+            assertThat(page.path("has_more").asBoolean()).isTrue();
+            scope.put("cursor_ts", page.path("next_cursor").path("ts").asText());
+            scope.put("cursor_id", page.path("next_cursor").path("request_id").asText());
+            var secondPage = postStatistics("/logosdb/latest_requests", scope);
+            assertThat(secondPage.path("total").asInt()).isEqualTo(6);
+            assertThat(secondPage.path("requests").get(1).path("request_id").asText()).isEqualTo("shared-benchmark");
+            assertThat(secondPage.path("requests").get(1).path("benchmark").asBoolean()).isTrue();
+            scope.remove("cursor_ts");
+            scope.remove("cursor_id");
+
+            // Compose all selectors: any one missing backend predicate would
+            // admit one of the explicitly planted near matches above.
+            scope.put("team_id", 2001);
+            scope.put("user_id", 1001);
+            scope.put("api_key_id", 3001);
+            scope.put("provider_id", 6001);
+            scope.put("provider_ids", java.util.List.of(6001, 6002));
+            assertSharedAggregates(scope, 2, 1);
+            var intersected = postStatistics("/logosdb/latest_requests", scope);
+            assertThat(intersected.path("total").asInt()).isEqualTo(2);
+            assertThat(intersected.path("has_more").asBoolean()).isFalse();
+            assertThat(intersected.path("requests").get(0).path("request_id").asText()).isEqualTo("shared-timeout");
+            assertThat(intersected.path("requests").get(0).path("lifecycle_state").asText()).isEqualTo("error");
+            assertThat(intersected.path("requests").get(1).path("request_id").asText()).isEqualTo("shared-error");
+
+            scope.put("status", "finished");
+            assertThat(postStatistics("/logosdb/request_log_stats", scope).at("/stats/totals/requests").asInt())
+                .isEqualTo(1);
+            assertThat(postStatistics("/logosdb/latest_requests", scope).path("requests").get(0)
+                .path("request_id").asText()).isEqualTo("shared-success");
+        } finally {
+            jdbc.update("DELETE FROM log_entry WHERE id BETWEEN 9921 AND 9931");
+            jdbc.update("DELETE FROM providers WHERE id = 6002");
+        }
+    }
+
+    private JsonNode postStatistics(String path, Map<String, Object> scope) throws Exception {
+        var mapper = new ObjectMapper();
+        return mapper.readTree(mvc.perform(post(path).with(TestJwt.logosAdmin())
+                .contentType("application/json").content(mapper.writeValueAsString(scope)))
+            .andExpect(status().isOk()).andReturn().getResponse().getContentAsString());
+    }
+
+    private void assertSharedAggregates(Map<String, Object> scope, int requests, int errors) throws Exception {
+        JsonNode stats = postStatistics("/logosdb/request_log_stats", scope).path("stats");
+        assertThat(stats.at("/totals/requests").asInt()).isEqualTo(requests);
+        assertThat(stats.at("/totals/localRequests").asInt()).isEqualTo(requests);
+        assertThat(stats.at("/statusCounts/error").asInt()).isEqualTo(errors);
+        assertThat(stats.at("/statusCounts/timeout").asInt()).isEqualTo(1);
+        assertThat(stats.at("/modelBreakdown/0/requestCount").asInt()).isEqualTo(requests);
+        int volume = 0;
+        for (JsonNode bucket : stats.path("timeSeries")) volume += bucket.path("total").asInt();
+        assertThat(volume).isEqualTo(requests);
+        int modelVolume = 0;
+        for (JsonNode bucket : stats.path("modelTimeSeries")) modelVolume += bucket.path("count").asInt();
+        assertThat(modelVolume).isEqualTo(requests);
     }
 
     // ── Request latency ──────────────────────────────────────────────────────
@@ -547,19 +663,20 @@ class RequestLogStatsControllerTest {
                 .contentType("application/json")
                 .content("{}"))
            .andExpect(status().isOk())
-           // Order is requestCount DESC: the live gpt-4 pair first, then the
-           // single orphan row under its captured name.
-           .andExpect(jsonPath("$.stats.modelBreakdown.length()").value(2))
+           // The live model, the captured deleted name, and the unresolved
+           // request all contribute; unresolved is not a deleted model.
+           .andExpect(jsonPath("$.stats.modelBreakdown.length()").value(3))
            .andExpect(jsonPath("$.stats.modelBreakdown[0].modelName").value("gpt-4"))
            .andExpect(jsonPath("$.stats.modelBreakdown[0].requestCount").value(2))
            .andExpect(jsonPath("$.stats.modelBreakdown[0].modelDeleted").value(false))
-           .andExpect(jsonPath("$.stats.modelBreakdown[1].modelId").isEmpty())
-           .andExpect(jsonPath("$.stats.modelBreakdown[1].modelName").value("retired-model"))
-           .andExpect(jsonPath("$.stats.modelBreakdown[1].modelDeleted").value(true))
-           .andExpect(jsonPath("$.stats.modelBreakdown[1].requestCount").value(1))
-           // 9031 carries neither an id nor a name: a request that never
-           // resolved to a model, still outside the per-model views as before,
-           // while the totals count it.
+           .andExpect(jsonPath("$.stats.modelBreakdown[?(@.modelName == 'retired-model')].modelDeleted")
+               .value(org.hamcrest.Matchers.contains(true)))
+           .andExpect(jsonPath("$.stats.modelBreakdown[?(@.modelName == 'Unresolved model')].modelDeleted")
+               .value(org.hamcrest.Matchers.contains(false)))
+           .andExpect(jsonPath("$.stats.modelBreakdown[?(@.modelName == 'Unresolved model')].requestCount")
+               .value(org.hamcrest.Matchers.contains(1)))
+           .andExpect(jsonPath("$.stats.modelTimeSeries[?(@.modelName == 'Unresolved model')].count")
+               .value(org.hamcrest.Matchers.contains(1)))
            .andExpect(jsonPath("$.stats.totals.requests").value(4));
     }
 

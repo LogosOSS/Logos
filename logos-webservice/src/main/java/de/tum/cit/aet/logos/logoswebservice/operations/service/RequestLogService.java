@@ -11,6 +11,8 @@ import java.util.Map;
 import java.util.stream.Collectors;
 
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
+import org.springframework.transaction.annotation.Transactional;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.server.ResponseStatusException;
@@ -41,6 +43,11 @@ public class RequestLogService {
     }
 
     /** Parse optional feed selections without silently widening malformed filters. */
+    /** Blank/absent means all states; an unsupported value matches no rows. */
+    public static String readRequestStatus(Map<String, Object> values) {
+        return values.get("status") instanceof String status && !status.isBlank() ? status : null;
+    }
+
     public static List<Integer> readFeedIds(Map<String, Object> body, String field) {
         Object value = body.get(field);
         if (value == null) return List.of();
@@ -146,6 +153,7 @@ public class RequestLogService {
     }
 
     /** Same as above, additionally narrowed to one API key ({@code null} for every key). */
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
     public Map<String, Object> getLatestRequests(String startDate, String endDate,
                                                  Integer userId, Integer teamId,
                                                  Integer providerId, Integer apiKeyId, boolean errorsOnly,
@@ -184,11 +192,12 @@ public class RequestLogService {
                 m.put("request_id", p.getRequestId());
                 m.put("model_name", p.getModelName());
                 m.put("provider_name", p.getProviderName());
-                m.put("is_cloud", isCloudProviderType(p.getProviderType()));
+                m.put("is_cloud", Boolean.TRUE.equals(p.getCloud()));
                 m.put("status", p.getResultStatus() != null ? p.getResultStatus() : "pending");
                 m.put("timestamp", ts(p.getTimestampRequest()));
                 m.put("enqueue_ts", ts(p.getTimestampRequest()));
                 m.put("scheduled_ts", ts(p.getTimestampForwarding()));
+                m.put("provider_call_ts", ts(p.getTimestampProviderCall()));
                 m.put("request_complete_ts", ts(p.getTimestampResponse()));
                 m.put("duration", p.getRunSeconds());
                 m.put("cold_start", p.getWasColdStart());
@@ -205,6 +214,7 @@ public class RequestLogService {
                 m.put("api_key_type", p.getApiKeyType());
                 m.put("environment", p.getEnvironment());
                 m.put("benchmark", Boolean.TRUE.equals(p.getBenchmark()));
+                m.put("lifecycle_state", p.getLifecycleState());
                 putTokenCounts(m, p.getPromptTokens(), p.getEstimatedPromptTokens(),
                     p.getCompletionTokens(), p.getTotalTokens());
                 m.put("cost_microcents", p.getCostMicroCents());

@@ -32,19 +32,18 @@ the entries with the most requests first.
 
 ![Requesters list with people and application keys](/img/roles/logos-admin-statistics-requesters.png)
 
-The time range and scope filters apply to the whole tab, including when you
-drag across the request volume chart to select a time range. The state filter
-applies only to recent requests.
+The time range and all filters, including state, apply to the whole **Requests** tab.
+For example, select **Error** to see failed requests and timeouts in the list, totals and charts.
+Drag across the **Request volume** chart to select a time range.
 
-**Request volume**, **Request type**, and **Model share** exclude internal
-Logos benchmarks. Benchmarks still appear in the headline totals and **Recent
-requests**, where a **Benchmark** badge identifies them without changing their
-request state.
+Internal Logos benchmarks appear only in **Recent requests** with a **Benchmark** badge.
+They must match the same filters and are included in the list count.
+The totals and charts exclude benchmark requests.
 
 ![The Statistics Requests tab with a queued request that has the Benchmark badge](/img/roles/logos-admin-statistics.png)
 
-On the **Local Providers** tab, each worker node has its own section. The
-section shows memory, lane health and GPU metrics. Next to the name of the
+The **Local Providers** tab shows live worker state, memory and GPU metrics.
+The **Requests** filters do not change this view. Each worker node has its own section. Next to the name of the
 worker, the page shows `version: <commit>` and an info icon. `<commit>` is the
 commit from which the image was built. To see the full commit, hold the
 pointer over the icon, or tap it on a touch screen. Use the button there to

@@ -45,7 +45,7 @@ export interface StatsWsHandlers {
    * open, which is what keeps the KPI counters moving.
    */
   onStats: (payload: TimelineInitPayload) => void;
-  onRequestsData: (payload: { requests?: Array<any> }) => void;
+  onRequestsData: (payload: { requests?: Array<any>; total?: number }) => void;
 }
 
 /**
@@ -67,9 +67,8 @@ export interface StatsWsConnectOptions {
   timeline: TimelineRequestConfig;
   scope?: StatsScope;
   /**
-   * State bucket the request feed is narrowed to (queued/running/error/
-   * finished), or null for all states. Feed-only: it never touches the page
-   * scope, so the KPI cards and charts keep their full team/user totals.
+   * Lifecycle bucket for the Requests tab (queued/running/error/finished),
+   * or null for all states. The wire field name remains unchanged.
    */
   feedStatus?: string | null;
   feedModelIds?: number[];
@@ -175,13 +174,8 @@ export class StatsWebsocketService {
   }
 
   /**
-   * Narrow the request feed to one lifecycle bucket (queued, running, error,
-   * finished); null shows all states.
-   *
-   * Stored on the options as well as sent, so a reconnect re-applies it — the
-   * dropdown keeps showing the filter, and a socket that came back unfiltered
-   * would quietly widen the list under it. The server answers with a forced
-   * feed push only; the aggregates are untouched by a state filter.
+   * Narrow the Requests tab to one lifecycle bucket; null shows all states.
+   * Keep it on the options so a reconnect restores the same selection.
    */
   setFeedStatus(status: string | null): void {
     if (this.opts) {

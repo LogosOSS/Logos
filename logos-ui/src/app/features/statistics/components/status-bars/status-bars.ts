@@ -5,7 +5,7 @@ import { STATUS_COLOR } from '../../statistics.constants';
 
 interface StatusRow {
   label: string;
-  key: 'success' | 'error' | 'timeout' | 'pending';
+  key: 'success' | 'error' | 'timeout' | 'pending' | 'unreported';
   value: number;
   color: string;
   pct: number;
@@ -24,7 +24,7 @@ export class StatusBars {
 
   // Computed property for rows with calculated percentages
   rows = computed(() => {
-    const rowDefs: Array<{ label: string; key: 'success' | 'error' | 'timeout' | 'pending' }> = [
+    const rowDefs: Array<Pick<StatusRow, 'label' | 'key'>> = [
       { label: 'Success', key: 'success' },
       { label: 'Error', key: 'error' },
       { label: 'Timeout', key: 'timeout' },
@@ -32,6 +32,9 @@ export class StatusBars {
     ];
 
     const counts = this.counts();
+    if ((counts.unreported ?? 0) > 0) {
+      rowDefs.push({ label: 'Outcome not reported', key: 'unreported' });
+    }
     const total = rowDefs.reduce((sum, def) => sum + (counts[def.key] ?? 0), 0);
 
     return rowDefs.map((def) => {
@@ -41,7 +44,7 @@ export class StatusBars {
         label: def.label,
         key: def.key,
         value,
-        color: STATUS_COLOR[def.key],
+        color: STATUS_COLOR[def.key === 'unreported' ? 'pending' : def.key],
         pct,
       };
     });
@@ -49,7 +52,7 @@ export class StatusBars {
 
   // Computed property for total count
   total = computed(() => {
-    const rowDefs = ['success', 'error', 'timeout', 'pending'] as const;
+    const rowDefs = ['success', 'error', 'timeout', 'pending', 'unreported'] as const;
     const counts = this.counts();
     return rowDefs.reduce((sum, key) => sum + (counts[key] ?? 0), 0);
   });

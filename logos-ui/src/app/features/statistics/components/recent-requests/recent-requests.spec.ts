@@ -47,6 +47,44 @@ describe('recent request time progression', () => {
     expect(fixture.nativeElement.querySelector('.rr-badge--benchmark')).toBeNull();
   });
 
+  it('shows canonical running and the provider even without a scheduling timestamp', () => {
+    const running = row({ lifecycle_state: 'running', status: 'pending', scheduled_ts: null });
+    push(running);
+    expect(fixture.nativeElement.querySelector('.rr-badge--running')?.textContent).toBe('Running');
+    expect(fixture.nativeElement.querySelector('.rr-badge--queued')).toBeNull();
+    expect(fixture.componentInstance.providerLabelOf(running)).toBe('provider');
+    expect(fixture.nativeElement.querySelector('.rr-card__elapsed')?.textContent?.trim()).toBe('—');
+    push({ ...running, provider_call_ts: new Date(epoch - 1500).toISOString() });
+    expect(fixture.nativeElement.querySelector('.rr-card__elapsed')?.textContent?.trim()).toBe('1.5s');
+  });
+
+  it('shows canonical errors and timeouts without timing data or stale live metrics', () => {
+    const failed = row({
+      lifecycle_state: 'error', status: 'error', scheduled_ts: null, total_seconds: null,
+      error_message: 'Connection closed', streaming: true, tokens_per_second: 12,
+    });
+    push(failed);
+    expect(fixture.nativeElement.querySelector('.rr-badge--error')?.textContent?.trim()).toBe('Error');
+    expect(fixture.nativeElement.querySelector('.rr-card__error-message')?.textContent?.trim()).toBe('Connection closed');
+    expect(fixture.nativeElement.querySelector('.rr-badge--hot')).toBeNull();
+    expect(fixture.nativeElement.querySelector('.rr-badge--queued')).toBeNull();
+    expect(fixture.nativeElement.querySelector('.rr-card__rate')).toBeNull();
+    expect(fixture.nativeElement.querySelector('.rr-card__total-time')?.textContent?.trim()).toBe('—');
+
+    push({ ...failed, status: 'timeout', error_message: 'Deadline exceeded' });
+    expect(fixture.nativeElement.querySelector('.rr-badge--timeout')?.textContent?.trim()).toBe('Timeout');
+    expect(fixture.nativeElement.querySelector('.rr-card__error-message')?.textContent?.trim()).toBe('Deadline exceeded');
+  });
+
+  it('keeps Hot and Cold for successful requests with canonical finished state', () => {
+    const finished = row({ lifecycle_state: 'finished', status: 'success', scheduled_ts: null });
+    push({ ...finished, cold_start: false });
+    expect(fixture.nativeElement.querySelector('.rr-badge--hot')?.textContent?.trim()).toBe('Hot');
+    push({ ...finished, cold_start: true });
+    expect(fixture.nativeElement.querySelector('.rr-badge--cold')?.textContent?.trim()).toBe('Cold');
+    expect(fixture.nativeElement.querySelector('.rr-badge--queued')).toBeNull();
+  });
+
   it('refreshes the clock before rendering a newly scheduled row between ticks', () => {
     push(row({ scheduled_ts: null }));
     vi.advanceTimersByTime(500);
@@ -222,15 +260,7 @@ describe('tokenLabel', () => {
   });
 });
 
-/**
- * The "of N" figure while a state-filtered feed waits for the first push of
- * its own bucket total.
- *
- * The page passes `null` for totalInRange in that window: the KPI aggregate
- * it would otherwise borrow describes the whole scope, not the bucket, so the
- * header must have no figure at all rather than one for a different set.
- */
-describe('totalCount for a filtered feed without a bucket total yet', () => {
+describe('server-supplied feed count', () => {
   const settledRow: RequestItem = {
     request_id: 'req-feed-total',
     model_name: 'model-a',
@@ -290,8 +320,22 @@ describe('totalCount for a filtered feed without a bucket total yet', () => {
     expect((await createComponent(null)).totalCount()).toBeNull();
   });
 
-  it('shows the bucket total once the first push for it lands', async () => {
+  it('shows the feed total once the first push for it lands', async () => {
     expect((await createComponent(7)).totalCount()).toBe(7);
+  });
+
+  it('does not offer a next page when the exact count fills one page', async () => {
+    const feed = await createComponent(10);
+    const rows = Array.from({ length: 10 }, (_, index) => ({
+      ...settledRow, request_id: `req-${index}`,
+    }));
+    feed.liveRequests = rows;
+    feed.ngOnChanges({ liveRequests: new SimpleChange([settledRow], rows, false) });
+    expect(feed.hasNext()).toBe(false);
+
+    feed.totalInRange = 11;
+    feed.ngOnChanges({ totalInRange: new SimpleChange(10, 11, false) });
+    expect(feed.hasNext()).toBe(true);
   });
 });
 

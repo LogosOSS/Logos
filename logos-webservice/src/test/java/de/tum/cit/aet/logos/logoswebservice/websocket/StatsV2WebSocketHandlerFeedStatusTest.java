@@ -41,11 +41,10 @@ import de.tum.cit.aet.logos.logoswebservice.operations.service.VramService;
 import de.tum.cit.aet.logos.logoswebservice.orchestrator.OrchestratorLiveStreamClient;
 
 /**
- * The bookkeeping around the feed's state filter.
+ * Bookkeeping for the shared request scope and the benchmark-inclusive Recent count.
  *
- * Two things the filter must not break: the aggregates' dirty signal has to
- * stay scope-wide while the page is narrowed to one bucket, and the bucket's
- * own count must not be re-scanned on every token delta. Plain unit test, the
+ * A request deeper than the current page can move out of a selected state,
+ * but a token-only delta must not recount the population. Plain unit test, the
  * same way the live-push one is built — and the handler's background tick is
  * stopped, because these tests drive {@code tick()} and {@code pushRequests}
  * themselves and would otherwise race a second caller on the same session.
@@ -69,12 +68,12 @@ class StatsV2WebSocketHandlerFeedStatusTest {
         vramService = mock(VramService.class);
         requestLogService = mock(RequestLogService.class);
         statsService = mock(RequestLogStatsService.class);
-        when(statsService.getRequestLogStats(any(), any(), anyInt(), any(), any(), any(), any(), anyBoolean(), any()))
+        when(statsService.getRequestLogStats(any(), any(), anyInt(), any(), any(), any(), any(), anyBoolean(), any(), any(), any()))
             .thenReturn(Map.of("bucketSeconds", 60));
         when(vramService.getVramStats(anyString(), anyInt()))
             .thenReturn(Map.of("providers", List.of(), "last_snapshot_id", 0));
         // A fresh, mutable payload per call — the push writes "total" into it
-        // while a filter is on, and the real service returns a fresh map too.
+        // on a population refresh; the real service returns a fresh map too.
         when(requestLogService.getLatestRequests(
                 any(), any(), any(), any(), any(), any(), anyBoolean(), any(), any(), any(), anyInt(), anyBoolean(), any(), any()))
             .thenAnswer(inv -> {
@@ -154,7 +153,7 @@ class StatsV2WebSocketHandlerFeedStatusTest {
     }
 
     @Test
-    void a_filtered_session_refreshes_its_aggregates_when_out_of_bucket_traffic_moves() throws Exception {
+    void a_filtered_session_reconciles_when_the_identity_scope_moves() throws Exception {
         servedRows = List.of(row("req-1", null));
         connectAndInit();
 
@@ -165,7 +164,7 @@ class StatsV2WebSocketHandlerFeedStatusTest {
         when(requestLogService.countFeedRows(any(), any(), any(), any(), any(), any(), anyBoolean(), any(), any(), any())).thenReturn(1L);
 
         handler.handleMessage(session, new TextMessage("{\"action\":\"set_feed_status\",\"status\":\"queued\"}"));
-        assertThat(pushedTypes()).containsExactly("requests");
+        assertThat(pushedTypes()).containsExactly("timeline_init", "requests");
         sent.clear();
 
         // The init push marked the feed changed, so the first aggregate gate
@@ -190,9 +189,9 @@ class StatsV2WebSocketHandlerFeedStatusTest {
         ReflectionTestUtils.setField(handler, "globalTick", 30);
         invokeTick();
 
-        // The aggregates go out for the whole scope; the page did not change,
-        // so no requests push rides along.
-        assertThat(pushedTypes()).containsExactly("stats");
+        // An older request can leave the selected lifecycle state; reconcile
+        // both count sources even when the visible row IDs stayed unchanged.
+        assertThat(pushedTypes()).containsExactly("requests", "stats");
     }
 
     @Test
@@ -205,8 +204,8 @@ class StatsV2WebSocketHandlerFeedStatusTest {
 
         servedRows = List.of(row("req-1", 100));
         handler.handleMessage(session, new TextMessage("{\"action\":\"set_feed_status\",\"status\":\"queued\"}"));
-        // The forced push after a filter change counts the bucket.
-        verify(requestLogService, times(1)).countFeedRows(any(), any(), any(), any(), any(), any(), anyBoolean(), any(), any(), any());
+        // Both the unfiltered init and the forced post-filter push report a count.
+        verify(requestLogService, times(2)).countFeedRows(any(), any(), any(), any(), any(), any(), anyBoolean(), any(), any(), any());
         clearInvocations(requestLogService);
         sent.clear();
 
@@ -226,7 +225,7 @@ class StatsV2WebSocketHandlerFeedStatusTest {
         verify(requestLogService, times(1)).countFeedRows(any(), any(), any(), any(), any(), any(), anyBoolean(), any(), any(), any());
     }
     @Test
-    void modelSelectionScopesThePageProviderSelectionOnlyTheFeedAndBothSurviveInit() throws Exception {
+    void sharedModelProviderAndStateFiltersReachBothPushesAndSurviveInit() throws Exception {
         servedRows = List.of(row("req-selected", 10));
         when(requestLogService.countFeedRows(any(), any(), any(), any(), any(), any(), anyBoolean(), any(), any(), any()))
             .thenReturn(23L);
@@ -234,28 +233,31 @@ class StatsV2WebSocketHandlerFeedStatusTest {
         clearInvocations(statsService);
         handler.handleMessage(session, new TextMessage(
             "{\"action\":\"set_feed_filters\",\"status\":\"finished\",\"model_ids\":[5001,5002],\"provider_ids\":[6001,6002]}"));
-        // The model selection narrows the whole page: the aggregates are
-        // re-pushed for it (timeline_init), then the feed rows follow.
+        // The selections narrow the whole page. The aggregate baseline
+        // comes first, then the benchmark-inclusive rows and paginator.
         assertThat(pushedTypes()).containsExactly("timeline_init", "requests");
         verify(requestLogService).getLatestRequests(any(), any(), any(), any(), any(), any(), eq(false),
             eq("finished"), any(), any(), eq(10), eq(false), eq(List.of(5001, 5002)), eq(List.of(6001, 6002)));
         verify(statsService).getRequestLogStats(any(), any(), anyInt(), any(), any(), any(), any(), anyBoolean(),
-            eq(List.of(5001, 5002)));
+            eq(List.of(5001, 5002)), eq("finished"), eq(List.of(6001, 6002)));
         assertThat(objectMapper.readTree(sent.get(1).getPayload()).path("payload").path("total").asLong()).isEqualTo(23);
 
-        // A state-only change keeps the aggregates where they are.
+        // Changing only state refreshes the same two populations.
         clearInvocations(statsService);
         sent.clear();
         handler.handleMessage(session, new TextMessage(
             "{\"action\":\"set_feed_filters\",\"status\":\"queued\",\"model_ids\":[5001,5002],\"provider_ids\":[6001,6002]}"));
-        assertThat(pushedTypes()).containsExactly("requests");
-        verify(statsService, never()).getRequestLogStats(any(), any(), anyInt(), any(), any(), any(), any(), anyBoolean(), any());
+        assertThat(pushedTypes()).containsExactly("timeline_init", "requests");
+        verify(statsService).getRequestLogStats(any(), any(), anyInt(), any(), any(), any(), any(), anyBoolean(),
+            eq(List.of(5001, 5002)), eq("queued"), eq(List.of(6001, 6002)));
 
-        clearInvocations(requestLogService);
+        clearInvocations(requestLogService, statsService);
         handler.handleMessage(session, new TextMessage(
             "{\"action\":\"init\",\"interest\":\"requests\",\"model_ids\":[5002],\"provider_ids\":[6002]}"));
         verify(requestLogService).getLatestRequests(any(), any(), any(), any(), any(), any(), eq(false),
             eq(null), any(), any(), eq(10), eq(false), eq(List.of(5002)), eq(List.of(6002)));
+        verify(statsService).getRequestLogStats(any(), any(), anyInt(), any(), any(), any(), any(), anyBoolean(),
+            eq(List.of(5002)), eq(null), eq(List.of(6002)));
     }
 
     @Test
@@ -292,7 +294,7 @@ class StatsV2WebSocketHandlerFeedStatusTest {
         handler.handleMessage(session, new TextMessage("{\"action\":\"set_scope\",\"api_key_id\":77}"));
 
         assertThat(pushedTypes()).containsExactly("timeline_init", "requests");
-        verify(statsService).getRequestLogStats(any(), any(), anyInt(), any(), any(), any(), eq(77), anyBoolean(), any());
+        verify(statsService).getRequestLogStats(any(), any(), anyInt(), any(), any(), any(), eq(77), anyBoolean(), any(), any(), any());
         verify(requestLogService).getLatestRequests(any(), any(), any(), any(), any(), eq(77), anyBoolean(),
             any(), any(), any(), anyInt(), anyBoolean(), any(), any());
     }
@@ -307,7 +309,7 @@ class StatsV2WebSocketHandlerFeedStatusTest {
         // The periodic push is still querying the old range when the viewer
         // zooms in; the zoom is answered first, by its own timeline_init.
         boolean[] zoomed = {false};
-        when(statsService.getRequestLogStats(any(), any(), anyInt(), any(), any(), any(), any(), anyBoolean(), any()))
+        when(statsService.getRequestLogStats(any(), any(), anyInt(), any(), any(), any(), any(), anyBoolean(), any(), any(), any()))
             .thenAnswer(inv -> {
                 if (!zoomed[0]) {
                     zoomed[0] = true;
