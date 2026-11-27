@@ -18,6 +18,9 @@ import {
   AgentRunnerMode,
   AgentEvent,
   AgentInstructions,
+  AgentInferenceMode,
+  AgentInferenceSettings,
+  AgentInferenceSelection,
   AgentModels,
   AgentRepository,
   AgentSession,
@@ -127,6 +130,18 @@ export class Agents implements OnInit {
   triggers = signal<AgentTriggers | null>(null);
   controls = signal<AgentControls | null>(null);
   controlBusy = signal(false);
+  readonly inference = signal<AgentInferenceSettings | null>(null);
+  readonly inferenceLoading = signal(false);
+  readonly inferenceBusy = signal(false);
+  readonly inferenceLoadError = signal(false);
+  readonly inferenceSaveError = signal(false);
+  readonly inferenceSaved = signal(false);
+  readonly inferenceMode = signal<AgentInferenceMode>('local');
+  readonly inferenceModel = signal('');
+  readonly inferenceModeOptions: AppSelectOption[] = [
+    { value: 'local', label: 'Local' },
+    { value: 'cloud', label: 'Cloud' },
+  ];
   loading = signal(true);
   error = signal<string | null>(null);
   analyzingAll = signal(false);
@@ -224,14 +239,51 @@ export class Agents implements OnInit {
    */
   readonly linkedRepositorySelected = computed(() => this.formRepositoryId() !== null);
 
-  /**
-   * Only locally served models are offered: agent work runs on capacity the
-   * platform already pays for, never on cloud tokens. The runner refuses
-   * anything else anyway, so offering more would only invite a rejection.
-   */
+  /** A local deployment with no global override keeps the legacy per-session picker. */
+  readonly mayPickSessionModel = computed(() => {
+    const state = this.inference();
+    return !this.inferenceLoading() && !!state && state.mode === 'local' && state.model === null;
+  });
+
   readonly modelOptions = computed<AppSelectOption[]>(() =>
     (this.models()?.models ?? []).map((name) => ({ value: name, label: name })),
   );
+
+  readonly inferencePinLabel = computed(() => {
+    const state = this.inference();
+    if (this.inferenceLoading() || !state?.model) return null;
+    const target = state.cloud_options.find(option =>
+      option.provider_id === state.provider_id && option.model_id === state.model_id,
+    );
+    return state.mode === 'local' ? `${state.model} (Local)` :
+      `${state.model} (${target?.provider_name ?? 'Cloud'})`;
+  });
+
+  readonly inferenceModelOptions = computed<AppSelectOption[]>(() => {
+    const state = this.inference();
+    if (!state) return [];
+    return this.inferenceMode() === 'cloud'
+      ? [{ value: '', label: 'Select a cloud model', disabled: true },
+        ...state.cloud_options.map(target => ({ value: this.targetKey(target), label: `${target.provider_name} · ${target.model}` }))]
+      : [{ value: '', label: 'Runner default (per-session model)' },
+        ...state.local_models.map(name => ({ value: name, label: name }))];
+  });
+
+  readonly chosenCloudTarget = computed(() => this.inference()?.cloud_options.find(
+    target => this.targetKey(target) === this.inferenceModel(),
+  ));
+
+  readonly canSaveInference = computed(() => {
+    const state = this.inference();
+    if (!state || this.inferenceLoading() || this.inferenceBusy() || this.inferenceLoadError()) return false;
+    const mode = this.inferenceMode();
+    const model = this.inferenceModel();
+    if (mode === 'cloud') {
+      return !!this.chosenCloudTarget() && (mode !== state.mode || model !== this.targetKey(state));
+    }
+    return (!model || state.local_models.includes(model)) &&
+      (mode !== state.mode || model !== (state.model ?? ''));
+  });
 
   readonly modelPlaceholder = computed(() => {
     const models = this.models();
@@ -364,6 +416,7 @@ export class Agents implements OnInit {
   }
 
   async refresh(options: { quiet?: boolean } = {}): Promise<void> {
+    const inferenceRefresh = options.quiet ? null : this.loadInferenceSettings();
     if (!options.quiet) {
       this.loading.set(true);
       void this.loadWorkspaceStorage();
@@ -385,7 +438,7 @@ export class Agents implements OnInit {
         this.formWorkspaceId.set(workspaces[0].id);
       }
       await this.loadCapacity();
-      if (!options.quiet) await this.loadModelsAndTriggers();
+      if (!options.quiet) await Promise.all([this.loadModelsAndTriggers(), inferenceRefresh]);
       if (this.selectedId() !== null) await Promise.all([this.loadEvents(), this.loadMessages()]);
     } catch {
       this.error.set('Could not reach the agent runner.');
@@ -526,6 +579,72 @@ export class Agents implements OnInit {
       this.error.set(this.messageOf(err, 'Could not change the session limit.'));
     } finally {
       this.controlBusy.set(false);
+    }
+  }
+
+  private targetKey(target: Pick<AgentInferenceSelection, 'provider_id' | 'model_id'>): string {
+    return `${target.provider_id}:${target.model_id}`;
+  }
+
+  private resetInferenceDraft(state: AgentInferenceSettings): void {
+    this.inferenceMode.set(state.mode);
+    this.inferenceModel.set(state.mode === 'cloud' ? this.targetKey(state) : (state.model ?? ''));
+  }
+
+  async loadInferenceSettings(preserveDraft = false): Promise<void> {
+    if (this.inferenceLoading() || this.inferenceBusy()) return;
+    const keepDraft = preserveDraft && this.canSaveInference();
+    this.inferenceLoading.set(true);
+    this.inferenceLoadError.set(false);
+    try {
+      const state = await this.agentService.getInferenceSettings();
+      this.inference.set(state);
+      if (!keepDraft) this.resetInferenceDraft(state);
+    } catch {
+      this.inference.set(null);
+      this.inferenceLoadError.set(true);
+    } finally {
+      this.inferenceLoading.set(false);
+    }
+  }
+
+  selectInferenceMode(value: string | null): void {
+    if (value !== 'local' && value !== 'cloud') return;
+    const state = this.inference();
+    this.inferenceMode.set(value);
+    this.inferenceModel.set(state?.mode === value
+      ? (value === 'cloud' ? this.targetKey(state) : (state.model ?? ''))
+      : '');
+    this.inferenceSaveError.set(false);
+    this.inferenceSaved.set(false);
+  }
+
+  selectInferenceModel(model: string | null): void {
+    this.inferenceModel.set(model ?? '');
+    this.inferenceSaveError.set(false);
+    this.inferenceSaved.set(false);
+  }
+
+  async saveInference(): Promise<void> {
+    if (!this.canSaveInference()) return;
+    const mode = this.inferenceMode();
+    const target = mode === 'cloud' ? this.chosenCloudTarget() : undefined;
+    const model = mode === 'cloud' ? (target?.model ?? null) : (this.inferenceModel() || null);
+    this.inferenceBusy.set(true);
+    this.inferenceSaveError.set(false);
+    this.inferenceSaved.set(false);
+    try {
+      const state = await this.agentService.setInferenceSettings({
+        mode, model, provider_id: target?.provider_id ?? null, model_id: target?.model_id ?? null,
+      });
+      this.inference.set(state);
+      this.resetInferenceDraft(state);
+      this.inferenceSaved.set(true);
+      void this.loadCapacity();
+    } catch {
+      this.inferenceSaveError.set(true);
+    } finally {
+      this.inferenceBusy.set(false);
     }
   }
 
@@ -901,6 +1020,7 @@ export class Agents implements OnInit {
   openForm(): void {
     this.showForm.set(true);
     this.formError.set(null);
+    void this.loadInferenceSettings(true);
   }
 
   closeForm(): void {
@@ -957,9 +1077,8 @@ export class Agents implements OnInit {
       const session = await this.agentService.createSession({
         workspace_id: workspaceId,
         task: this.formTask().trim(),
-        // Left null when nothing was picked: the runner then uses its own
-        // default, which is the single local model where there is only one.
-        model: this.formModel(),
+        // The runner is the authority for a configured inference target.
+        ...(this.mayPickSessionModel() ? { model: this.formModel() } : {}),
         open_pull_request: !privateSession && this.formOpenPr(),
         no_push: privateSession,
         screenshot_paths: paths,

@@ -3,7 +3,7 @@
   <header class="page-header">
     <h1 class="page-title">Agent Sessions</h1>
     <p class="page-subtitle">
-      Coding agents running in isolated containers on capacity Logos is not otherwise using.
+      Coding agents running in isolated containers.
       Sessions can keep results in Logos or publish changes for review. Sessions do not deploy changes.
     </p>
     <div class="page-header__actions">
@@ -20,7 +20,7 @@
   </header>
 
   @if (capacity(); as cap) {
-    @if (!cap.models_local_only) {
+    @if (inference()?.mode === 'local' && !cap.models_local_only) {
       <app-error-message variant="banner" [message]="'No session can start: ' + cap.models_detail" />
     }
   }
@@ -115,26 +115,30 @@
             {{ cap.may_start ? 'Available' : 'Holding' }}
             <span class="tile__unit">{{ loadPercent() }}% load</span>
           </span>
-          @if (slotCells().length > 0) {
-            <div class="slots" role="img" [attr.aria-label]="slotAriaLabel()">
-              @for (slot of slotCells(); track $index) {
-                <span
-                  class="slots__cell"
-                  [class.slots__cell--agent]="slot === 'agent'"
-                  [class.slots__cell--other]="slot === 'other'"
-                  [class.slots__cell--free]="slot === 'free'"
-                ></span>
-              }
-            </div>
-          }
-          <span class="tile__hint">
-            {{ cap.busy_slots }}/{{ cap.total_slots }} slots on the local model
-            @if (cap.total_slots > 0) {
-              · <span class="legend legend--agent">{{ cap.own_slots }} agent</span> ·
-              <span class="legend">{{ cap.other_slots }} other</span> ·
-              <span class="legend">{{ freeSlots() }} free</span>
+          @if (inference()?.mode === 'cloud') {
+            <span class="tile__hint">Cloud inference</span>
+          } @else {
+            @if (slotCells().length > 0) {
+              <div class="slots" role="img" [attr.aria-label]="slotAriaLabel()">
+                @for (slot of slotCells(); track $index) {
+                  <span
+                    class="slots__cell"
+                    [class.slots__cell--agent]="slot === 'agent'"
+                    [class.slots__cell--other]="slot === 'other'"
+                    [class.slots__cell--free]="slot === 'free'"
+                  ></span>
+                }
+              </div>
             }
-          </span>
+            <span class="tile__hint">
+              {{ cap.busy_slots }}/{{ cap.total_slots }} slots on the local model
+              @if (cap.total_slots > 0) {
+                · <span class="legend legend--agent">{{ cap.own_slots }} agent</span> ·
+                <span class="legend">{{ cap.other_slots }} other</span> ·
+                <span class="legend">{{ freeSlots() }} free</span>
+              }
+            </span>
+          }
           <span class="tile__hint">{{ cap.reason }}</span>
         </div>
       }
@@ -224,25 +228,32 @@
           ></textarea>
         </label>
 
-        <label class="field">
-          <span class="field__label">Model <span class="field__optional">(optional)</span></span>
-          @if (modelOptions().length > 0) {
-            <app-select
-              [options]="modelOptions()"
-              [value]="formModel()"
-              (valueChange)="selectModel($event ?? '')"
-              ariaLabel="Model"
-            />
-            <span class="field__hint">
-              {{ modelPlaceholder() }} — only models this platform serves itself are offered,
-              because agent work never bills a cloud provider.
-            </span>
+        <div class="field" role="group" aria-labelledby="new-session-model">
+          <span class="field__label" id="new-session-model">
+            Model
+            @if (mayPickSessionModel()) { <span class="field__optional">(optional)</span> }
+          </span>
+          @if (inferencePinLabel(); as pinLabel) {
+            <span>{{ pinLabel }}</span>
+            <span class="field__hint">Set in Runner controls.</span>
+          } @else if (mayPickSessionModel()) {
+            @if (modelOptions().length > 0) {
+              <app-select
+                [options]="modelOptions()"
+                [value]="formModel()"
+                (valueChange)="selectModel($event ?? '')"
+                ariaLabel="Model"
+              />
+              <span class="field__hint">{{ modelPlaceholder() }} — only locally served models are offered.</span>
+            } @else {
+              <p class="field__hint">{{ models()?.detail ?? 'No locally served model is available.' }}</p>
+            }
+          } @else if (inferenceLoading()) {
+            <span class="field__hint">Loading the runner model…</span>
           } @else {
-            <p class="field__hint">
-              {{ models()?.detail ?? 'No locally served model is available.' }}
-            </p>
+            <span class="field__hint">The runner will select the model.</span>
           }
-        </label>
+        </div>
 
         <label class="field">
           <span class="field__label"
@@ -482,6 +493,54 @@
             nothing new starts, what runs finishes.
           </span>
         </div>
+      </div>
+      <div class="inference" role="group" aria-labelledby="agent-inference-title">
+        <h3 class="field__label" id="agent-inference-title">Model inference</h3>
+        <p class="field__hint">New sessions only.</p>
+        @if (inferenceLoading()) {
+          <p class="field__hint" role="status">Loading inference settings…</p>
+        } @else if (inferenceLoadError()) {
+          <p class="field__hint" role="alert">Could not load inference settings.</p>
+          <button class="btn-secondary" type="button" (click)="loadInferenceSettings()">Retry</button>
+        } @else if (inference(); as settings) {
+          <div class="inference__fields">
+            <div class="control">
+              <label class="field__label" for="agent-inference-location">Inference location</label>
+              <app-select
+                id="agent-inference-location"
+                ariaLabel="Inference location"
+                [options]="inferenceModeOptions"
+                [value]="inferenceMode()"
+                [disabled]="inferenceBusy()"
+                (valueChange)="selectInferenceMode($event)"
+              />
+            </div>
+            @if (inferenceMode() === 'cloud' && !settings.cloud_options.length) {
+              <p class="field__hint">No allowed cloud targets are configured for this environment.</p>
+            } @else {
+              <div class="control">
+                <label class="field__label" for="agent-inference-model">Inference model</label>
+                <app-select
+                  id="agent-inference-model"
+                  ariaLabel="Inference model"
+                  [options]="inferenceModelOptions()"
+                  [value]="inferenceModel()"
+                  [disabled]="inferenceBusy()"
+                  (valueChange)="selectInferenceModel($event)"
+                />
+              </div>
+            }
+            <button type="button" class="btn-primary" [disabled]="!canSaveInference()" (click)="saveInference()">
+              {{ inferenceBusy() ? 'Saving…' : 'Save inference settings' }}
+            </button>
+          </div>
+          @if (inferenceSaveError()) {
+            <p class="field__hint" role="alert">Could not save inference settings. Check the selected target and try again.</p>
+          }
+          @if (inferenceSaved()) {
+            <p class="field__hint" role="status">Inference settings saved.</p>
+          }
+        }
       </div>
     </section>
   }

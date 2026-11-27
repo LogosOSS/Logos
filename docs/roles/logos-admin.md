@@ -884,6 +884,7 @@ The page has these parts, from top to bottom:
 - **Sessions at once** sets the maximum number of sessions that run at the
   same time. The maximum is the number of sessions that the memory budget
   holds. You can only set a lower value. The value 0 starts no new session.
+- **Model inference** sets where new sessions send model requests. Only Logos Admins can change this setting.
 - **Session lists.** **Active**, **Queue** and **Finished** show the
   sessions. Select a session to show its details and messages. Use the
   arrows of a queued session to change its position in the queue.
@@ -920,6 +921,25 @@ example, after an improvement of the analysis. It does not change repositories
 that already have an analysis that is queued or that runs. The results go to
 the teams as proposals on their **Workflows** tab
 ([Team detail](app-admin.md#workflows)).
+
+### Choose a model for new sessions
+
+1. Open **Agents** and go to **Runner controls**.
+2. In **Model inference**, select **Local** or **Cloud**.
+3. In **Inference model**, select the model.
+4. Select **Save inference settings**.
+
+For **Local**, select a model served by Logos. The selector does not pin a worker.
+Select **Runner default (per-session model)** to keep the model picker in **New session**.
+If you set a model in **Runner controls**, the new session shows this model instead of a picker.
+
+For **Cloud**, choose an allowed provider and model pair. The target must support the Messages API.
+This selection pins the exact provider and model and does not use a local worker.
+If the environment has no allowed target, you cannot save a cloud selection.
+The selector never displays or accepts a provider URL, API key, or other secret.
+
+Changes apply to new sessions only. A session keeps the environment where it starts, such as Dev or Test.
+Selecting cloud inference does not move the session or its work to another Logos environment.
 
 ### Start a Session
 

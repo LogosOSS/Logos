@@ -164,6 +164,27 @@ export interface AgentModels {
   detail: string;
 }
 
+export type AgentInferenceMode = 'local' | 'cloud';
+
+export interface AgentInferenceTarget {
+  provider_id: number;
+  provider_name: string;
+  model_id: number;
+  model: string;
+}
+
+export interface AgentInferenceSelection {
+  mode: AgentInferenceMode;
+  model: string | null;
+  provider_id: number | null;
+  model_id: number | null;
+}
+
+export interface AgentInferenceSettings extends AgentInferenceSelection {
+  local_models: string[];
+  cloud_options: AgentInferenceTarget[];
+}
+
 /** Whether the runner reacts to the repository, and what it has queued. */
 export interface AgentTriggers {
   enabled: boolean;
