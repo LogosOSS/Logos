@@ -1,6 +1,7 @@
 package de.tum.cit.aet.logos.logoswebservice.gateway;
 
 import java.net.URI;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
 
@@ -81,15 +82,28 @@ public class ProviderSpendCapService {
             return;
         }
         Map<String, Long> usage = result.usage();
-        if (usage == null || usage.containsKey("usage_estimated") || !usage.containsKey("completion_tokens")
-                || !usage.containsKey("prompt_tokens")) {
+        if (usage == null || usage.containsKey("usage_estimated")) {
             return;
+        }
+        Long prompt = usage.get("prompt_tokens");
+        Long completion = usage.get("completion_tokens");
+        if (!reportedCount(prompt) || !reportedCount(completion)
+                || (usage.containsKey("provider_delivered_nothing") && (prompt != 0L || completion != 0L))) {
+            return;
+        }
+        if (usage.containsKey("provider_delivered_nothing")) {
+            usage = new LinkedHashMap<>(usage);
+            usage.remove("provider_delivered_nothing");
         }
         try {
             settle(attempt, mapper.writeValueAsString(usage), result.serviceTier(), false);
         } catch (JsonProcessingException e) {
             log.warn("Could not encode usage for provider spend attempt {}", attempt, e);
         }
+    }
+
+    private static boolean reportedCount(Long count) {
+        return count != null && count >= 0;
     }
 
     private void settle(UUID attempt, String usage, String tier, boolean notDispatched) {

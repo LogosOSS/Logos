@@ -4,6 +4,8 @@ import datetime
 import json
 
 import httpx
+import pytest
+from fastapi import HTTPException
 
 from logos.sdi import azure_batch_probe
 from logos.sdi.azure_batch_probe import needs_probe, probe_deployment, probe_line, probe_provider
@@ -29,6 +31,12 @@ SKU_REFUSAL = {
         "object": "list",
     }
 }
+
+
+@pytest.fixture(autouse=True)
+def uncapped_provider(monkeypatch):
+    # The probe transport tests never need a real database.
+    monkeypatch.setattr(azure_batch_probe.provider_spend, "reserve", lambda _provider_id: None)
 
 
 def _client(handler, seen):
@@ -87,6 +95,70 @@ async def test_an_unrelated_refusal_is_inconclusive():
 
     assert answer is None
     assert "quota" in detail
+
+
+@pytest.mark.parametrize("status", [402, 422, 503])
+async def test_admission_denial_skips_probe_before_any_upload_or_create(monkeypatch, status):
+    checked = []
+
+    def reject(provider_id):
+        checked.append(provider_id)
+        raise HTTPException(status, "Provider spend admission refused")
+
+    monkeypatch.setattr(azure_batch_probe.provider_spend, "reserve", reject)
+    seen = []
+    async with _client(lambda _request: httpx.Response(500), seen) as client:
+        answer, detail = await probe_deployment(PROVIDER, "batch-deployment", "responses", client)
+
+    assert answer is None
+    assert f"HTTP {status}" in detail
+    assert checked == [PROVIDER["id"]]
+    assert seen == []
+
+
+async def test_admission_rechecks_before_create_and_allows_file_cleanup(monkeypatch):
+    checked = []
+
+    def reserve(provider_id):
+        checked.append(provider_id)
+        if len(checked) > 1:
+            raise HTTPException(402, "Provider monthly spend limit reached")
+
+    monkeypatch.setattr(azure_batch_probe.provider_spend, "reserve", reserve)
+    seen = []
+    upstream = _upstream(lambda _request: pytest.fail("A denied probe must not create a batch"))
+    async with _client(upstream, seen) as client:
+        answer, detail = await probe_deployment(PROVIDER, "batch-deployment", "responses", client)
+
+    assert answer is None
+    assert "HTTP 402" in detail
+    assert checked == [PROVIDER["id"], PROVIDER["id"]]
+    assert seen == [("POST", "/openai/v1/files"), ("DELETE", "/openai/v1/files/file-probe")]
+
+
+async def test_cancellation_and_cleanup_do_not_pass_through_spend_admission(monkeypatch, caplog):
+    checked = []
+    seen = []
+
+    def reserve(provider_id):
+        checked.append(provider_id)
+        if len(checked) > 2:
+            pytest.fail("Stopping work or deleting the probe file must not be gated on the cap")
+
+    def upstream(request):
+        if request.url.path.endswith("/cancel"):
+            return httpx.Response(409)
+        return _upstream(lambda _request: httpx.Response(200, json={"id": "batch_probe"}))(request)
+
+    monkeypatch.setattr(azure_batch_probe.provider_spend, "reserve", reserve)
+    async with _client(upstream, seen) as client:
+        answer, _ = await probe_deployment(PROVIDER, "batch-deployment", "responses", client)
+
+    assert answer is True
+    assert checked == [PROVIDER["id"], PROVIDER["id"]]
+    assert ("POST", "/openai/v1/batches/batch_probe/cancel") in seen
+    assert ("DELETE", "/openai/v1/files/file-probe") in seen
+    assert "Could not cancel batch probe batch_probe" in caplog.text
 
 
 async def test_an_operation_batch_does_not_run_is_not_batchable_without_a_request():

@@ -402,7 +402,9 @@ public class GatewayCloudAccounting {
                 """.formatted(TIMINGS_SET), timingParams(timings).addValue("id", logEntryId));
             return;
         }
-        boolean priced = usage != null && !usage.isEmpty();
+        // Explicit zero totals prove completeness for the provider cap; they
+        // still aren't billable token rows for the key ledger.
+        boolean priced = usage != null && usage.values().stream().anyMatch(count -> count != null && count > 0);
         // Claim the row first: a reservation already zeroed by reconcileStale
         // (or settled by a racing callback) must not gain usage rows. The tier
         // settles in the same statement the row transitions to success, so

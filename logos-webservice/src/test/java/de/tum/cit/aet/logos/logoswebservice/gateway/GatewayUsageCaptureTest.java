@@ -53,7 +53,9 @@ class GatewayUsageCaptureTest {
             .getBytes(StandardCharsets.UTF_8));
         assertThat(capture.drainComplete()).isTrue();
         assertThat(capture.disconnectedUsage(new byte[0], false))
-            .containsEntry("provider_delivered_nothing", 1L);
+            .containsEntry("provider_delivered_nothing", 1L)
+            .containsEntry("prompt_tokens", 0L)
+            .containsEntry("completion_tokens", 0L);
     }
 
     @Test

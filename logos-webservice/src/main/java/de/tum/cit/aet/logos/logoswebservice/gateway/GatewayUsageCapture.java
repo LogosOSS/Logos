@@ -5,6 +5,7 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.OptionalDouble;
 import java.util.Set;
@@ -264,7 +265,14 @@ final class GatewayUsageCapture extends OutputStream {
             return usage;
         }
         if (finalUsage) {
-            return usage.isEmpty() ? Map.of("provider_delivered_nothing", 1L) : usage;
+            if (usage.values().stream().anyMatch(count -> count > 0)) {
+                return usage;
+            }
+            // Preserve the zero-charge disconnect rule for the key ledger,
+            // without losing explicit zero totals used by the provider cap.
+            var empty = new LinkedHashMap<>(usage);
+            empty.put("provider_delivered_nothing", 1L);
+            return empty;
         }
         if (firstByteAt == null && !timedOut) {
             return Map.of("provider_delivered_nothing", 1L);

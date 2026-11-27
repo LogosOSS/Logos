@@ -98,7 +98,9 @@ final class GatewayUsageExtractor {
     /**
      * Normalise one {@code usage} object.
      *
-     * @return canonical name to count, only strictly positive integers, never null
+     * @return canonical counts; explicit zero prompt/output totals are
+     *         retained so the provider cap can distinguish metered zero from
+     *         no reported usage
      */
     static Map<String, Long> normalize(JsonNode usage) {
         Map<String, Long> out = new LinkedHashMap<>();
@@ -134,10 +136,16 @@ final class GatewayUsageExtractor {
         // pricing expects completion_tokens to be the inclusive total it then
         // subtracts the reasoning subset from — otherwise the visible output is
         // billed short by every reasoning token.
-        long candidates = nonNegative(usage.get("candidatesTokenCount"));
+        JsonNode candidates = usage.get("candidatesTokenCount");
         long thoughts = nonNegative(usage.get("thoughtsTokenCount"));
-        if (candidates > 0 && thoughts > 0) {
-            out.put("completion_tokens", candidates + thoughts);
+        if (candidates != null && candidates.isIntegralNumber() && candidates.canConvertToLong()
+                && candidates.asLong() >= 0 && thoughts > 0) {
+            long count = candidates.asLong();
+            if (count <= Long.MAX_VALUE - thoughts) {
+                out.put("completion_tokens", count + thoughts);
+            } else {
+                out.remove("completion_tokens");
+            }
         }
 
         for (String name : NATIVE_DISJOINT_KEYS) {
@@ -151,17 +159,16 @@ final class GatewayUsageExtractor {
     }
 
     private static long nonNegative(JsonNode value) {
-        return value != null && value.isIntegralNumber() && value.asLong() > 0 ? value.asLong() : 0;
+        return value != null && value.isIntegralNumber() && value.canConvertToLong() && value.asLong() > 0
+            ? value.asLong() : 0;
     }
 
     private static void put(Map<String, Long> out, String key, JsonNode value) {
-        if (value == null || !value.isIntegralNumber()) {
+        if (value == null || !value.isIntegralNumber() || !value.canConvertToLong()) {
             return;
         }
         long count = value.asLong();
-        if (count <= 0) {
-            // Only strictly positive counts are billable — the same invariant
-            // the orchestrator's usage upsert enforces.
+        if (count < 0 || (count == 0 && !"prompt_tokens".equals(key) && !"completion_tokens".equals(key))) {
             return;
         }
         // A details block repeats a quantity the top level already reported;

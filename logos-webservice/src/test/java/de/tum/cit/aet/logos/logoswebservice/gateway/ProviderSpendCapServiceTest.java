@@ -92,6 +92,31 @@ class ProviderSpendCapServiceTest {
     }
 
     @Test
+    void settlesExplicitZeroCompletionFromTheProviderEnvelope() throws Exception {
+        UUID attempt = UUID.randomUUID();
+        var usage = GatewayUsageExtractor.fromEnvelope(mapper.readTree("""
+            {"response":{"usage":{"input_tokens":12,"output_tokens":0}}}
+            """));
+        service.settle(attempt, new GatewayForwardResult(usage, null, null));
+        verify(jdbc).queryForObject(anyString(), argThat((SqlParameterSource p) ->
+            attempt.equals(p.getValue("attempt"))
+                && p.getValue("usage").toString().contains("\"completion_tokens\":0")
+                && p.getValue("usage").toString().contains("\"prompt_tokens\":12")
+                && Boolean.FALSE.equals(p.getValue("notDispatched"))), eq(Boolean.class));
+    }
+
+    @Test
+    void settlesZeroCountsRetainedAfterClientDisconnect() {
+        UUID attempt = UUID.randomUUID();
+        service.settle(attempt, new GatewayForwardResult(Map.of(
+            "provider_delivered_nothing", 1L, "prompt_tokens", 0L, "completion_tokens", 0L), null, null));
+        verify(jdbc).queryForObject(anyString(), argThat((SqlParameterSource p) ->
+            attempt.equals(p.getValue("attempt")) && Boolean.FALSE.equals(p.getValue("notDispatched"))
+                && !p.getValue("usage").toString().contains("provider_delivered_nothing")),
+            eq(Boolean.class));
+    }
+
+    @Test
     void keepsHoldsOnUnknownUsageAndSettlesReportedUsageOrProofOfNoDispatch() {
         UUID attempt = UUID.randomUUID();
         service.releaseUndispatched(null);
@@ -99,6 +124,10 @@ class ProviderSpendCapServiceTest {
         service.settle(attempt, null);
         service.settle(attempt, new GatewayForwardResult(null, null, null));
         service.settle(attempt, new GatewayForwardResult(Map.of("prompt_tokens", 3L), null, null));
+        service.settle(attempt, new GatewayForwardResult(Map.of("prompt_tokens", 3L, "completion_tokens", -1L),
+            null, null));
+        service.settle(attempt, new GatewayForwardResult(
+            Map.of("provider_delivered_nothing", 1L), null, null));
         service.settle(attempt, new GatewayForwardResult(
             Map.of("usage_estimated", 1L, "prompt_tokens", 3L, "completion_tokens", 4L), null, null));
         verifyNoInteractions(jdbc);
