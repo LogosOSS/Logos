@@ -2323,8 +2323,8 @@ class SessionManager:
 
     async def _verify_before_push(
         self, session_id: int, workspace: dict[str, Any], env: dict[str, str], artifact_host_path: str
-    ) -> dict[str, str]:
-        """Snapshot with trusted Git, execute checks without credentials, bind their result to the tree."""
+    ) -> dict[str, str] | None:
+        """Verify the trusted candidate, or return None for a fresh branch with nothing to publish."""
         try:
             baseline = json.loads((state_dir(session_id) / _CHECKOUT_BASELINE_FILE).read_text())
             sha, branch_sha = baseline["checkout_sha"], baseline["branch_sha"]
@@ -2369,6 +2369,13 @@ class SessionManager:
         row = await db.get_session(session_id)
         if not row or row.get("status") in {state.value for state in TERMINAL_STATUSES}:
             raise RuntimeError("session was cancelled before verification")
+        if not branch_sha and sha == comparison_sha and not paths and tree == candidate.get("comparison_tree"):
+            output = "No changes against the prepared base; skipping verification and publication."
+            (state_dir(session_id) / "verification.json").write_text(
+                json.dumps({"tree": tree, "status": "skipped", "exit_code": None, "output": output})
+            )
+            await db.add_event(session_id, EventKind.LOG, {"text": output})
+            return None
         code = await self._run_helper(
             phase="verify",
             session_id=session_id,
@@ -2545,6 +2552,8 @@ class SessionManager:
         except RuntimeError as exc:
             self._last_helper_output[session_id] = str(exc)
             return False
+        if env is None:
+            return True
         code = await self._run_helper(
             phase="finalize",
             session_id=session_id,
@@ -2583,11 +2592,16 @@ class SessionManager:
                 )
             )
             temporary.replace(path)
+            # Never point the workspace at a branch without a trusted publication receipt.
             await db.set_workspace_base_branch(int(session["workspace_id"]), str(session["branch_name"]))
         if code == 0 and env.get("LOGOS_SESSION_VERIFICATION") == "failed":
-            self._last_helper_output[session_id] = (
-                "compile/type checks failed; changes were published only as a draft for repair: "
-                + env.get("LOGOS_SESSION_VERIFICATION_OUTPUT", "")
+            publication = (
+                "changes were published only as a draft for repair"
+                if published.get("pr_url")
+                else "no draft pull request was published"
+            )
+            self._last_helper_output[session_id] = f"verification failed; {publication}: " + env.get(
+                "LOGOS_SESSION_VERIFICATION_OUTPUT", ""
             )
             return False
         return code == 0
@@ -3211,23 +3225,6 @@ class SessionManager:
 
         if result.get("pr_url"):
             await db.add_event(session_id, EventKind.PULL_REQUEST, {"url": result["pr_url"]})
-
-        workspace_id, settled_branch = session_row.get("workspace_id"), session_row.get("branch_name")
-        if succeeded and workspace_id and settled_branch and not session_row.get("no_push"):
-            # The workspace now belongs to this branch. That is what lets a
-            # review on the pull request find this working copy again — and
-            # with it the conversation that produced the change — instead of
-            # starting somewhere else from main.
-            #
-            # A read-only session's branch exists nowhere but the volume it
-            # was worked in: pointing the workspace at it would make the
-            # next session's preparation fetch a ref the remote never had.
-            # The workspace keeps the base it was created with — the pull
-            # request it was created to read.
-            try:
-                await db.set_workspace_base_branch(int(workspace_id), str(settled_branch))
-            except Exception as exc:
-                logger.info("could not point workspace %s at its branch: %s", workspace_id, exc)
 
         if not succeeded:
             # Somebody is looking at a thread that has been marked as picked

@@ -183,7 +183,7 @@ async def test_failed_verification_retries_from_published_draft_and_cannot_deplo
     )
     assert await manager._finalize(7) is False
     assert updates == [(3, "agent/7")]
-    assert "compile error" in manager._last_helper_output[7]
+    assert manager._last_helper_output[7] == "verification failed; no draft pull request was published: compile error"
 
 
 @pytest.mark.parametrize("target", ["main", "release"])
@@ -504,3 +504,73 @@ async def test_repository_verifier_receives_configured_command_without_credentia
     assert verify_env["LOGOS_VERIFICATION_COMMAND"] == "cargo test --offline"
     assert "GITHUB_TOKEN" not in verify_env
     assert env["LOGOS_SESSION_VERIFICATION"] == "passed"
+
+
+async def test_an_unchanged_fresh_attempt_neither_builds_nor_publishes(monkeypatch):
+    manager = sessions.SessionManager()
+    baseline()
+    session = {"id": 7, "workspace_id": 3, "branch_name": "agent/7", "status": "finalizing", "repo_slug": "a/b"}
+    helper = AsyncMock(return_value=0)
+    point_workspace = AsyncMock()
+    event = AsyncMock()
+    monkeypatch.setattr(manager, "_run_helper", helper)
+    monkeypatch.setattr(manager, "_claimed_issues", AsyncMock(return_value=[]))
+    monkeypatch.setattr(
+        manager, "_read_result", lambda _sid: {"candidate_tree": TREE, "candidate_paths": [], "comparison_tree": TREE}
+    )
+    monkeypatch.setattr(sessions.db, "get_session", AsyncMock(return_value=session))
+    monkeypatch.setattr(
+        sessions.db, "get_workspace", AsyncMock(return_value={"base_branch": "main", "volume_name": "workspace"})
+    )
+    monkeypatch.setattr(sessions.db, "set_workspace_base_branch", point_workspace)
+    monkeypatch.setattr(sessions.db, "add_event", event)
+    monkeypatch.setattr(sessions.docker_engine, "volume_mountpoint", AsyncMock(return_value="/artifacts"))
+    monkeypatch.setattr(manager, "_post_reply", AsyncMock())
+
+    assert await manager._finalize(7)
+    await manager._record_outcome(7, True, {"exit_code": 0}, {})
+    assert [call.kwargs["phase"] for call in helper.await_args_list] == ["snapshot"]
+    point_workspace.assert_not_awaited()
+    assert not sessions.publication_path(3).exists()
+    evidence = json.loads((sessions.state_dir(7) / "verification.json").read_text())
+    assert evidence["status"] == "skipped"
+    assert evidence["tree"] == TREE
+    assert evidence["exit_code"] is None
+    assert "skipping verification" in event.await_args_list[0].args[2]["text"]
+
+
+@pytest.mark.parametrize(
+    "branch,checkout,comparison_tree,paths",
+    [
+        (SHA, SHA, TREE, []),
+        ("", "c" * 40, TREE, []),
+        ("", SHA, "c" * 40, []),
+        ("", SHA, None, []),
+        ("", SHA, TREE, ["proof.lean"]),
+    ],
+)
+async def test_skip_requires_a_fresh_branch_and_exact_empty_comparison(
+    monkeypatch, branch, checkout, comparison_tree, paths
+):
+    manager = sessions.SessionManager()
+    path = baseline()
+    state = json.loads(path.read_text())
+    path.write_text(json.dumps({**state, "branch_sha": branch, "checkout_sha": checkout}))
+    helper = AsyncMock(return_value=0)
+    monkeypatch.setattr(manager, "_run_helper", helper)
+    monkeypatch.setattr(
+        manager,
+        "_read_result",
+        lambda _sid: {"candidate_tree": TREE, "comparison_tree": comparison_tree, "candidate_paths": paths},
+    )
+    monkeypatch.setattr(sessions.db, "get_session", active)
+    monkeypatch.setattr(sessions.db, "add_event", no_event)
+    env = await manager._verify_before_push(
+        7,
+        {"volume_name": "workspace"},
+        {"LOGOS_VERIFICATION_MODE": "repository", "LOGOS_VERIFICATION_COMMAND": "lake build"},
+        "/artifacts/7",
+    )
+    assert env["LOGOS_SESSION_VERIFICATION"] == "passed"
+    assert [call.kwargs["phase"] for call in helper.await_args_list] == ["snapshot", "verify"]
+    assert helper.await_args.kwargs["env"]["LOGOS_VERIFICATION_COMMAND"] == "lake build"
