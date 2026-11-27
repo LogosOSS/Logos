@@ -320,6 +320,14 @@ export class Agents implements OnInit {
   );
   finishedSessions = computed(() => this.sessions().filter((s) => !isActive(s.status)));
 
+  readonly showCloudAdmission = computed(() =>
+    this.inference()?.mode === 'cloud' || this.queuedSessions().some(session => this.isCloudSession(session)),
+  );
+
+  private isCloudSession(session: AgentSession): boolean {
+    return session.inference_provider_id != null || session.inference_model_id != null;
+  }
+
   loadPercent = computed(() => Math.round((this.capacity()?.load ?? 0) * 100));
 
   /** Free slots on the local model after agent and other traffic. */
@@ -1158,8 +1166,13 @@ export class Agents implements OnInit {
   statusLabel(session: AgentSession): string {
     if (session.status === 'queued') {
       const capacity = this.capacity();
-      // A queued session with no capacity is waiting on purpose, not stuck.
-      if (capacity && !capacity.may_start) return 'queued · waiting for capacity';
+      // The persisted pin, not the current environment default, decides admission.
+      if (this.isCloudSession(session)) {
+        if (capacity?.remote_may_start === false) return 'queued · waiting for cloud admission';
+        if (capacity?.remote_may_start == null) return 'queued · cloud admission unavailable';
+      } else if (capacity && !capacity.may_start) {
+        return 'queued · waiting for capacity';
+      }
     }
     if (session.status === 'finalizing') {
       // The agent is done; the runner is committing and pushing the work.

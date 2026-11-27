@@ -766,6 +766,72 @@ describe('Agents', () => {
     });
   });
 
+  describe('cloud admission status', () => {
+    const cloud = makeSession({
+      id: 12, status: 'queued', inference_provider_id: 20, inference_model_id: 14,
+    });
+    const local = makeSession({ id: 13, status: 'queued' });
+
+    async function setMode(mode: 'local' | 'cloud'): Promise<void> {
+      agentService.inferenceSettings = { ...LOCAL_INFERENCE, mode };
+      fixture.detectChanges();
+      await fixture.whenStable();
+    }
+
+    function tiles(): HTMLElement {
+      return (fixture.nativeElement as HTMLElement).querySelector<HTMLElement>('.summary')!;
+    }
+
+    it('shows Cloud as available even while the local GPU is holding', async () => {
+      await setMode('cloud');
+      component.capacity.set({
+        ...CAPACITY,
+        load: 0.99,
+        may_start: false,
+        reason: 'Local GPU is full.',
+        remote_may_start: true,
+        remote_reason: 'Cloud sessions can start.',
+      });
+      fixture.detectChanges();
+      expect(tiles().textContent).toContain('Cloud admission');
+      expect(tiles().textContent).toContain('Available');
+      expect(tiles().textContent).toContain('Cloud sessions can start.');
+      expect(tiles().textContent).not.toContain('99% load');
+      expect(tiles().textContent).not.toContain('Holding');
+      expect(tiles().textContent).not.toContain('Local GPU is full.');
+      expect(tiles().querySelector('.slots')).toBeNull();
+      expect(component.statusLabel(cloud)).toBe('queued');
+      expect(component.statusLabel(local)).toContain('waiting for capacity');
+    });
+
+    it('labels each pinned queue independently of the current default', async () => {
+      await setMode('local');
+      component.sessions.set([cloud, local]);
+      component.capacity.set({
+        ...CAPACITY,
+        may_start: true,
+        remote_may_start: false,
+        remote_reason: 'Not enough runner memory for the next cloud session.',
+      });
+      fixture.detectChanges();
+      expect(tiles().textContent).toContain('Platform capacity');
+      expect(tiles().textContent).toContain('Cloud admission');
+      expect(tiles().textContent).toContain('Holding');
+      expect(tiles().textContent).toContain('Not enough runner memory');
+      expect(component.statusLabel(cloud)).toContain('waiting for cloud admission');
+      expect(component.statusLabel(local)).toBe('queued');
+    });
+
+    it('does not invent remote availability when the API sends no remote decision', async () => {
+      await setMode('cloud');
+      component.capacity.set(CAPACITY);
+      fixture.detectChanges();
+      expect(tiles().textContent).toContain('Unavailable');
+      expect(tiles().textContent).not.toContain('Available');
+      expect(component.statusLabel(cloud)).toContain('cloud admission unavailable');
+    });
+  });
+
   describe('environment inference selection', () => {
     beforeEach(async () => {
       fixture.detectChanges();

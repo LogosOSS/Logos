@@ -104,20 +104,18 @@
       }
 
       @if (capacity(); as cap) {
-        <div class="tile" [class.tile--warn]="!cap.may_start">
-          <span class="tile__label">Platform capacity</span>
-          <span class="tile__value tile__value--text">
-            <span
-              class="status-dot"
-              [class.status-dot--warn]="!cap.may_start"
-              aria-hidden="true"
-            ></span>
-            {{ cap.may_start ? 'Available' : 'Holding' }}
-            <span class="tile__unit">{{ loadPercent() }}% load</span>
-          </span>
-          @if (inference()?.mode === 'cloud') {
-            <span class="tile__hint">Cloud inference</span>
-          } @else {
+        @if (inference()?.mode !== 'cloud') {
+          <div class="tile" [class.tile--warn]="!cap.may_start">
+            <span class="tile__label">Platform capacity</span>
+            <span class="tile__value tile__value--text">
+              <span
+                class="status-dot"
+                [class.status-dot--warn]="!cap.may_start"
+                aria-hidden="true"
+              ></span>
+              {{ cap.may_start ? 'Available' : 'Holding' }}
+              <span class="tile__unit">{{ loadPercent() }}% load</span>
+            </span>
             @if (slotCells().length > 0) {
               <div class="slots" role="img" [attr.aria-label]="slotAriaLabel()">
                 @for (slot of slotCells(); track $index) {
@@ -138,9 +136,25 @@
                 <span class="legend">{{ freeSlots() }} free</span>
               }
             </span>
-          }
-          <span class="tile__hint">{{ cap.reason }}</span>
-        </div>
+            <span class="tile__hint">{{ cap.reason }}</span>
+          </div>
+        }
+        @if (showCloudAdmission()) {
+          <div class="tile" [class.tile--warn]="cap.remote_may_start === false">
+            <span class="tile__label">Cloud admission</span>
+            <span class="tile__value tile__value--text">
+              @if (cap.remote_may_start != null) {
+                <span class="status-dot" [class.status-dot--warn]="!cap.remote_may_start" aria-hidden="true"></span>
+              }
+              @switch (cap.remote_may_start) {
+                @case (true) { Available }
+                @case (false) { Holding }
+                @default { Unavailable }
+              }
+            </span>
+            <span class="tile__hint">{{ cap.remote_reason || 'Cloud admission status is unavailable.' }}</span>
+          </div>
+        }
       }
     </section>
   }

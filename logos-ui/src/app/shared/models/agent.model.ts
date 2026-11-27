@@ -45,6 +45,9 @@ export interface AgentSession {
   task: string;
   status: AgentSessionStatus;
   model: string | null;
+  /** The exact remote target pinned when this session was queued, if any. */
+  inference_provider_id?: number | null;
+  inference_model_id?: number | null;
   branch_name: string | null;
   pr_url: string | null;
   created_by: string;
@@ -122,6 +125,9 @@ export interface AgentCapacity {
   max_parallel: number;
   may_start: boolean;
   reason: string;
+  /** Cloud admission does not depend on local GPU load or slots. */
+  remote_may_start?: boolean | null;
+  remote_reason?: string | null;
   /** False when the agent key could reach a cloud model: nothing starts. */
   models_local_only: boolean;
   models_detail: string;

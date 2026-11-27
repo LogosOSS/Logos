@@ -873,7 +873,9 @@ The page has these parts, from top to bottom:
 - **Status tiles.** **Runner** shows the mode of the runner. **Sessions** shows
   the running sessions and the limit, and the sessions that wait. **Memory**
   shows the memory that the sessions reserve and the memory budget of the
-  host. **Platform capacity** shows if a new session can start, and the reason.
+  host. **Platform capacity** shows local GPU load and if a local session can start.
+  **Cloud admission** shows if a cloud session can start, and the reason.
+  The cloud decision does not use local GPU load or slots.
 - **Runner controls.** In **Mode**, select **Run**, **Stop new sessions** or
   **Pause everything**. **Stop new sessions** lets the running sessions
   finish. **Pause everything** pauses the running sessions and gives the
@@ -888,6 +890,7 @@ The page has these parts, from top to bottom:
 - **Session lists.** **Active**, **Queue** and **Finished** show the
   sessions. Select a session to show its details and messages. Use the
   arrows of a queued session to change its position in the queue.
+  A queued session keeps its inference target. Its status shows if it waits for local capacity or cloud admission.
   **RAM now** shows the latest total for the session containers, including helpers and file cache.
   The runner samples about every 2 seconds. A short peak between samples can be higher.
   **Observed peak** keeps the highest sample after the session ends or the runner restarts.
@@ -944,7 +947,7 @@ The destination Logos environment meters calls against that key.
 Changes apply to new sessions only. A session keeps the environment where it starts, such as Dev or Test.
 Selecting cloud inference does not move the session or its work to another Logos environment.
 
-![Model inference settings with an approved cloud gateway and model selected](/img/roles/logos-admin-agent-inference.png)
+![Cloud admission status with an approved cloud gateway and model selected](/img/roles/logos-admin-agent-inference.png)
 
 ### Start a Session
 
