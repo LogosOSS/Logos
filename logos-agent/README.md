@@ -819,27 +819,21 @@ runner's verification.
    ```
    Check `docker volume inspect logos_agent_verifier_scratch_disk` for the
    exact path and options. Do not reuse the name of an ordinary local volume.
-4. Configure the corresponding deployment environment (GitHub Environment
-   variables for the production workflow, or the normal Compose environment
-   for manual deployments) with these values:
-   ```dotenv
-   LOGOS_AGENT_VERIFICATION_SCRATCH_VOLUME=logos_agent_verifier_scratch_disk
-   LOGOS_AGENT_VERIFICATION_SCRATCH_HOST_PATH=/srv/logos-verifier-scratch
-   LOGOS_AGENT_VERIFICATION_SCRATCH_MAX_GIB=20
-   ```
-   Use matching runner and workspace images that contain disk verification.
-   Pull both images before recreating the agent runner. To apply just the
-   runner configuration after the images are present:
-   ```sh
-   docker compose --profile agent up -d --no-deps logos-agent
-   ```
-   This recreates the runner, not the host. Compose may warn that the
-   pre-provisioned volume was not created by this project; the runner checks
-   its exact mount and rejects an automatically created fallback. Run the
-   read-only preflight before starting a large verification:
-   ```sh
-   docker compose --profile agent exec -T logos-agent python -m app.verification_scratch
-   ```
+4. Deploy the release from Logos. The bundled Compose file uses the fixed
+   volume name, mount point, and 20 GiB limit shown above. No deployment
+   environment changes are needed. The volume is external and only required
+   when the `agent` profile is enabled. Compose refuses to create it on the
+   root disk. The agent's health check validates its actual mount, and a
+   current core deployer checks the named volume before pulling the services
+   and probes its backing filesystem before replacing any running service.
+   If the deployer is older, validate the disk before the first deployment;
+   the agent's health check alone cannot prevent an earlier service swap.
+
+For a manual deployment with non-default infrastructure, all three settings
+can still be overridden: `LOGOS_AGENT_VERIFICATION_SCRATCH_VOLUME`,
+`LOGOS_AGENT_VERIFICATION_SCRATCH_HOST_PATH`, and
+`LOGOS_AGENT_VERIFICATION_SCRATCH_MAX_GIB`. Use the same name and mount
+point when registering the external volume.
 
 Only the individual verifier's scratch directory is mounted read/write from
 disk; the workspace, artefacts, cache and root remain read-only, with no
@@ -847,9 +841,8 @@ credentials or network. Docker rotates the verifier's logs separately.
 The runner removes scratch after Docker confirms no container owns it. On
 restart it reconciles orphaned helpers before retrying; if Docker cannot
 confirm the old helper is gone, scratch stays reserved rather than being
-reused. Do not manually delete it while a verifier is mounted. If the disk
-configuration is removed, the runner can still execute ordinary sessions but
-cannot verify their changes for publication. Leave the mounted filesystem
+reused. Do not manually delete it while a verifier is mounted. A host
+without this filesystem must not deploy the `agent` profile with this release. Leave the mounted filesystem
 intact until the runner and every verifier using it are gone. To validate
 activation, run a linked repository verification, check the verification
 result and diagnostics, then verify that its `verifier-*` directory has been

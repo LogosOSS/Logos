@@ -195,13 +195,46 @@ def test_mount_requires_a_bounded_dedicated_block_filesystem(
     monkeypatch.setattr(
         os, "stat", lambda path: SimpleNamespace(st_dev=metadata.st_dev if shared else os.makedev(8, 1))
     )
-    monkeypatch.setattr(os, "statvfs", lambda path: SimpleNamespace(f_blocks=size_gib, f_frsize=scratch.GIB))
+    monkeypatch.setattr(
+        os, "statvfs", lambda path: SimpleNamespace(f_blocks=size_gib, f_frsize=scratch.GIB, f_bavail=1)
+    )
     monkeypatch.setattr(scratch, "_disk_device", lambda dev_id: backed)
     if valid:
         scratch._validate_mount(target, 20)
     else:
         with pytest.raises(RuntimeError, match="verification scratch"):
             scratch._validate_mount(target, 20)
+
+
+@pytest.mark.parametrize("device,major", [("ram0", "1"), ("zram0", "251")])
+def test_ram_block_devices_are_rejected(tmp_path, device, major):
+    disk = tmp_path / device
+    disk.mkdir()
+    (disk / "dev").write_text(f"{major}:0")
+    (tmp_path / f"{major}:0").symlink_to(disk)
+    assert not scratch._disk_device(f"{major}:0", tmp_path)
+
+
+@pytest.mark.parametrize("available,superopts,valid", [(1, "rw", True), (0, "rw", False), (1, "ro", False)])
+def test_readonly_deployment_probe_checks_real_backing_mode_and_capacity(monkeypatch, available, superopts, valid):
+    root = Path("/agent/scratch")
+    dev = os.makedev(8, 1)
+    metadata = SimpleNamespace(st_dev=dev, st_mode=stat.S_IFDIR | 0o700, st_uid=0)
+    monkeypatch.setattr(Path, "lstat", lambda path: metadata)
+    monkeypatch.setattr(Path, "resolve", lambda path: path)
+    monkeypatch.setattr(
+        Path, "read_text", lambda path: f"1 2 8:1 / {root} ro,nosuid,nodev - ext4 /dev/sdb {superopts}\n"
+    )
+    monkeypatch.setattr(os, "stat", lambda path: SimpleNamespace(st_dev=os.makedev(0, 10)))
+    monkeypatch.setattr(
+        os, "statvfs", lambda path: SimpleNamespace(f_blocks=20, f_frsize=scratch.GIB, f_bavail=available)
+    )
+    monkeypatch.setattr(scratch, "_disk_device", lambda dev_id: True)
+    if valid:
+        scratch._validate_mount(root, 20, read_only=True)
+    else:
+        with pytest.raises(RuntimeError, match="verification scratch"):
+            scratch._validate_mount(root, 20, read_only=True)
 
 
 def test_devices_backed_by_a_loop_are_rejected(tmp_path):

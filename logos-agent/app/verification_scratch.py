@@ -11,6 +11,7 @@ import secrets
 import shutil
 import socket
 import stat
+import sys
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -44,7 +45,7 @@ def _disk_device(dev_id: str, sys_blocks: Path = Path("/sys/dev/block")) -> bool
             continue
         seen.add(path)
         major = (path / "dev").read_text().partition(":")[0]
-        if not major.isdecimal() or int(major) in {0, 7} or (path / "loop").exists():
+        if not major.isdecimal() or int(major) in {0, 1, 7} or path.name.startswith("zram") or (path / "loop").exists():
             return False
         # Partitions have the disk's backing storage, which can itself be a
         # mapped device. Unpartitioned devices expose `slaves` directly.
@@ -55,15 +56,16 @@ def _disk_device(dev_id: str, sys_blocks: Path = Path("/sys/dev/block")) -> bool
     return True
 
 
-def _validate_mount(root: Path, max_gib: int) -> None:
+def _validate_mount(root: Path, max_gib: int, *, read_only: bool = False) -> None:
     """Require the root of a reserved, size-limited Linux disk filesystem."""
     metadata = root.lstat()
     if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != 0 or metadata.st_mode & 0o022:
         raise RuntimeError("verification scratch mount must be a root-owned directory not writable by group/other")
     dev = metadata.st_dev
-    if root.resolve() != root or any(
-        dev == os.stat(other).st_dev for other in (root.parent, settings.artifact_root, settings.state_root)
-    ):
+    # A pre-swap read-only probe mounts no other host data. The running
+    # agent repeats the check against its actual artifact and state mounts.
+    adjacent = (root.parent,) if read_only else (root.parent, settings.artifact_root, settings.state_root)
+    if root.resolve() != root or any(dev == os.stat(other).st_dev for other in adjacent):
         raise RuntimeError("verification scratch requires a dedicated filesystem, not a shared directory")
     dev_id = f"{os.major(dev)}:{os.minor(dev)}"
     # mountinfo escapes spaces, tabs, newlines and backslashes. ROOT has none.
@@ -80,27 +82,32 @@ def _validate_mount(root: Path, max_gib: int) -> None:
     if len(mounts) != 1:
         raise RuntimeError("verification scratch must mount exactly one dedicated filesystem")
     parts, fs = mounts[0]
+    mode = "ro" if read_only else "rw"
     if (
         parts[2] != dev_id
         or parts[3] != "/"
         or len(fs) < 3
         or fs[0] not in {"ext4", "xfs"}
         or fs[1].startswith("/dev/loop")
-        or not {"rw", "nodev", "nosuid"}.issubset(parts[5].split(","))
+        or not {mode, "nodev", "nosuid"}.issubset(parts[5].split(","))
+        or "rw" not in fs[2].split(",")
         or "noexec" in parts[5].split(",")
         or not _disk_device(dev_id)
     ):
-        raise RuntimeError("verification scratch requires a dedicated ext4/XFS block filesystem (rw,nodev,nosuid,exec)")
+        raise RuntimeError(
+            "verification scratch requires a dedicated writable ext4/XFS block filesystem (nodev,nosuid,exec)"
+        )
     size = os.statvfs(root)
     total = size.f_blocks * size.f_frsize
     if not 0 < total <= max_gib * GIB:
         raise RuntimeError(f"verification scratch filesystem exceeds its configured {max_gib} GiB limit")
+    if size.f_bavail == 0:
+        raise RuntimeError("verification scratch filesystem is full")
 
 
 async def _validate_daemon_bind(volume: str, host_path: str) -> Path:
     # Verify the volume was explicitly provisioned, and that our Compose
-    # runner really mounts it. Compose may create an ordinary local volume
-    # if provisioning was missed; never present such a volume to a verifier.
+    # runner really mounts it, rather than a similarly named ordinary volume.
     identity = socket.gethostname()
     if not re.fullmatch(r"[0-9a-f]{12,64}", identity):
         raise RuntimeError("verification scratch requires the runner's Docker-assigned hostname")
@@ -167,6 +174,12 @@ def _safe_absolute_path(value: str) -> bool:
     )
 
 
+def _parse_limit(max_gib: str) -> int:
+    if not re.fullmatch(r"[1-9][0-9]{0,3}", max_gib):
+        raise RuntimeError("verification scratch limit must be a positive integer in GiB (at most 9999)")
+    return int(max_gib)
+
+
 async def validate_configuration(volume: str, host_path: str, max_gib: str) -> Path:
     if not volume or not host_path:
         raise RuntimeError(
@@ -177,10 +190,9 @@ async def validate_configuration(volume: str, host_path: str, max_gib: str) -> P
         raise RuntimeError("verification scratch requires the name of its dedicated Docker volume")
     if not _safe_absolute_path(host_path):
         raise RuntimeError("verification scratch requires an absolute, normalized Docker host path")
-    if not re.fullmatch(r"[1-9][0-9]{0,3}", max_gib):
-        raise RuntimeError("verification scratch limit must be a positive integer in GiB (at most 9999)")
+    limit = _parse_limit(max_gib)
     host = await _validate_daemon_bind(volume, host_path)
-    _validate_mount(ROOT, int(max_gib))
+    _validate_mount(ROOT, limit)
     return host
 
 
@@ -259,12 +271,19 @@ async def reserve(volume: str, host_path: str, max_gib: str, *, timeout_s: float
 
 
 if __name__ == "__main__":
-    # Read-only preflight from the running service before scheduling work.
-    asyncio.run(
-        validate_configuration(
-            settings.verification_scratch_volume,
-            settings.verification_scratch_host_path,
-            settings.verification_scratch_max_gib,
-        )
-    )
-    print("Verification scratch filesystem and Docker host mapping validated.")
+    try:
+        if sys.argv[1:] == ["--volume-probe"]:
+            _validate_mount(ROOT, _parse_limit(settings.verification_scratch_max_gib), read_only=True)
+        elif not sys.argv[1:]:
+            asyncio.run(
+                validate_configuration(
+                    settings.verification_scratch_volume,
+                    settings.verification_scratch_host_path,
+                    settings.verification_scratch_max_gib,
+                )
+            )
+        else:
+            raise RuntimeError("unrecognized verification scratch command")
+    except (OSError, RuntimeError) as exc:
+        sys.exit(f"Verification scratch: {exc}")
+    print("Verification scratch filesystem validated.")

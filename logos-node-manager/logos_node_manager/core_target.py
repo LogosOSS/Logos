@@ -70,6 +70,15 @@ class CoreTarget:
         )
 
     def pull(self, deployment: Deployment) -> None:
+        preflight = self.docker.preflight_verifier_scratch(deployment.tag)
+        if not preflight.ok:
+            self.d.finish(
+                deployment,
+                Outcome.FAILED,
+                FailureKind.PULL_FAILED,
+                f"Verifier storage preflight failed: {preflight.tail()}. The running services were not touched.",
+            )
+            return
         result = self.docker.pull_project(deployment.tag)
         if not result.ok:
             self.d.finish(
@@ -77,6 +86,15 @@ class CoreTarget:
                 Outcome.FAILED,
                 FailureKind.PULL_FAILED,
                 f"docker compose pull failed: {result.tail()}. The running services were not touched.",
+            )
+            return
+        backing = self.docker.preflight_verifier_scratch(deployment.tag, mount=True)
+        if not backing.ok:
+            self.d.finish(
+                deployment,
+                Outcome.FAILED,
+                FailureKind.PULL_FAILED,
+                f"Verifier disk check failed: {backing.tail()}. The running services were not touched.",
             )
             return
         self.d.advance(deployment, Phase.DRAINING, f"pulled the images for tag {deployment.tag}")
