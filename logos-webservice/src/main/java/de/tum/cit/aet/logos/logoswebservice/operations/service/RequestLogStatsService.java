@@ -1,15 +1,22 @@
 package de.tum.cit.aet.logos.logoswebservice.operations.service;
 
 import java.sql.Timestamp;
+import java.time.DayOfWeek;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
 import org.springframework.stereotype.Service;
 
+import de.tum.cit.aet.logos.logoswebservice.operations.repository.HourlyRequestSourceProjection;
 import de.tum.cit.aet.logos.logoswebservice.operations.repository.RequestLatencyProjection;
 import de.tum.cit.aet.logos.logoswebservice.operations.repository.LogEntryRepository;
 import de.tum.cit.aet.logos.logoswebservice.operations.repository.ModelBreakdownProjection;
@@ -26,6 +33,9 @@ public class RequestLogStatsService {
 
     /** Below this the hourly rollup has nothing to offer; see {@code useRollup}. */
     private static final int SECONDS_PER_HOUR = 3600;
+
+    private static final ZoneId REQUEST_LOAD_ZONE = ZoneId.of("Europe/Berlin");
+    private static final Duration MAX_REQUEST_LOAD_RANGE = Duration.ofDays(366);
 
     private final LogEntryRepository logEntryRepository;
 
@@ -119,6 +129,83 @@ public class RequestLogStatsService {
         payload.put("stats", stats);
         return payload;
     }
+
+    public HourlyRequestLoad getHourlyRequestLoad(String startDate, String endDate,
+                                                   Integer userId, Integer teamId, Integer providerId,
+                                                   Integer apiKeyId, List<Integer> modelIds) {
+        return getHourlyRequestLoad(startDate, endDate, userId, teamId, providerId, apiKeyId, modelIds, Instant.now());
+    }
+
+    HourlyRequestLoad getHourlyRequestLoad(String startDate, String endDate,
+                                           Integer userId, Integer teamId, Integer providerId,
+                                           Integer apiKeyId, List<Integer> modelIds, Instant now) {
+        Instant end = endDate == null ? now : Instant.parse(endDate);
+        Instant start = startDate == null ? end.minus(30, ChronoUnit.DAYS) : Instant.parse(startDate);
+        if (start.isAfter(end)) throw new IllegalArgumentException("start_date must be before end_date");
+        if (end.isAfter(now)) end = now;
+
+        // Europe/Berlin's contemporary DST transitions fall on UTC-hour boundaries.
+        // A repeated local hour represents two complete elapsed hours; a skipped
+        // hour never appears in the series. Do not normalize either to one day.
+        Instant flooredStart = start.truncatedTo(ChronoUnit.HOURS);
+        Instant first = flooredStart.equals(start) ? start : flooredStart.plus(1, ChronoUnit.HOURS);
+        Instant endExclusive = end.truncatedTo(ChronoUnit.HOURS);
+        if (Duration.between(first, endExclusive).compareTo(MAX_REQUEST_LOAD_RANGE) > 0) {
+            throw new IllegalArgumentException("Choose a range of at most one year for hourly request load.");
+        }
+        Map<Long, HourlyRequestSourceProjection> requestsByHour = new HashMap<>();
+        if (first.isBefore(endExclusive)) {
+            for (var row : logEntryRepository.findHourlyRequestSources(
+                    Timestamp.from(first), Timestamp.from(endExclusive), userId, teamId, providerId, apiKeyId,
+                    modelIds.isEmpty(), queryIds(modelIds))) {
+                requestsByHour.put(row.getHourEpoch(), row);
+            }
+        }
+
+        var all = new HourAccumulator();
+        var weekdays = new HourAccumulator();
+        var weekends = new HourAccumulator();
+        // Enumerate complete hours independently of the logs, so filtered-out
+        // requests mean zero, not an hour missing from the denominator.
+        for (Instant hour = first; hour.isBefore(endExclusive); hour = hour.plus(1, ChronoUnit.HOURS)) {
+            var localTime = hour.atZone(REQUEST_LOAD_ZONE);
+            var day = localTime.getDayOfWeek();
+            var dayGroup = day == DayOfWeek.SATURDAY || day == DayOfWeek.SUNDAY ? weekends : weekdays;
+            var row = requestsByHour.get(hour.getEpochSecond());
+            all.add(localTime.getHour(), row);
+            dayGroup.add(localTime.getHour(), row);
+        }
+        return new HourlyRequestLoad(REQUEST_LOAD_ZONE.getId(), all.slots(), weekdays.slots(), weekends.slots());
+    }
+
+    private static final class HourAccumulator {
+        private final long[] completeHours = new long[24];
+        private final long[] other = new long[24];
+        private final long[] agent = new long[24];
+        private final long[] benchmark = new long[24];
+
+        private void add(int hour, HourlyRequestSourceProjection row) {
+            completeHours[hour]++;
+            if (row != null) {
+                other[hour] += row.getOtherRequests();
+                agent[hour] += row.getAgentRequests();
+                benchmark[hour] += row.getBenchmarkRequests();
+            }
+        }
+
+        private List<HourSlot> slots() {
+            List<HourSlot> result = new ArrayList<>(24);
+            for (int hour = 0; hour < 24; hour++) {
+                result.add(new HourSlot(hour, completeHours[hour], other[hour], agent[hour], benchmark[hour]));
+            }
+            return List.copyOf(result);
+        }
+    }
+
+    public record HourSlot(int hour, long completeHours, long otherRequests,
+                           long agentRequests, long benchmarkRequests) {}
+    public record HourlyRequestLoad(String timeZone, List<HourSlot> allDays,
+                                    List<HourSlot> weekdays, List<HourSlot> weekends) {}
 
     /**
      * Delay percentiles of finished requests in a range, per model, provider

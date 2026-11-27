@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 PROPOSER_MODEL = "Qwen/Qwen2.5-Coder-14B-Instruct-AWQ"
 PROPOSAL_TIMEOUT_SECONDS = 10.0
+PROPOSAL_LOG_ENVIRONMENT = "model-provider-benchmark-proposal"
 MAX_CANDIDATES = 24
 MAX_OBSERVATIONS = 16
 DTYPE_CHOICES = {
@@ -233,13 +234,14 @@ async def propose(
             auth.resolved_proxy_model = selected["model_id"], PROPOSER_MODEL
             request_id = secrets.token_urlsafe(16)
             # Insert before dispatch so monitoring and terminal usage writes can find the row.
-            # Billing-only logs also keep internal tuning traffic out of replay workloads.
+            # Billing-only logs keep tuning traffic out of replay. The server-owned
+            # label distinguishes it from coding sessions on the same managed key.
             with DBManager() as db:
                 log, status = db.log_usage(
                     api_key_id=auth.api_key_id,
                     team_id=auth.team_id,
                     user_id=auth.user_id,
-                    environment=auth.environment,
+                    environment=PROPOSAL_LOG_ENVIRONMENT,
                     log_level=LoggingLevel.BILLING.value,
                     request_id=request_id,
                     timeout_s=deadline,

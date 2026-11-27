@@ -95,7 +95,7 @@ async def test_uses_only_an_unreserved_separate_local_worker_and_aggregate_data(
         api_key_id=51,
         team_id=None,
         user_id=None,
-        environment="agent",
+        environment="model-provider-benchmark-proposal",
         log_level="BILLING",
         request_id=request["request_id"],
         timeout_s=proposer.PROPOSAL_TIMEOUT_SECONDS,

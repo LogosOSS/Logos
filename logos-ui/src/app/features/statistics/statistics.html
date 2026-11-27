@@ -140,7 +140,7 @@
 
 
       <!-- ── KPI strip ─────────────────────────────────────────────────────── -->
-      <!-- KPIs sit first so the page opens on totals; the live feed follows. -->
+      <!-- KPIs sit first so the page opens on totals. -->
       <!-- The period belongs here, once: inside a card label it wraps to a second
            line and every card in the row loses its alignment. -->
       <div class="stats-kpi-period">
@@ -241,6 +241,13 @@
           <app-stats-skeleton variant="kpi" />
         }
       </div>
+
+      <app-stats-hourly-request-load
+        [start]="requestLoadWindow().start"
+        [end]="requestLoadWindow().end"
+        [scope]="requestLoadScope()"
+        [refresh]="requestLoadRefresh()"
+      />
 
       <!-- ── Recent requests ───────────────────────────────────────────────── -->
       <app-stats-chart-panel

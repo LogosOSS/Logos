@@ -1,0 +1,82 @@
+<app-stats-chart-panel
+  title="Average hourly request load"
+  subtitle="Logged requests per complete hour, grouped by time of day."
+>
+  @if (request().state === 'loading') {
+    <app-stats-skeleton variant="bars" />
+  } @else if (request().state === 'error') {
+    <app-stats-empty-state message="Hourly request load could not be loaded." />
+    <button type="button" class="hourly-retry" (click)="retry()">Retry</button>
+  } @else if (result(); as load) {
+    <div class="hourly-toolbar">
+      <div class="hourly-groups" role="group" aria-label="Day type">
+        @for (option of groups; track option.key) {
+          <button type="button" [attr.aria-pressed]="group() === option.key" (click)="selectGroup(option.key)">
+            {{ option.label }}
+          </button>
+        }
+      </div>
+      <span class="hourly-timezone">{{ load.time_zone }}</span>
+    </div>
+    <div class="hourly-legend" role="group" aria-label="Request sources">
+      <span><span class="hourly-key hourly-other" aria-hidden="true"></span>Other requests</span>
+      <label>
+        <input type="checkbox" [checked]="showAgent()" (change)="showAgent.set($any($event.target).checked)" />
+        <span class="hourly-key hourly-agent" aria-hidden="true"></span>Logos Agent
+      </label>
+      <label>
+        <input type="checkbox" [checked]="showBenchmarks()" (change)="showBenchmarks.set($any($event.target).checked)" />
+        <span class="hourly-key hourly-benchmark" aria-hidden="true"></span>Internal benchmarks
+      </label>
+    </div>
+    @if (hasCompleteHours()) {
+      <div class="hourly-chart">
+        <div class="hourly-scale" aria-hidden="true">
+          <span>{{ format(maximum()) }}</span>
+          @if (maximum() > 0) { <span>0</span> }
+        </div>
+        <div class="hourly-columns" role="group" aria-label="Hourly averages in Berlin time">
+          @for (slot of slots(); track slot.hour) {
+            <div class="hourly-column">
+              <button type="button"
+                class="hourly-slot"
+                [class.is-selected]="detail()?.hour === slot.hour"
+                [class.is-outside]="!slot.complete_hours"
+                [class.is-zero]="slot.complete_hours && !average(slot)"
+                [attr.aria-pressed]="slot.complete_hours ? picked() === slot.hour : null"
+                [attr.aria-label]="description(slot)"
+                [disabled]="!slot.complete_hours"
+                [title]="description(slot)"
+                (click)="picked.set(slot.hour)"
+                (pointerenter)="preview.set(slot.hour)"
+                (pointerleave)="preview.set(null)"
+                (focus)="preview.set(slot.hour)"
+                (blur)="preview.set(null)"
+              >
+                @for (source of visibleSources(); track source.key) {
+                  <span [class]="'hourly-bar hourly-' + source.color" [style.height.%]="meter(slot, source.key)"></span>
+                }
+              </button>
+              @if (slot.hour % 4 === 0) {
+                <span class="hourly-tick" aria-hidden="true">{{ label(slot.hour) }}</span>
+              }
+            </div>
+          }
+        </div>
+      </div>
+      @if (detail(); as slot) {
+        <div class="hourly-details" aria-live="polite">
+          <strong>{{ label(slot.hour) }}–{{ label((slot.hour + 1) % 24) }}</strong>
+          <span><strong>{{ format(average(slot)) }}</strong> req/h</span>
+          @for (source of visibleSources(); track source.key) {
+            <span><span [class]="'hourly-key hourly-' + source.color" aria-hidden="true"></span>{{ source.label }}: {{ format(average(slot, source.key)) }}</span>
+          }
+          <span>{{ slot.complete_hours }} complete {{ slot.complete_hours === 1 ? 'hour' : 'hours' }}</span>
+        </div>
+      }
+    } @else {
+      <app-stats-empty-state message="No complete hours in this date range for the selected day type." />
+    }
+    <p class="hourly-note">Partial hours are excluded. Blank slots have no complete hour in range; zero means no matching requests were logged. This is request volume, not GPU utilization. Older benchmark proposals that used the shared Agent key may appear under Logos Agent.</p>
+  }
+</app-stats-chart-panel>

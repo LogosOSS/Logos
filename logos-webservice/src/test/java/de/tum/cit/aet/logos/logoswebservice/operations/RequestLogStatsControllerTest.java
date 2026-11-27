@@ -53,6 +53,88 @@ class RequestLogStatsControllerTest {
            .andExpect(jsonPath("$.stats.modelBreakdown").isArray());
     }
 
+    @Test
+    void hourlyRequestLoadCountsOnlyTheSelectedScopeAndCompleteHours() throws Exception {
+        jdbc.update("""
+            UPDATE log_entry
+            SET timestamp_forwarding = TIMESTAMPTZ '2026-01-12 08:20:00+00'
+            WHERE id IN (9001, 9002)
+            """);
+        jdbc.update("""
+            UPDATE log_entry
+            SET timestamp_forwarding = TIMESTAMPTZ '2026-01-13 10:00:00+00'
+            WHERE id = 9002
+            """);
+
+        mvc.perform(post("/logosdb/hourly_request_load")
+                .with(TestJwt.logosAdmin())
+                .contentType("application/json")
+                .content("""
+                    {"start_date":"2026-01-12T07:20:00Z", "end_date":"2026-01-13T10:20:00Z",
+                     "team_id":2001, "user_id":1001, "provider_id":6001, "api_key_id":3001,
+                     "model_ids":[5001]}
+                    """))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.time_zone").value("Europe/Berlin"))
+            .andExpect(jsonPath("$.all_days.length()").value(24))
+            .andExpect(jsonPath("$.all_days[9].complete_hours").value(2))
+            .andExpect(jsonPath("$.all_days[9].other_requests").value(1))
+            .andExpect(jsonPath("$.weekdays[9].complete_hours").value(2))
+            .andExpect(jsonPath("$.weekends[9].complete_hours").value(0))
+            .andExpect(jsonPath("$.all_days[11].complete_hours").value(1))
+            .andExpect(jsonPath("$.all_days[11].other_requests").value(0));
+    }
+
+    @Test
+    void hourlyRequestLoadSeparatesTrustedSourcesAndDoesNotMatchAnEnvironmentNameAlone() throws Exception {
+        // The managed key is historical evidence even if operators deactivate it.
+        jdbc.update("UPDATE api_keys SET is_active = false WHERE internal_service = 'agent'");
+        jdbc.update("""
+            UPDATE log_entry SET timestamp_forwarding = TIMESTAMPTZ '2026-01-12 08:15:00+00',
+                environment = 'model-provider-benchmark'
+            WHERE id = 9001
+            """);
+        jdbc.update("""
+            UPDATE log_entry SET timestamp_forwarding = TIMESTAMPTZ '2026-01-12 08:20:00+00',
+                api_key_id = NULL, user_id = NULL, team_id = NULL, environment = 'model-provider-benchmark'
+            WHERE id = 9002
+            """);
+        jdbc.update("""
+            INSERT INTO log_entry (request_id, api_key_id, model_id, provider_id, timestamp_request, environment)
+            SELECT 'test-source-' || e.label, k.id, 5001, 6001, TIMESTAMPTZ '2026-01-12 08:40:00+00', e.label
+            FROM api_keys k CROSS JOIN (VALUES ('agent'), ('model-provider-benchmark-proposal')) e(label)
+            WHERE k.internal_service = 'agent'
+            """);
+        jdbc.update("""
+            INSERT INTO log_entry (request_id, api_key_id, model_id, provider_id, timestamp_request, environment)
+            VALUES ('test-source-lookalike', 3001, 5001, 6001, TIMESTAMPTZ '2026-01-12 08:45:00+00',
+                    'model-provider-benchmark-proposal')
+            """);
+
+        try {
+            mvc.perform(post("/logosdb/hourly_request_load").with(TestJwt.logosAdmin())
+                .contentType("application/json").content("""
+                    {"start_date":"2026-01-12T08:00:00Z", "end_date":"2026-01-12T09:00:00Z"}
+                    """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.all_days[9].other_requests").value(2))
+                .andExpect(jsonPath("$.all_days[9].agent_requests").value(1))
+                .andExpect(jsonPath("$.all_days[9].benchmark_requests").value(2));
+        } finally {
+            jdbc.update("DELETE FROM log_entry WHERE request_id LIKE 'test-source-%'");
+            jdbc.update("UPDATE api_keys SET is_active = true WHERE internal_service = 'agent'");
+        }
+    }
+
+    @Test
+    void hourlyRequestLoadRefusesNonLogosAdmins() throws Exception {
+        for (var jwt : java.util.List.of(TestJwt.testUser(), TestJwt.adminUser())) {
+            mvc.perform(post("/logosdb/hourly_request_load").with(jwt)
+                    .contentType("application/json").content("{}"))
+                .andExpect(status().isForbidden());
+        }
+    }
+
     // ── Request latency ──────────────────────────────────────────────────────
     // Both seeded requests wait 60 s before forwarding, run 60 s after it, and
     // see their first token 30 s and 60 s after arrival.

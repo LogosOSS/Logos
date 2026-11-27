@@ -65,6 +65,7 @@ import type {
 
 // Child components
 import { ChartPanel } from './components/chart-panel/chart-panel';
+import { HourlyRequestLoadComponent } from './components/hourly-request-load/hourly-request-load';
 import { EmptyState } from './components/empty-state/empty-state';
 import { LaneHealthPanel } from './components/lane-health-panel/lane-health-panel';
 import { MaintenancePanel } from './components/maintenance-panel/maintenance-panel';
@@ -129,6 +130,7 @@ type ProviderGlassRow = {
     CommonModule,
     ChartPanel,
     EmptyState,
+    HourlyRequestLoadComponent,
     LaneHealthPanel,
     LaneMemoryPieComponent,
     MaintenancePanel,
@@ -1224,6 +1226,7 @@ export class Statistics implements OnInit, OnDestroy {
 
   onRefresh(): void {
     this.refreshing.set(true);
+    this.requestLoadRefresh.update(n => n + 1);
     // Also re-reads what moves with the clock, such as the maintenance status.
     this.nowMs.set(this.clock.now());
     this.markRangeChanged();
@@ -1261,6 +1264,29 @@ export class Statistics implements OnInit, OnDestroy {
       endIso: cfg.live ? '' : cfg.end,
     };
   });
+
+  private readonly completedHourMs = computed(() => Math.floor(this.nowMs() / 3_600_000) * 3_600_000);
+  readonly requestLoadWindow = computed(() => {
+    const custom = this.customRange();
+    const range = this.presetRange();
+    const start = (custom?.start ?? range.currStart).getTime();
+    const end = (custom?.end ?? range.currEnd).getTime();
+    const latestCompleteHour = this.completedHourMs();
+    // The current rolling preset keeps its chosen start and follows the live end.
+    const rolling = !custom && this.preset() === '30d' && this.offset() === 0;
+    const cappedEnd = rolling ? latestCompleteHour : Math.min(end, latestCompleteHour);
+    return {
+      start: new Date(start).toISOString(),
+      end: new Date(latestCompleteHour < start ? end : cappedEnd).toISOString(),
+    };
+  }, { equal: (a, b) => a.start === b.start && a.end === b.end });
+
+  readonly requestLoadRefresh = signal(0);
+
+  readonly requestLoadScope = computed(() => ({
+    ...this.currentScope(),
+    modelIds: this.feedModelIds().map(Number),
+  }));
 
   setCustomRange(range: { start: Date; end: Date }): void {
     this.customRange.set(range);

@@ -156,6 +156,21 @@ export interface ScopeOptions {
   apiKeys?: ScopeOption[];
 }
 
+export interface HourlyRequestSlot {
+  hour: number;
+  complete_hours: number;
+  other_requests: number;
+  agent_requests: number;
+  benchmark_requests: number;
+}
+
+export interface HourlyRequestLoad {
+  time_zone: string;
+  all_days: HourlyRequestSlot[];
+  weekdays: HourlyRequestSlot[];
+  weekends: HourlyRequestSlot[];
+}
+
 @Injectable({ providedIn: 'root' })
 export class StatisticsService {
   private http = inject(HttpClient);
@@ -206,6 +221,18 @@ export class StatisticsService {
       api_key_id: scope.apiKeyId ?? null,
       errors_only: scope.errorsOnly || null,
     }));
+  }
+
+  getHourlyRequestLoad(startIso: string, endIso: string, scope: RequestLatencyScope) {
+    return this.http.query<HourlyRequestLoad>('/api/logosdb/hourly_request_load', {
+      start_date: startIso,
+      end_date: endIso,
+      team_id: scope.teamId,
+      user_id: scope.userId,
+      provider_id: scope.providerId,
+      api_key_id: scope.apiKeyId,
+      model_ids: scope.modelIds.length ? scope.modelIds : null,
+    });
   }
 
   // ── Cloud request delays ──────────────────────────────────────────────────
