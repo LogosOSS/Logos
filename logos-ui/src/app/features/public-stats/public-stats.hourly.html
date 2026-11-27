@@ -1,0 +1,46 @@
+@if (load(); as release) {
+  <p class="hourly-public-period">
+    {{ release.from }} to before {{ release.until }} · {{ release.time_zone }}
+  </p>
+  <div class="hourly-public-plot" role="group" aria-label="Hourly averages for this publication period">
+    <span class="hourly-public-axis" aria-hidden="true">{{ maximum() }}</span>
+    <div class="hourly-public-slots">
+      @for (slot of slots(); track slot.hour) {
+        <div class="hourly-public-column">
+          <button type="button" class="hourly-public-hour"
+            [class.suppressed]="slot.band_start === null && !slot.zero"
+            [class.quiet]="slot.zero"
+            [attr.aria-pressed]="selected() === slot.hour"
+            [attr.aria-label]="hourLabel(slot.hour) + ' to ' + hourLabel(slot.hour + 1) + ': ' + slotLabel(slot)"
+            [title]="slotLabel(slot)"
+            (click)="selected.set(slot.hour)"
+            (focus)="preview.set(slot.hour)"
+            (blur)="preview.set(null)"
+            (pointerenter)="preview.set(slot.hour)"
+            (pointerleave)="preview.set(null)">
+            <span [style.height.%]="heightPercent(slot)"></span>
+          </button>
+          @if (slot.hour % 4 === 0) { <span class="hourly-public-tick" aria-hidden="true">{{ hourLabel(slot.hour) }}</span> }
+        </div>
+      }
+    </div>
+  </div>
+  <div class="hourly-public-detail">
+    <label>Inspect an hour
+      <select #hour [value]="selected() ?? ''" (change)="chooseHour(hour.value)">
+        <option value="">Choose</option>
+        @for (slot of slots(); track slot.hour) {
+          <option [value]="slot.hour">{{ hourLabel(slot.hour) }}–{{ hourLabel(slot.hour + 1) }}</option>
+        }
+      </select>
+    </label>
+    <output aria-live="polite">
+      @if (activeSlot(); as slot) {
+        <strong>{{ hourLabel(slot.hour) }}–{{ hourLabel(slot.hour + 1) }}:</strong> {{ slotLabel(slot) }}
+      }
+    </output>
+  </div>
+  <p class="hourly-public-note">Bars show ranges, not exact counts. Dashed marks mean there is not enough combined traffic to publish. A solid line marks zero logged requests.</p>
+} @else {
+  <p class="hourly-public-note">No hourly figures are available for the latest publication period.</p>
+}

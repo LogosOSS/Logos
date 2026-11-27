@@ -1,0 +1,94 @@
+:host {
+  display: block;
+  min-width: 0;
+}
+
+.hourly-public-period,
+.hourly-public-note {
+  color: rgb(var(--color-typography-700));
+  font-size: var(--font-size-sm);
+  margin: 0.5rem 0;
+}
+
+.hourly-public-plot {
+  --plot-height: 7rem;
+  display: flex;
+  gap: 0.4rem;
+  margin-top: 0.85rem;
+}
+
+.hourly-public-axis,
+.hourly-public-tick {
+  color: rgb(var(--color-typography-700));
+  font-size: var(--font-size-2xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.hourly-public-slots {
+  min-width: 0;
+  flex: 1;
+  display: grid;
+  grid-template-columns: repeat(24, minmax(0, 1fr));
+  gap: clamp(2px, 0.4vw, 7px);
+}
+
+.hourly-public-hour {
+  display: flex;
+  align-items: flex-end;
+  width: 100%;
+  height: var(--plot-height);
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid rgb(var(--color-outline-100) / var(--opacity-strong));
+  color: inherit;
+  padding: 0;
+  cursor: pointer;
+
+  span {
+    width: 100%;
+    background: rgb(var(--color-primary-500));
+  }
+
+  &.quiet { border-bottom: 2px solid rgb(var(--color-typography-700)); }
+  &.suppressed { border-bottom: 2px dashed rgb(var(--color-typography-700)); }
+
+  &:hover,
+  &[aria-pressed='true'] {
+    background: rgb(var(--color-primary-500) / 0.12);
+  }
+}
+
+.hourly-public-hour:focus-visible,
+select:focus-visible {
+  outline: 2px solid rgb(var(--color-primary-600));
+  outline-offset: 2px;
+}
+
+.hourly-public-tick {
+  display: block;
+  width: max-content;
+  margin-top: 0.2rem;
+}
+
+.hourly-public-detail {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem 1rem;
+  margin: 0.85rem 0;
+  font-size: var(--font-size-sm);
+}
+
+select {
+  min-height: 2rem;
+  margin-inline-start: 0.2rem;
+  padding: 0.2rem;
+  border-radius: 0.35rem;
+  border: 1px solid rgb(var(--input-border) / var(--input-border-opacity));
+  background: rgb(var(--color-background-0));
+  color: rgb(var(--color-typography-700));
+}
+
+@media (max-width: 480px) {
+  .hourly-public-plot { --plot-height: 5rem; }
+}

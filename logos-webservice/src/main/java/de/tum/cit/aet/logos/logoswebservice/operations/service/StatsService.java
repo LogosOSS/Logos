@@ -93,6 +93,12 @@ public class StatsService {
         return normalized;
     }
 
+    PublicHourlyRequestLoad publicHourlyRequestLoad(Instant now) {
+        var block = PublicHourlyRequestLoad.block(now);
+        return PublicHourlyRequestLoad.summarize(block, logEntryRepository.findPublicHourlyRequests(
+            Timestamp.from(block.startTime()), Timestamp.from(block.endTime())));
+    }
+
     /**
      * Figures for the public stats page — the one part of the platform
      * reachable without a credential.

@@ -80,6 +80,7 @@ async function login(browser, user, dark = false) {
   });
   await ctx.addInitScript((theme) => localStorage.setItem("logos-theme", theme), dark ? "dark" : "light");
   const page = await ctx.newPage();
+  if (!user) return { ctx, page };
   await page.goto(BASE + "/");
   await page.getByText(/Sign in with TUM/i).first().click({ timeout: 30000 });
   await page.waitForSelector("#username", { timeout: 30000 });
@@ -371,6 +372,17 @@ const SHOTS = [
     after: (p) => p.getByText("Mark all as read").first().evaluate((b) => b.click()),
   },
 
+  {
+    file: "roles/public-stats-hourly-load.png",
+    user: null,
+    needs: "seed/public-hourly-request-load.sql and a public cache refresh",
+    full: true,
+    go: async (p) => {
+      await p.goto(BASE + "/stats");
+      await p.getByRole("heading", { name: "Typical hourly request load" }).waitFor();
+      await p.locator(".hourly-public-hour").first().waitFor();
+    },
+  },
   { file: "roles/logos-admin-statistics.png", user: ADMIN, full: true, go: (p) => p.goto(BASE + "/statistics?tab=requests") },
   {
     file: "roles/logos-admin-statistics-requesters.png",
@@ -978,7 +990,7 @@ const SHOTS = [
     if (!session || session.key !== key) {
       if (session) await session.ctx.close();
       session = { key, ...(await login(browser, shot.user, shot.dark)) };
-      if (!shot.file.endsWith("benchmark-notification.png")) await markNotificationsRead(session.page);
+      if (shot.user && !shot.file.endsWith("benchmark-notification.png")) await markNotificationsRead(session.page);
     }
     const { page } = session;
     try {

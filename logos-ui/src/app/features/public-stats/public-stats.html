@@ -71,6 +71,15 @@
       </div>
     </section>
 
+    <section class="chart-panel section" aria-labelledby="hourly-public-title">
+      <h2 class="chart-title" id="hourly-public-title">Typical hourly request load</h2>
+      <p class="chart-hint">
+        Successful requests from published teams, excluding internal traffic. This fixed four-week average is
+        published at least one week later. The time-window buttons do not change it. This is not GPU utilization.
+      </p>
+      <app-public-stats-hourly [load]="stats()!.hourly_request_load ?? null" />
+    </section>
+
     <section class="chart-panel section" aria-labelledby="growth-title">
       <div class="section-head">
         <div>

@@ -7,6 +7,7 @@ import { DonutSlice, VramDonutComponent } from '../statistics/components/vram-do
 import { EmptyState } from '../statistics/components/empty-state/empty-state';
 import { PublicStatsSplit } from './public-stats.split';
 import { PublicStatsTrend } from './public-stats.trend';
+import { PublicStatsHourly } from './public-stats.hourly';
 import {
   DEFAULT_PUBLIC_STATS_DAYS,
   PUBLIC_STATS_DAY_OPTIONS,
@@ -51,7 +52,7 @@ interface UsageRow {
 @Component({
   selector: 'app-public-stats',
   standalone: true,
-  imports: [Logo, ThemeToggle, ErrorMessageComponent, EmptyState, VramDonutComponent, PublicStatsSplit, PublicStatsTrend],
+  imports: [Logo, ThemeToggle, ErrorMessageComponent, EmptyState, VramDonutComponent, PublicStatsSplit, PublicStatsTrend, PublicStatsHourly],
   templateUrl: './public-stats.html',
   changeDetection: ChangeDetectionStrategy.Eager,
   styleUrl: './public-stats.scss',

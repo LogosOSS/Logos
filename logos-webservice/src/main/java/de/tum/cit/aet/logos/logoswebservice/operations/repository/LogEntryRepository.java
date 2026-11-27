@@ -69,8 +69,8 @@ public interface LogEntryRepository extends JpaRepository<LogEntry, Integer> {
      * type, serving lane and model, flagged whether it falls inside the
      * selected window. Every request figure of the public stats page — the
      * headline totals and splits, the distributions and the monthly series —
-     * is derived from this one row set, so they all count the same requests
-     * at the same freshness.
+     * outside the delayed hourly chart is derived from this one row set,
+     * so the rolling figures all count the same requests at the same freshness.
      *
      * <p>Read live from log_entry, not from the hourly rollup: the rollup
      * buckets on forwarding time, carries no key type and lags behind late
@@ -101,6 +101,11 @@ public interface LogEntryRepository extends JpaRepository<LogEntry, Integer> {
             LEFT JOIN usage_tokens ut ON ut.log_entry_id = le.id
                  AND ut.type_id IN (SELECT id FROM token_types WHERE name = 'total_tokens')
             WHERE le.result_status = 'success'
+              -- Anonymous worker benchmarks cannot pass the opted-in team join.
+              -- Also exclude the managed key used by the internal benchmark proposer.
+              AND NOT EXISTS (
+                  SELECT 1 FROM api_keys k WHERE k.id = le.api_key_id AND k.internal_service = 'agent'
+              )
             GROUP BY 1, 2, 3, 4, 5, 6, 7, 8
         )
         SELECT to_char(a.day, 'YYYY-MM-DD')                                   AS day,
@@ -126,6 +131,33 @@ public interface LogEntryRepository extends JpaRepository<LogEntry, Integer> {
         GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10
         """, nativeQuery = true)
     List<PublicUsageRowProjection> findPublicUsageRows(@Param("since") Timestamp since);
+
+    /** Fixed publication block, with no per-team or per-date rows returned. */
+    @Transactional(readOnly = true, timeout = 10)
+    @Query(value = """
+        WITH team_hours AS (
+            SELECT EXTRACT(HOUR FROM le.timestamp_request AT TIME ZONE 'Europe/Berlin')::integer AS hour_of_day,
+                le.team_id, COUNT(*) AS requests
+            FROM log_entry le
+            JOIN teams t ON t.id = le.team_id AND t.show_on_public_stats = TRUE
+            WHERE le.result_status = 'success'
+              AND le.timestamp_request >= :start AND le.timestamp_request < :end
+              AND NOT EXISTS (
+                  SELECT 1 FROM api_keys k WHERE k.id = le.api_key_id AND k.internal_service = 'agent'
+              )
+            GROUP BY 1, 2
+        )
+        SELECT hour_of_day AS hour, SUM(requests)::bigint AS requests,
+               COUNT(*) AS teams, MAX(requests) AS largestTeamRequests
+        FROM team_hours
+        GROUP BY hour_of_day
+        UNION ALL
+        SELECT -1 AS hour, COALESCE(SUM(requests), 0)::bigint AS requests,
+               COUNT(DISTINCT team_id) AS teams, 0::bigint AS largestTeamRequests
+        FROM team_hours
+        """, nativeQuery = true)
+    List<PublicHourlyRequestsProjection> findPublicHourlyRequests(
+        @Param("start") Timestamp start, @Param("end") Timestamp end);
 
     /**
      * Logos Agent sessions per UTC day and starter: how many were started, how

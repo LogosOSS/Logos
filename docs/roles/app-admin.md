@@ -271,6 +271,14 @@ in the same section; **Save Settings** below only saves the budget and rate limi
 A confirmation appears after saving. The public page refreshes periodically, so
 changes may take up to 30 minutes to appear with the default cache setting.
 
+The public page also shows **Typical hourly request load**. It includes
+successful requests from published teams, but not internal requests. The
+chart uses the same four-week period for all time-window selections. Data
+appears at least one week after the period ends. The chart shows ranges and
+does not show hours with too little combined traffic. It does not show GPU use.
+
+![Public stats page with ranges for hourly request load](/img/roles/public-stats-hourly-load.png)
+
 Provider batches do not reserve budget. At batch creation, Logos checks only costs that it already settled.
 A provider batch counts against the budget only after it finishes and Logos settles its costs.
 Thus, several batches can start with the same budget left and exceed the key or team budget.
