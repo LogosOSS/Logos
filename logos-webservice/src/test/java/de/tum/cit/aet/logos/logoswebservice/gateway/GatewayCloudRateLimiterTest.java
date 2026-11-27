@@ -16,6 +16,8 @@ import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import glide.api.models.exceptions.RequestException;
+import io.valkey.springframework.data.valkey.connection.ValkeyConnectionFactory;
 import io.valkey.springframework.data.valkey.core.StringValkeyTemplate;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -23,6 +25,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.env.YamlPropertySourceLoader;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.core.io.ClassPathResource;
+import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.dao.InvalidDataAccessApiUsageException;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
@@ -61,6 +65,9 @@ class GatewayCloudRateLimiterTest {
 
     @Autowired
     NotificationFanout fanout;
+
+    @Autowired
+    ValkeyConnectionFactory connectionFactory;
 
     @MockitoBean
     NotificationSocketHandler sockets;
@@ -134,6 +141,16 @@ class GatewayCloudRateLimiterTest {
             connection.serverCommands().flushAll();
         }
         clearInvocations(valkey, deployments);
+    }
+
+    @Test
+    void valkeyExceptionTranslationOnlyClaimsGlideFailures() {
+        assertThat(connectionFactory.translateExceptionIfPossible(new IllegalArgumentException("not a store error")))
+            .isNull();
+        assertThat(connectionFactory.translateExceptionIfPossible(new DataIntegrityViolationException("Postgres constraint")))
+            .isNull();
+        assertThat(connectionFactory.translateExceptionIfPossible(new RequestException("WRONGTYPE Operation")))
+            .isInstanceOf(InvalidDataAccessApiUsageException.class);
     }
 
     @Test
