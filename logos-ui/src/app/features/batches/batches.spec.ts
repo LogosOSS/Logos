@@ -171,8 +171,10 @@ describe('Batches', () => {
       fixture.detectChanges();
       const host: HTMLElement = fixture.nativeElement;
       const button = [...host.querySelectorAll('button')]
-        .find(candidate => candidate.textContent?.trim() === 'Copy prompt for an agent');
-      expect(button).toBeDefined();
+        .find(candidate => candidate.textContent?.trim() === 'Copy the batch setup prompt');
+      expect(host.querySelector('.agent-prompt > span')?.textContent?.trim()).toBe('Using an agent?');
+      expect(button?.getAttribute('type')).toBe('button');
+      expect(button?.querySelector('.pi.pi-copy')?.getAttribute('aria-hidden')).toBe('true');
       button!.click();
       await fixture.whenStable();
       fixture.detectChanges();
@@ -186,6 +188,7 @@ describe('Batches', () => {
       expect(writeText).toHaveBeenCalledExactlyOnceWith(BATCH_PREPARATION_PROMPT);
       expect(writeText.mock.calls[0][0]).not.toContain('Synthetic key name');
       expect(host.querySelector('[role="status"]')?.textContent).toContain('Prompt copied.');
+      expect(host.querySelector('.copy-prompt .pi-check')).not.toBeNull();
       expect(host.querySelector('textarea')).toBeNull();
       fixture.destroy();
     });
@@ -196,6 +199,7 @@ describe('Batches', () => {
       );
       const textarea = host.querySelector('textarea');
       expect(host.querySelector('[role="status"]')?.textContent).toContain('Clipboard unavailable.');
+      expect(host.querySelector('.copy-prompt .pi-copy')).not.toBeNull();
       expect(textarea?.readOnly).toBe(true);
       expect(textarea?.value).toBe(BATCH_PREPARATION_PROMPT);
       fixture.destroy();

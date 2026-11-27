@@ -62,13 +62,49 @@
   }
 }
 
-.input-heading {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px 12px;
+.input-label {
+  display: block;
   margin-bottom: 6px;
   font-weight: 500;
+}
+
+.agent-prompt {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 8px;
+  margin: 4px 0 0;
+  color: rgb(var(--color-typography-500));
+  font-size: 0.875rem;
+}
+
+.copy-prompt {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  min-block-size: 24px;
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  color: rgb(var(--color-text-accent));
+  font: inherit;
+  font-weight: 500;
+  text-align: start;
+  cursor: pointer;
+
+  &:hover span {
+    text-decoration: underline;
+  }
+
+  &:focus-visible {
+    outline: 2px solid currentColor;
+    outline-offset: 2px;
+    border-radius: 2px;
+  }
+
+  .pi {
+    font-size: 0.875rem;
+  }
 }
 
 .manual-prompt {

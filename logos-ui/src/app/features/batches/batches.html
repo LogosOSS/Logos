@@ -17,11 +17,15 @@
       </label>
 
       <div class="field">
-        <div class="input-heading">
-          <label for="batch-input-file">Input file (.jsonl)</label>
-          <button class="ghost" type="button" (click)="copyPreparationPrompt()">Copy prompt for an agent</button>
-        </div>
+        <label class="input-label" for="batch-input-file">Input file (.jsonl)</label>
         <input id="batch-input-file" type="file" accept=".jsonl,application/jsonl,text/plain" (change)="onFileSelected($event)" />
+        <p class="agent-prompt">
+          <span>Using an agent?</span>
+          <button class="copy-prompt" type="button" (click)="copyPreparationPrompt()">
+            <i [class]="copyPromptStatus() === 'copied' ? 'pi pi-check' : 'pi pi-copy'" aria-hidden="true"></i>
+            <span>Copy the batch setup prompt</span>
+          </button>
+        </p>
         <div role="status">
           @if (copyPromptStatus() === 'copied') {
             <small>Prompt copied.</small>
