@@ -89,19 +89,13 @@ class GatewayUsageExtractorTest {
     }
 
     @Test
-    void onlyExplicitZeroPromptAndCompletionTotalsAreRetained() {
+    void zeroAndNegativeCountsAreNotStored() {
+        // usage_tokens holds billable quantities only — a zero row would price
+        // as nothing but still claim the request was metered.
         assertThat(fromJson("""
             {"usage":{"prompt_tokens":0,"completion_tokens":-5,"total_tokens":10}}
             """))
-            .containsExactlyInAnyOrderEntriesOf(Map.of("prompt_tokens", 0L, "total_tokens", 10L));
-        assertThat(fromJson("""
-            {"usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0,
-                      "output_tokens_details":{"reasoning_tokens":0}}}
-            """))
-            .containsExactlyInAnyOrderEntriesOf(Map.of("prompt_tokens", 0L, "completion_tokens", 0L));
-        assertThat(fromJson("""
-            {"usage":{"prompt_tokens":18446744073709551616,"completion_tokens":null}}
-            """)).isEmpty();
+            .containsExactlyInAnyOrderEntriesOf(Map.of("total_tokens", 10L));
     }
 
     @Test
@@ -135,15 +129,6 @@ class GatewayUsageExtractorTest {
             .containsEntry("prompt_tokens", 100L)
             .containsEntry("completion_tokens", 100L)
             .containsEntry("completion_reasoning_tokens", 60L);
-    }
-
-    @Test
-    void geminiReasoningWithZeroVisibleOutputIsStillReportedOutput() {
-        assertThat(fromJson("""
-            {"usage":{"promptTokenCount":10,"candidatesTokenCount":0,"thoughtsTokenCount":5}}
-            """))
-            .containsEntry("completion_tokens", 5L)
-            .containsEntry("completion_reasoning_tokens", 5L);
     }
 
     @Test

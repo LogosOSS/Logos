@@ -23,7 +23,7 @@ import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.jdbc.core.namedparam.SqlParameterSource;
 
 import de.tum.cit.aet.logos.logoswebservice.audit.AuditLogService;
-import de.tum.cit.aet.logos.logoswebservice.gateway.ProviderSpendLedger;
+import de.tum.cit.aet.logos.logoswebservice.gateway.ProviderSpendCapService;
 
 class ProviderSpendPolicyServiceTest {
 
@@ -34,7 +34,9 @@ class ProviderSpendPolicyServiceTest {
     })
     void immediateEditSelectsTheUtcMonthWithThePostLockDatabaseTime(String clock, String effectiveMonth) {
         var jdbc = mock(NamedParameterJdbcTemplate.class);
-        var service = new ProviderSpendPolicyService(jdbc, mock(AuditLogService.class), mock(ProviderSpendLedger.class));
+        var cap = mock(ProviderSpendCapService.class);
+        when(cap.recordedCosts(7, LocalDate.parse(effectiveMonth))).thenReturn(BigDecimal.ZERO);
+        var service = new ProviderSpendPolicyService(jdbc, mock(AuditLogService.class), cap);
         when(jdbc.query(contains("FOR UPDATE"), anyMap(),
             ArgumentMatchers.<ResultSetExtractor<Boolean>>any())).thenReturn(true);
         when(jdbc.queryForObject(eq("SELECT clock_timestamp()"), eq(Map.of()), eq(OffsetDateTime.class)))

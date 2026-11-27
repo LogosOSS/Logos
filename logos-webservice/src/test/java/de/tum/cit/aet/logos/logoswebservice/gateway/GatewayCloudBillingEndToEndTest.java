@@ -2,12 +2,8 @@ package de.tum.cit.aet.logos.logoswebservice.gateway;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.argThat;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.ArgumentMatchers.isNull;
-import static org.mockito.Mockito.doAnswer;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 
 import java.io.ByteArrayOutputStream;
@@ -28,7 +24,6 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -39,7 +34,6 @@ import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
-import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers;
 import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
@@ -82,7 +76,7 @@ class GatewayCloudBillingEndToEndTest {
     @MockitoBean
     JwtDecoder jwtDecoder;
 
-    @MockitoSpyBean
+    @Autowired
     ProviderSpendCapService providerSpend;
 
     @Autowired
@@ -166,39 +160,9 @@ class GatewayCloudBillingEndToEndTest {
     }
 
     @Test
-    void orchestratorAdmissionHttpContractAuthenticatesAndDistinguishesUncappedFromDenied() throws Exception {
+    void softCapUsesExistingFinalizedCostsAndLetsAnAdmittedRequestFinish() throws Exception {
         Fixture f = seedPricedDeployment();
-        String body = """
-            {"provider_id":%d,"model_id":%d,"upstream_url":"https://api.openai.com/v1/chat/completions",
-             "shape":{"model":"synthetic-revision","messages":[{"role":"user","content":""}],"max_tokens":100}}
-            """.formatted(f.providerId(), f.modelId());
-        mvc.perform(post("/internal/provider-spend/reserve").contentType("application/json").content(body))
-            .andExpect(MockMvcResultMatchers.status().isUnauthorized());
-        var uncapped = mvc.perform(post("/internal/provider-spend/reserve").contentType("application/json").content(body)
-            .header("Authorization", "Bearer local-spend-test-secret"))
-            .andExpect(MockMvcResultMatchers.status().isOk()).andReturn();
-        var response = MAPPER.readTree(uncapped.getResponse().getContentAsString());
-        assertThat(response.has("attempt_id")).isTrue();
-        assertThat(response.path("attempt_id").isNull()).isTrue();
-        jdbc.update("""
-            INSERT INTO provider_spend_policies (provider_id, effective_month, limit_micro_cents)
-            VALUES (?, date_trunc('month', now() AT TIME ZONE 'UTC')::date, 1000000000)
-            """, f.providerId());
-        mvc.perform(post("/internal/provider-spend/reserve").contentType("application/json").content(body)
-            .header("Authorization", "Bearer local-spend-test-secret"))
-            .andExpect(MockMvcResultMatchers.status().is(422));
-        assertThat(seenRequestBody.get()).isNull();
-    }
-
-    @ParameterizedTest
-    @CsvSource({
-        "gpt-4.1-2025-04-14, false, complete, 740",
-        "gpt-4.1-mini-2025-04-14, true, complete, 3020",
-        "gpt-4.1-nano-2025-04-14, true, incomplete, -1"
-    })
-    void cappedGatewaySettlesOnlyCompleteReportedUsage(
-            String modelName, boolean providerError, String metering, long expectedCharge) throws Exception {
-        Fixture f = seedPricedDeployment();
+        String modelName = "fixture-model-for-provider-cap";
         jdbc.update("UPDATE models SET name = ? WHERE id = ?", modelName, f.modelId());
         jdbc.update("INSERT INTO model_provider (model_id, provider_id) VALUES (?, ?)", f.modelId(), f.providerId());
         jdbc.update("UPDATE teams SET default_cloud_rpm_limit = 0, default_cloud_tpm_limit = 0 WHERE id = ?",
@@ -209,77 +173,47 @@ class GatewayCloudBillingEndToEndTest {
             f.key().teamId(), f.providerId());
         jdbc.update("""
             INSERT INTO provider_spend_policies (provider_id, effective_month, limit_micro_cents)
-            VALUES (?, date_trunc('month', now() AT TIME ZONE 'UTC')::date, 1000000000)
+            VALUES (?, date_trunc('month', now() AT TIME ZONE 'UTC')::date, 740)
             """, f.providerId());
-        // The real ledger admits only proven official URLs. Substitute one
-        // for cap validation, but keep all actual HTTP I/O on the local mock.
-        var official = new GatewayDeployment(f.modelId(), modelName, f.providerId(), "local test",
-            "cloud", "openai", "https://api.openai.com", null, null, null, null, null, null);
-        jdbc.update("UPDATE providers SET base_url = 'https://api.openai.com' WHERE id = ?", f.providerId());
-        jdbc.update("""
-            INSERT INTO provider_spend_bounds (model_provider_id, upstream_url, model_revision, output_limit_field,
-                max_input_tokens, max_output_tokens, evidence_url, verified_at)
-            SELECT id, 'https://api.openai.com/v1/chat/completions', ?, 'max_completion_tokens',
-                1000000, 32000, 'https://developers.openai.com/api/docs/models/gpt-4.1', now()
-              FROM model_provider WHERE provider_id = ?
-            """, modelName, f.providerId());
-        jdbc.update("UPDATE providers SET base_url = ? WHERE id = ?", upstreamBaseUrl(), f.providerId());
-        doAnswer(call -> {
-            jdbc.update("UPDATE providers SET base_url = 'https://api.openai.com' WHERE id = ?", f.providerId());
-            try {
-                return providerSpend.reserve(official, call.getArgument(1), call.getArgument(2), call.getArgument(3));
-            } finally {
-                jdbc.update("UPDATE providers SET base_url = ? WHERE id = ?", upstreamBaseUrl(), f.providerId());
-            }
-        }).when(providerSpend).reserve(argThat(deployment -> deployment != null
-                && f.providerId() == deployment.providerId() && upstreamBaseUrl().equals(deployment.baseUrl())),
-                eq("/v1/chat/completions"), isNull(), any(JsonNode.class));
+        providerSpend.refresh();
 
-        if (providerError) {
-            responseContentType = "text/event-stream";
-            String usage = "complete".equals(metering)
-                ? "{\"input_tokens\":37,\"output_tokens\":19}" : "{\"input_tokens\":37}";
-            responseBody = "event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{"
-                + "\"error\":{\"message\":\"synthetic provider failure\"},\"usage\":" + usage + "}}\n\n";
-        } else {
-            responseBody = "{\"usage\":{\"prompt_tokens\":37,\"completion_tokens\":0,\"total_tokens\":37}}";
-        }
+        mvc.perform(get("/internal/provider-spend/status")).andExpect(MockMvcResultMatchers.status().isUnauthorized());
+        var allowed = mvc.perform(get("/internal/provider-spend/status").header("Authorization", "Bearer local-spend-test-secret"))
+            .andExpect(MockMvcResultMatchers.status().isOk()).andReturn();
+        var initial = MAPPER.readTree(allowed.getResponse().getContentAsString());
+        assertThat(initial.path("blocked_provider_ids").size()).isZero();
+        assertThat(initial.path("valid_for_ms").asLong()).isBetween(1L, 5000L);
 
+        responseBody = "{";
+        responseTail = """
+            "usage":{"prompt_tokens":37,"completion_tokens":0,"total_tokens":37}}
+            """;
+        responseTailRelease = new java.util.concurrent.CountDownLatch(1);
         String key = jdbc.queryForObject("SELECT key_value FROM api_keys WHERE id = ?", String.class, f.key().id());
-        var response = mvc.perform(post("/openai/chat/completions")
-            .header("Authorization", "Bearer " + key).contentType("application/json")
-            .content("""
-                {"model":"%s","messages":[{"role":"user","content":"hello"}],
-                 "max_completion_tokens":32,"stream":%s}
-                """.formatted(modelName, providerError))).andReturn();
-        mvc.perform(asyncDispatch(response)).andExpect(MockMvcResultMatchers.status().isOk());
+        String payload = """
+            {"model":"%s","messages":[{"role":"user","content":"hello"}]}
+            """.formatted(modelName);
+        var first = mvc.perform(post("/openai/chat/completions").header("Authorization", "Bearer " + key)
+            .contentType("application/json").content(payload)).andReturn();
+        jdbc.update("UPDATE provider_spend_policies SET limit_micro_cents = 0 WHERE provider_id = ?", f.providerId());
+        providerSpend.refresh();
+        responseTailRelease.countDown();
+        mvc.perform(asyncDispatch(first)).andExpect(MockMvcResultMatchers.status().isOk());
         assertThat(seenRequestBody.get()).isNotEmpty();
 
         int logId = jdbc.queryForObject("SELECT id FROM log_entry WHERE api_key_id = ?", Integer.class, f.key().id());
-        assertThat(status(logId)).isEqualTo(providerError ? "error" : "success");
-        var attempt = jdbc.queryForMap("""
-            SELECT a.reserved_micro_cents, a.charged_micro_cents AS attempt_charge,
-                   m.held_micro_cents, m.charged_micro_cents AS month_charge
-            FROM provider_spend_attempts a JOIN provider_spend_months m USING (provider_id, month_start)
-            WHERE a.provider_id = ?
-            """, f.providerId());
-        long reserved = ((Number) attempt.get("reserved_micro_cents")).longValue();
-        assertThat(reserved).isPositive();
-        long held = ((Number) attempt.get("held_micro_cents")).longValue();
-        long charged = ((Number) attempt.get("month_charge")).longValue();
-        if (expectedCharge < 0) {
-            assertThat(attempt).containsEntry("attempt_charge", null);
-            assertThat(held).isEqualTo(reserved);
-            assertThat(charged).isZero();
-        } else {
-            assertThat(reserved).isGreaterThan(expectedCharge);
-            assertThat(attempt).containsEntry("attempt_charge", expectedCharge);
-            assertThat(held).isZero();
-            assertThat(charged).isEqualTo(expectedCharge);
-        }
-        if (!providerError) {
-            assertThat(usageTokens(logId)).containsEntry("prompt_tokens", 37).doesNotContainKey("completion_tokens");
-        }
+        assertThat(status(logId)).isEqualTo("success");
+        assertThat(usageTokens(logId)).containsEntry("prompt_tokens", 37);
+        jdbc.update("UPDATE provider_spend_policies SET limit_micro_cents = 740 WHERE provider_id = ?", f.providerId());
+        providerSpend.refresh();
+        seenRequestBody.set(null);
+        mvc.perform(post("/openai/chat/completions").header("Authorization", "Bearer " + key)
+            .contentType("application/json").content(payload)).andExpect(MockMvcResultMatchers.status().isPaymentRequired());
+        assertThat(seenRequestBody.get()).isNull();
+        var blocked = mvc.perform(get("/internal/provider-spend/status").header("Authorization", "Bearer local-spend-test-secret"))
+            .andExpect(MockMvcResultMatchers.status().isOk()).andReturn();
+        assertThat(MAPPER.readTree(blocked.getResponse().getContentAsString()).path("blocked_provider_ids").get(0).asInt())
+            .isEqualTo(f.providerId());
     }
 
     @ParameterizedTest

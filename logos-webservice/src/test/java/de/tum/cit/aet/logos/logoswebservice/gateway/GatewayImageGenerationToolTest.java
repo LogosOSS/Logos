@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -16,7 +17,6 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -123,8 +123,8 @@ class GatewayImageGenerationToolTest {
     void providerCapDeniesBeforeUpstreamOrKeyCostReservation() throws IOException {
         GatewayDeployment deployment = openai(1, "gpt-4o-2024-08-06");
         when(authService.deploymentsForModel(any(), eq(deployment.modelName()))).thenReturn(List.of(deployment));
-        when(spendCap.reserve(eq(deployment), eq("/v1/responses"), any(), any()))
-            .thenThrow(new ResponseStatusException(HttpStatus.PAYMENT_REQUIRED, "Provider monthly spend limit reached"));
+        doThrow(new ResponseStatusException(HttpStatus.PAYMENT_REQUIRED, "Provider monthly spend limit reached"))
+            .when(spendCap).check(deployment.providerId());
 
         assertThatExceptionOfType(ResponseStatusException.class)
             .isThrownBy(() -> post("""
@@ -137,34 +137,16 @@ class GatewayImageGenerationToolTest {
     }
 
     @Test
-    void forwardsTheValidatedBodyAndSettlesTheSameProviderReservation() throws IOException {
+    void spendCheckDoesNotRequireAnOutputLimitOrRewriteRequestBody() throws IOException {
         GatewayDeployment deployment = openai(1, "test-model");
-        UUID attempt = UUID.randomUUID();
         when(authService.deploymentsForModel(any(), eq(deployment.modelName()))).thenReturn(List.of(deployment));
-        when(spendCap.reserve(eq(deployment), eq("/v1/responses"), any(), any())).thenReturn(attempt);
+        String original = """
+            {"model": "test-model", "input": "hi"}
+            """;
 
-        assertThat(post("""
-            {"model": "test-model", "input": "hi", "max_output_tokens": 32}
-            """).getStatusCode()).isEqualTo(HttpStatus.OK);
-        assertThat(seenBody.get()).isEqualTo("{\"model\":\"test-model\",\"input\":\"hi\",\"max_output_tokens\":32}");
-        verify(spendCap).settle(eq(attempt), any(GatewayForwardResult.class));
-        verify(spendCap, never()).releaseUndispatched(attempt);
-    }
-
-    @Test
-    void releasesTheProviderReservationWhenKeyAdmissionRejectsBeforeDispatch() {
-        GatewayDeployment deployment = openai(1, "test-model");
-        UUID attempt = UUID.randomUUID();
-        when(authService.deploymentsForModel(any(), eq(deployment.modelName()))).thenReturn(List.of(deployment));
-        when(spendCap.reserve(eq(deployment), eq("/v1/responses"), any(), any())).thenReturn(attempt);
-        when(cloudAccounting.admitAndReserve(any(), any(), any(), any(), any(), any()))
-            .thenThrow(new ResponseStatusException(HttpStatus.PAYMENT_REQUIRED, "Key budget reached"));
-
-        assertThatThrownBy(() -> post("{\"model\":\"test-model\",\"input\":\"hi\"}"))
-            .isInstanceOf(ResponseStatusException.class).hasMessageContaining("Key budget reached");
-        assertThat(upstreamCalled.get()).isFalse();
-        verify(spendCap).releaseUndispatched(attempt);
-        verify(spendCap, never()).settle(eq(attempt), any());
+        assertThat(post(original).getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(seenBody.get()).isEqualTo(original);
+        verify(spendCap).check(deployment.providerId());
     }
 
     @Test

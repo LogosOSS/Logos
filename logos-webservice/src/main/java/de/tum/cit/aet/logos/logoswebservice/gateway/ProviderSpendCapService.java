@@ -1,107 +1,124 @@
 package de.tum.cit.aet.logos.logoswebservice.gateway;
 
-import java.net.URI;
-import java.util.LinkedHashMap;
+import java.math.BigDecimal;
+import java.time.Duration;
+import java.time.LocalDate;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
+import java.util.HashSet;
 import java.util.Map;
-import java.util.UUID;
+import java.util.Set;
+import java.util.concurrent.TimeUnit;
+import java.util.function.LongSupplier;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.event.EventListener;
+import org.springframework.dao.DataAccessException;
 import org.springframework.http.HttpStatus;
+import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
 
-import com.fasterxml.jackson.databind.JsonNode;
-
-/** Budget one upstream attempt through the ledger shared with the orchestrator. */
+/** Admit against recorded monthly spend. Healthy request paths read one immutable snapshot. */
 @Service
 public class ProviderSpendCapService {
-
     private static final Logger log = LoggerFactory.getLogger(ProviderSpendCapService.class);
+    private static final long FRESHNESS = TimeUnit.SECONDS.toNanos(5);
 
-    private final ProviderSpendLedger ledger;
+    private record Limit(int provider, long microCents) {}
+    private record Snapshot(Set<Integer> providers, long expiresAt) {}
+    record Status(Set<Integer> blockedProviderIds, long validForMs) {}
 
-    public ProviderSpendCapService(ProviderSpendLedger ledger) {
-        this.ledger = ledger;
+    private final NamedParameterJdbcTemplate jdbc;
+    private final LongSupplier nanoTime;
+    private volatile Snapshot last;
+    private volatile Snapshot knownActive;
+
+    @Autowired
+    public ProviderSpendCapService(NamedParameterJdbcTemplate jdbc) {
+        this(jdbc, System::nanoTime);
     }
 
-    UUID reserve(GatewayDeployment deployment, String inferencePath, String query, JsonNode payload) {
-        String target = null;
-        if ((query == null || query.isEmpty()) && payload != null
-                && ProviderSpendBounds.standardAuth(deployment.cloudProviderType(), deployment.authName())
-                && deployment.modelName().equals(payload.path("model").asText(null))) {
-            target = CloudForwardUrlBuilder.build(deployment.baseUrl(), inferencePath, deployment.endpoint());
-        }
-        return reserve(deployment.providerId(), deployment.modelId(), target, payload);
+    ProviderSpendCapService(NamedParameterJdbcTemplate jdbc, LongSupplier nanoTime) {
+        this.jdbc = jdbc;
+        this.nanoTime = nanoTime;
     }
 
-    public UUID reserve(int provider, Integer model, String target, JsonNode payload) {
-        UUID attempt = UUID.randomUUID();
-        ProviderSpendLedger.Decision decision;
+    @EventListener(ApplicationReadyEvent.class)
+    @Scheduled(scheduler = "providerSpendScheduler", initialDelay = 2000, fixedDelay = 2000)
+    public synchronized void refresh() {
+        long start = nanoTime.getAsLong();
         try {
-            decision = ledger.reserve(attempt, provider, model, target, payload);
-        } catch (org.springframework.dao.DataAccessException | org.springframework.transaction.TransactionException e) {
-            log.warn("Could not check provider spend limit for provider {}", provider, e);
-            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
-                "Provider monthly spend limit is unavailable");
-        }
-        return switch (decision) {
-            case UNCAPPED -> null;
-            case RESERVED -> attempt;
-            case EXHAUSTED -> throw new ResponseStatusException(HttpStatus.PAYMENT_REQUIRED,
-                "Provider monthly spend limit reached");
-            case UNBOUNDED -> throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,
-                "Request cost cannot be bounded under this provider's monthly spend limit");
-            case DUPLICATE -> throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
-                "Provider monthly spend reservation could not be confirmed");
-        };
-    }
-
-    public void releaseUndispatched(UUID attempt) {
-        if (attempt != null) {
-            settle(attempt, null, null, true);
-        }
-    }
-
-    void settle(UUID attempt, GatewayForwardResult result) {
-        if (attempt == null || result == null) {
-            return;
-        }
-        Map<String, Long> usage = result.usage();
-        if (usage == null || usage.containsKey("usage_estimated")) {
-            return;
-        }
-        Long prompt = usage.get("prompt_tokens");
-        Long completion = usage.get("completion_tokens");
-        if (!reportedCount(prompt) || !reportedCount(completion)
-                || (usage.containsKey("provider_delivered_nothing") && (prompt != 0L || completion != 0L))) {
-            return;
-        }
-        if (usage.containsKey("provider_delivered_nothing")) {
-            usage = new LinkedHashMap<>(usage);
-            usage.remove("provider_delivered_nothing");
-        }
-        settle(attempt, usage, result.serviceTier(), false);
-    }
-
-    public void settle(UUID attempt, Map<String, Long> usage, String tier) {
-        settle(attempt, new GatewayForwardResult(usage, null, tier));
-    }
-
-    private static boolean reportedCount(Long count) {
-        return count != null && count >= 0;
-    }
-
-    private void settle(UUID attempt, Map<String, Long> usage, String tier, boolean notDispatched) {
-        try {
-            ledger.settle(attempt, usage, tier, notDispatched);
-        } catch (org.springframework.dao.DataAccessException | org.springframework.transaction.TransactionException e) {
-            // An unknown outcome keeps its full hold.
-            log.warn("Could not settle provider spend attempt {}; keeping reservation", attempt, e);
+            OffsetDateTime now = jdbc.queryForObject("SELECT statement_timestamp()", Map.of(), OffsetDateTime.class)
+                .withOffsetSameInstant(ZoneOffset.UTC);
+            LocalDate month = now.toLocalDate().withDayOfMonth(1);
+            var limits = jdbc.query("""
+                SELECT provider_id, limit_micro_cents FROM (
+                    SELECT DISTINCT ON (provider_id) provider_id, limit_micro_cents
+                      FROM provider_spend_policies WHERE effective_month <= :month
+                     ORDER BY provider_id, effective_month DESC
+                ) current_policy WHERE limit_micro_cents IS NOT NULL
+                """, Map.of("month", month), (rs, row) -> new Limit(rs.getInt(1), rs.getLong(2)));
+            long untilRollover = Duration.between(now,
+                month.plusMonths(1).atStartOfDay().atOffset(ZoneOffset.UTC)).toNanos();
+            long expiresAt = start + Math.min(FRESHNESS, untilRollover);
+            var active = new HashSet<Integer>();
+            limits.forEach(limit -> active.add(limit.provider()));
+            knownActive = new Snapshot(Set.copyOf(active), expiresAt);
+            Set<Integer> blocked = new HashSet<>();
+            for (var limit : limits) {
+                if (limit.microCents() == 0 || recordedCosts(limit.provider(), month)
+                        .compareTo(BigDecimal.valueOf(limit.microCents())) >= 0) {
+                    blocked.add(limit.provider());
+                }
+            }
+            last = new Snapshot(Set.copyOf(blocked), expiresAt);
+        } catch (DataAccessException e) {
+            log.warn("Could not refresh provider spend limits", e);
         }
     }
 
-    static String kindFor(URI target) {
-        return ProviderSpendBounds.kind(target);
+    public void check(int provider) {
+        Snapshot snapshot = last;
+        Snapshot fallback = knownActive;
+        long now = nanoTime.getAsLong();
+        if (snapshot != null && snapshot.expiresAt() - now > 0) {
+            if (snapshot.providers().contains(provider)) {
+                throw new ResponseStatusException(HttpStatus.PAYMENT_REQUIRED, "Provider monthly spend limit reached");
+            }
+        } else if (fallback == null || fallback.expiresAt() - now <= 0 || fallback.providers().contains(provider)) {
+            // When only policy is known, uncapped providers can continue
+            // without silently bypassing a cap whose total could not be read.
+            throw unavailable();
+        }
+    }
+
+    Status status() {
+        Snapshot snapshot = last;
+        long remaining = snapshot == null ? 0 : snapshot.expiresAt() - nanoTime.getAsLong();
+        long validForMs = TimeUnit.NANOSECONDS.toMillis(remaining);
+        if (validForMs <= 0) {
+            throw unavailable();
+        }
+        return new Status(snapshot.providers(), validForMs);
+    }
+
+    private static ResponseStatusException unavailable() {
+        return new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Provider monthly spend limit is unavailable");
+    }
+
+    public BigDecimal recordedCosts(int provider, LocalDate month) {
+        return jdbc.queryForObject("""
+            SELECT COALESCE(SUM(settled_cost_micro_cents), 0)
+              FROM log_entry
+             WHERE provider_id = :provider AND timestamp_request >= :start AND timestamp_request < :end
+               AND cost_finalized AND settled_cost_micro_cents > 0
+               AND result_status IN ('success', 'error', 'timeout')
+            """, Map.of("provider", provider, "start", month.atStartOfDay().atOffset(ZoneOffset.UTC),
+                "end", month.plusMonths(1).atStartOfDay().atOffset(ZoneOffset.UTC)), BigDecimal.class);
     }
 }

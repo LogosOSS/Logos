@@ -10,48 +10,9 @@
                 limit_micro_cents bigint CHECK (limit_micro_cents >= 0),
                 PRIMARY KEY (provider_id, effective_month)
             );
-
-            CREATE TABLE provider_spend_months (
-                provider_id integer NOT NULL REFERENCES providers (id) ON DELETE CASCADE,
-                month_start date NOT NULL CHECK (EXTRACT(DAY FROM month_start) = 1),
-                held_micro_cents numeric(24,0) NOT NULL DEFAULT 0 CHECK (held_micro_cents >= 0),
-                charged_micro_cents numeric(24,0) NOT NULL DEFAULT 0 CHECK (charged_micro_cents >= 0),
-                bound_violation boolean NOT NULL DEFAULT false,
-                PRIMARY KEY (provider_id, month_start)
-            );
-
-            CREATE TABLE provider_spend_attempts (
-                attempt_id uuid PRIMARY KEY,
-                provider_id integer NOT NULL,
-                month_start date NOT NULL,
-                model_id integer NOT NULL,
-                priced_at timestamptz NOT NULL,
-                reserved_micro_cents bigint NOT NULL CHECK (reserved_micro_cents >= 0),
-                max_input_tokens integer NOT NULL CHECK (max_input_tokens > 0),
-                max_output_tokens integer NOT NULL CHECK (max_output_tokens > 0),
-                anthropic_usage boolean NOT NULL,
-                charged_micro_cents bigint CHECK (charged_micro_cents >= 0),
-                FOREIGN KEY (provider_id, month_start)
-                    REFERENCES provider_spend_months (provider_id, month_start) ON DELETE CASCADE
-            );
-
-            CREATE TABLE provider_spend_bounds (
-                model_provider_id integer NOT NULL REFERENCES model_provider (id) ON DELETE CASCADE,
-                upstream_url text NOT NULL,
-                model_revision text NOT NULL,
-                output_limit_field text NOT NULL,
-                max_input_tokens integer NOT NULL CHECK (max_input_tokens > 0),
-                max_output_tokens integer NOT NULL CHECK (max_output_tokens > 0),
-                evidence_url text NOT NULL,
-                verified_at timestamptz NOT NULL,
-                PRIMARY KEY (model_provider_id, upstream_url)
-            );
         ]]></sql>
         <rollback>
             <sql splitStatements="false">
-                DROP TABLE provider_spend_bounds;
-                DROP TABLE provider_spend_attempts;
-                DROP TABLE provider_spend_months;
                 DROP TABLE provider_spend_policies;
             </sql>
         </rollback>

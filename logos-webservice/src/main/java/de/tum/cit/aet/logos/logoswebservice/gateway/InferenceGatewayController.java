@@ -9,7 +9,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.UUID;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -158,33 +157,23 @@ public class InferenceGatewayController {
                 final Integer logId;
                 final Map<String, String> upstreamHeaders;
                 String inferencePath = GatewayRouteResolver.normalizeInferencePath(path);
-                UUID spendAttempt = null;
-                byte[] outboundBody = body;
                 try {
                     upstreamHeaders = imageToolHeaders(ctx.key(), decision.deployment(), root);
                     cloudRateLimiter.enforce(ctx.key(), body);
-                    spendAttempt = providerSpend.reserve(decision.deployment(), inferencePath, request.getQueryString(), root);
-                    if (spendAttempt != null) {
-                        // Send the exact object that was validated for the cap.
-                        // An upstream must not interpret duplicate JSON keys differently.
-                        outboundBody = objectMapper.writeValueAsBytes(root);
-                    }
+                    providerSpend.check(decision.deployment().providerId());
                     logId = cloudAccounting.admitAndReserve(
-                        ctx.key(), decision.deployment(), outboundBody, logLevel, arrivedAt,
+                        ctx.key(), decision.deployment(), body, logLevel, arrivedAt,
                         GatewayReasoningEffort.from(root));
                 } catch (ResponseStatusException e) {
-                    providerSpend.releaseUndispatched(spendAttempt);
                     cloudAccounting.recordRejected(ctx.key(), decision.deployment(), logLevel,
                         "HTTP " + e.getStatusCode().value() + ": " + e.getReason(),
                         e.getStatusCode().value() == HttpStatus.TOO_MANY_REQUESTS.value());
                     throw e;
-                } catch (IOException | RuntimeException e) {
-                    providerSpend.releaseUndispatched(spendAttempt);
+                } catch (RuntimeException e) {
                     cloudAccounting.recordRejected(ctx.key(), decision.deployment(), logLevel,
                         "Gateway error: " + e.getClass().getSimpleName(), false);
                     throw e;
                 }
-                UUID dispatchedAttempt = spendAttempt;
                 log.debug("Cloud forward {} {} model={} reason={}",
                     request.getMethod(), path, modelName, decision.reason());
                 return cloudForwarder.forward(
@@ -192,19 +181,13 @@ public class InferenceGatewayController {
                     inferencePath,
                     request.getQueryString(),
                     request.getMethod(),
-                    outboundBody,
+                    body,
                     copyHeaders(request),
                     upstreamHeaders,
                     GatewayLoggingLevel.storesPayloads(logLevel),
-                    result -> {
-                        providerSpend.settle(dispatchedAttempt, result);
-                        cloudAccounting.settleSuccess(
-                            logId, result.usage(), result.responseBody(), result.serviceTier(), result.timings());
-                    },
-                    (err, result) -> {
-                        providerSpend.settle(dispatchedAttempt, result);
-                        cloudAccounting.settleFailure(logId, err, result);
-                    });
+                    result -> cloudAccounting.settleSuccess(
+                        logId, result.usage(), result.responseBody(), result.serviceTier(), result.timings()),
+                    (err, result) -> cloudAccounting.settleFailure(logId, err, result));
             }
             log.debug("Orchestrator proxy {} {} reason={}",
                 request.getMethod(), path, decision.reason());
