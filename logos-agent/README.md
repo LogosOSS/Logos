@@ -102,6 +102,12 @@ bounds the runner's own concurrency is the parallel ceiling, not the load.
 | Dispatch budget temporarily exhausted (`awaiting_signal`) | No additional session starts; running sessions continue |
 | Orchestrator unreachable or required engine observations stale/unknown | Nothing starts or resumes; running sessions pause |
 
+Internal benchmark requests count toward engine usage, but their scheduler
+backlog is not user backlog. A benchmark reservation cannot offer dispatch
+headroom. On a reserved deployment the runner excludes only engine waiters
+that the benchmark ledger can account for. It treats other waiters as
+possible user requests.
+
 Concurrent creation-triggered passes share the same observation budget. Worker
 heartbeats and counter-only runtime revisions do not replenish it: the identity
 is the worker session and the timestamp of its actual engine observation. A
@@ -653,6 +659,7 @@ pytest              # capacity gating, state machine, branch derivation
 | `GET` | `/triggers` | Whether the runner reacts to the repository, and what it queued |
 | `GET` | `/repositories` | Linked team repositories with the coding agent enabled, for manual sessions |
 | `GET`/`POST` | `/workspaces` | List and create workspaces |
+| `GET` | `/workspace-storage` | Read Docker sizes by workspace ID and capacity of the runner artifact filesystem |
 | `DELETE` | `/workspaces/{id}` | Remove a workspace (refused while occupied) |
 | `GET`/`POST` | `/sessions` | List and queue sessions (`team_repository_id` targets a linked repository) |
 | `GET` | `/sessions/{id}` | One session |

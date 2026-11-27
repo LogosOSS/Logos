@@ -187,14 +187,19 @@ def _queue_parts(model: dict) -> tuple[int, int]:
     figure stand in for the other is how a waiting user became invisible.
     The caller counts the depth once per model and adds the wait per
     deployment — an asleep model still contributes both, since waking a lane
-    takes the VRAM the running sessions are sitting on.
+    takes the VRAM the running sessions are sitting on. The internal benchmark
+    subset of the model backlog is not user demand.
     """
     signals = model.get("scheduler_signals") or {}
     if not isinstance(signals, dict):
         signals = {}
     reported = signals.get("queue_waiting_current")
     wait = max(0, int(reported)) if isinstance(reported, (int, float)) else 0
-    return max(0, int(model.get("queue_depth") or 0)), wait
+    depth = max(0, int(model.get("queue_depth") or 0))
+    benchmark_depth = model.get("benchmark_queue_depth")
+    if type(benchmark_depth) is int and 0 <= benchmark_depth <= depth:
+        depth -= benchmark_depth
+    return depth, wait
 
 
 def _slots(model: dict) -> int:

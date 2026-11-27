@@ -1,0 +1,59 @@
+@use 'styles/glass' as *;
+
+@mixin count {
+  padding: 1px 8px;
+  border-radius: 8px;
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  background: rgb(var(--color-outline-200) / var(--opacity-soft));
+  color: rgb(var(--color-typography-300));
+}
+
+@mixin base {
+  @include glass-surface;
+  padding: 20px 24px;
+  margin-top: 20px;
+  min-width: 0;
+
+  &__head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+
+  &__title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0;
+    font-size: var(--font-size-lg);
+    font-weight: var(--font-weight-semibold);
+    color: rgb(var(--color-typography-0));
+  }
+}
+
+@mixin hint {
+  display: block;
+  margin: 0;
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-normal);
+  color: rgb(var(--color-typography-700));
+}
+
+@mixin link {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  color: rgb(var(--color-text-accent));
+  cursor: pointer;
+  text-align: left;
+
+  &:disabled {
+    opacity: var(--opacity-disabled);
+  }
+}
