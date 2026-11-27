@@ -59,23 +59,30 @@ async def test_check_followup_uses_repository_saved_on_session(monkeypatch):
     assert repository_context.current() is None
 
 
-async def test_linked_repository_never_dispatches_logos_deploy(monkeypatch):
+async def test_linked_repository_never_captures_the_platform_dev_instance(monkeypatch):
     manager = sessions.SessionManager()
     monkeypatch.setattr(
         sessions.db,
         "get_session",
-        AsyncMock(
-            return_value={
-                "id": 7,
-                "repo_slug": "team/project",
-                "deploy_to_dev": True,
-            }
-        ),
+        AsyncMock(return_value={"id": 7, "repo_slug": "team/project", "screenshot_paths": ["/models"]}),
     )
-    dispatch = AsyncMock()
-    monkeypatch.setattr(sessions.github, "dispatch_dev_deploy", dispatch)
-    assert await manager._maybe_deploy(7, {}) == (None, None)
-    dispatch.assert_not_called()
+    capture = AsyncMock()
+    monkeypatch.setattr(manager, "_take_screenshots", capture)
+    await manager._capture_screenshots(7)
+    capture.assert_not_awaited()
+
+
+async def test_private_session_never_captures_screenshots_even_if_a_row_has_paths(monkeypatch):
+    manager = sessions.SessionManager()
+    monkeypatch.setattr(
+        sessions.db,
+        "get_session",
+        AsyncMock(return_value={"id": 7, "no_push": True, "screenshot_paths": ["/models"]}),
+    )
+    capture = AsyncMock()
+    monkeypatch.setattr(manager, "_take_screenshots", capture)
+    await manager._capture_screenshots(7)
+    capture.assert_not_awaited()
 
 
 def test_namespaced_reference_keeps_the_assigned_issue_number():

@@ -142,10 +142,9 @@ class SessionCreate(BaseModel):
     open_pull_request: bool = True
     # Manual private work may read its repository but must not publish to GitHub.
     no_push: bool = False
-    # Deploy the resulting build to the dev environment after the PR is opened.
-    # Refused unless the service is configured with deploy_enabled.
+    # Retained for old clients. The endpoint rejects true and accepts false.
     deploy_to_dev: bool = False
-    # URLs (paths on the dev environment) to screenshot once deployed.
+    # Paths to capture on the Dev instance already running.
     screenshot_paths: list[str] = Field(default_factory=list, max_length=10)
     # A linked team repository with coding work enabled to work on instead
     # of the platform's own repository. Absent means the platform repository.

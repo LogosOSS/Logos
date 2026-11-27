@@ -157,7 +157,6 @@ export class Agents implements OnInit {
   formModel = signal<string | null>(null);
   formOpenPr = signal(true);
   formNoPush = signal(false);
-  formDeploy = signal(false);
   formScreenshots = signal('');
   submitting = signal(false);
   formError = signal<string | null>(null);
@@ -963,7 +962,6 @@ export class Agents implements OnInit {
         model: this.formModel(),
         open_pull_request: !privateSession && this.formOpenPr(),
         no_push: privateSession,
-        deploy_to_dev: !linked && !privateSession && this.formDeploy(),
         screenshot_paths: paths,
         team_repository_id: repositoryId,
         ...(this.formRam().trim() ? { memory_override_mb: Number(this.formRam()) } : {}),
@@ -995,7 +993,6 @@ export class Agents implements OnInit {
     const repositoryId = id ? Number(id) : null;
     this.formRepositoryId.set(repositoryId);
     if (repositoryId !== null) {
-      this.formDeploy.set(false);
       this.formScreenshots.set('');
     }
   }

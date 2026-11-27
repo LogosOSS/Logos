@@ -900,21 +900,21 @@ To queue a manual session, do these steps:
 5. Optionally set **RAM limit (MiB)** for this session. Leave it blank to use
    the runner default. A custom request waits for enough memory to be free;
    it does not change the default for other sessions.
-6. To keep the result in Logos, select **Private session: no GitHub writes or deployment**.
+6. To keep the result in Logos, select **Private session: no GitHub writes**.
 7. Select **Queue session**.
 
 ![Start a session form with the linked repository docs-example/sample-app selected](/img/roles/logos-admin-agents-new-session.png)
 
 The example shows the linked repository `docs-example/sample-app` with the
 branch `develop`. For a linked repository, the session works on that
-repository and its branch. The form disables **Deploy to the dev environment
-afterwards** and **Screenshot paths**, because these options are available
-only for the platform repository. A note below the check boxes gives this
-reason.
+repository and its branch. The form disables **Screenshot paths** for linked
+repositories. A platform session can capture pages on the Dev instance that
+already runs. These screenshots do not deploy session changes. An operator
+[deploys changes separately](../deployment.md#deploy-from-github).
 
 In a private session, the agent can read issues from the linked repository.
 It cannot create a fork, push a branch, post a comment, or open a pull request.
-It cannot deploy or take screenshots of a deployment.
+It cannot capture Dev screenshots.
 In **Task**, ask for the issue link, the proposed change, and the checks in the final response.
 Expand the session and open **Agent messages** to review the result.
 

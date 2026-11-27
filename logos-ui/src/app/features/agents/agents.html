@@ -4,7 +4,7 @@
     <h1 class="page-title">Agent Sessions</h1>
     <p class="page-subtitle">
       Coding agents running in isolated containers on capacity Logos is not otherwise using.
-      Sessions can keep results in Logos or publish changes for review. Only the dev environment can be deployed.
+      Sessions can keep results in Logos or publish changes for review. Sessions do not deploy changes.
     </p>
     <div class="page-header__actions">
       <button type="button" class="btn-primary" (click)="openForm()" [disabled]="showForm()">
@@ -256,7 +256,7 @@
             (ngModelChange)="formScreenshots.set($event)"
             [disabled]="linkedRepositorySelected() || formNoPush()"
           />
-          <span class="field__hint">Pages on the dev environment to capture after deploying.</span>
+          <span class="field__hint">Pages on the current Dev instance. Capturing them does not deploy these changes.</span>
         </label>
 
         <label class="field">
@@ -290,7 +290,7 @@
                 [ngModel]="formNoPush()"
                 (ngModelChange)="formNoPush.set($event)"
               />
-              <span>Private session: no GitHub writes or deployment</span>
+              <span>Private session: no GitHub writes</span>
             </label>
             <label class="checkbox">
               <input
@@ -301,19 +301,10 @@
               />
               <span>Open a pull request when finished</span>
             </label>
-            <label class="checkbox">
-              <input
-                type="checkbox"
-                [ngModel]="!formNoPush() && formDeploy()"
-                (ngModelChange)="formDeploy.set($event)"
-                [disabled]="linkedRepositorySelected() || formNoPush()"
-              />
-              <span>Deploy to the dev environment afterwards</span>
-            </label>
           </div>
           @if (linkedRepositorySelected()) {
             <p class="field__hint">
-              Deploy to dev and screenshots are available only for the platform repository.
+              Dev screenshots are available only for the platform repository.
             </p>
           }
         </div>

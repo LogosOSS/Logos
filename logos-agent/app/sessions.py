@@ -10,8 +10,7 @@ concerns that have to stay together to be correct:
    GPUs back, and resume when it does not. Pausing freezes the process tree,
    so a session resumes mid-task rather than starting over.
 3. **Settlement.** When a container exits, its result file is read, the
-   outcome recorded, a pull request and a dev deploy triggered if asked for,
-   and the container removed.
+   outcome recorded, a pull request opened if requested, and the container removed.
 
 The scheduler loop is a single task; per-session supervision runs as one task
 each, so a slow session cannot hold up admission of the others.
@@ -30,8 +29,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlsplit
-
-import httpx
 
 from . import (
     attachments,
@@ -625,13 +622,6 @@ class SessionManager:
         # Serialises admission so two scheduler passes cannot both decide there
         # is room for the last slot.
         self._admission_lock = asyncio.Lock()
-        # The dev environment is shared by every session on this runner, so
-        # the sequence that changes it and then observes it — dispatch a
-        # deploy, wait for the run the dispatch created, wait for the
-        # environment to serve, take the screenshots — must not interleave
-        # across sessions: an interleaved pair would each settle against the
-        # other's run and photograph the other's revision.
-        self._deploy_screenshot_lock = asyncio.Lock()
         # Serialises posting a session's answer: the settlement and the reply
         # sweep can reach the same session at the same moment, and without
         # this both would read reply_posted_at as unset and post twice.
@@ -3164,7 +3154,7 @@ class SessionManager:
             # finalizer. It repeats verification against the original baseline
             # and recognizes its exact already-pushed snapshot, so restarting
             # neither loses base changes nor overwrites another push.
-            # Failed verification may publish a draft but must never deploy.
+            # Failed verification may publish a draft but still fails the session.
             if not await self._finalize(session_id):
                 said = self._last_helper_output.pop(session_id, "")
                 error = "finalization did not pass"
@@ -3211,10 +3201,7 @@ class SessionManager:
             _release_in_background(token, container_id)
 
         if moved and succeeded:
-            # Keep dispatch, the wait for that deployment and its screenshots together.
-            async with self._deploy_screenshot_lock:
-                deploy, after_run_id = await self._maybe_deploy(session_id, result)
-                await self._capture_screenshots(session_id, deploy, after_run_id)
+            await self._capture_screenshots(session_id)
 
     async def _record_outcome(
         self, session_id: int, succeeded: bool, fields: dict[str, Any], result: dict[str, Any]
@@ -4006,156 +3993,21 @@ class SessionManager:
             logger.warning("unreadable result file for session %s: %s", session_id, exc)
         return {}
 
-    async def _maybe_deploy(self, session_id: int, result: dict[str, Any]) -> tuple[str | None, int | None]:
-        """Dispatch the dev deploy if the session asked for one.
-
-        Returns ``(outcome, pre_dispatch_run_id)``. The outcome is
-        ``"dispatched"``, ``"skipped"``, ``"failed"``, or ``None`` when the
-        session did not request a deploy — callers that have to happen
-        *after* the deploy (the screenshots) key off it. The
-        ``pre_dispatch_run_id`` is the newest run of the deploy workflow
-        that existed *before* the dispatch; the screenshots wait for a run
-        newer than it, so a deploy that predates this dispatch — or one of
-        a session that dispatched earlier — cannot be settled as this
-        session's.
-        """
+    async def _capture_screenshots(self, session_id: int) -> None:
+        """Capture the Dev instance already running; never deploy session changes."""
         session = await db.get_session(session_id)
-        if session and session.get("repo_slug"):
-            return None, None
-        if not session or not session.get("deploy_to_dev"):
-            return None, None
-        if not settings.deploy_enabled:
-            await db.add_event(
-                session_id,
-                EventKind.DEPLOY,
-                {"status": "skipped", "reason": "deploys are disabled on this runner"},
-            )
-            return "skipped", None
-        try:
-            # Dispatched from here, never from the container: the workflow-scoped
-            # token stays in this service, and the workflow itself is pinned to
-            # the dev environment. The dispatch carries the prebuilt image tag
-            # and nothing else branch-derived: the workflow checks out the
-            # repository to copy the compose file to the dev host, so it runs
-            # on a fixed trusted ref, never the session's agent-editable
-            # branch. The tag is the pull request build's, never latest:
-            # branch pushes never build, and latest still points at main, so
-            # a latest dispatch would deploy the old revision.
-            image_tag = await self._wait_for_session_image(session_id, result, session.get("branch_name") or "main")
-            if image_tag is None:
-                return "failed", None
-            # The pre-dispatch marker: whatever run exists on the trusted
-            # ref right now is older than the one this dispatch creates.
-            after_run_id = await github.latest_dev_deploy_run_id()
-            run_url = await github.dispatch_dev_deploy(image_tag=image_tag)
-            await db.update_session(session_id, deployed_at=datetime.now(timezone.utc))
-            await db.add_event(
-                session_id,
-                EventKind.DEPLOY,
-                {
-                    "status": "dispatched",
-                    "environment": settings.allowed_environment,
-                    "url": run_url,
-                    "image_tag": image_tag,
-                },
-            )
-            return "dispatched", after_run_id
-        except Exception as exc:
-            logger.warning("dev deploy for session %s failed: %s", session_id, exc)
-            await db.add_event(session_id, EventKind.DEPLOY, {"status": "failed", "error": str(exc)})
-            return "failed", None
-
-    async def _wait_for_session_image(self, session_id: int, result: dict[str, Any], branch: str) -> str | None:
-        """The image tag a deploy of this session must pull — or None.
-
-        The build workflow only runs when the session's pull request opens,
-        and PR builds publish ``pr-<number>`` images, never ``latest``. A
-        deploy of the session's own code therefore waits for that run and
-        uses the exact tag it published. Without a pull request no image of
-        the branch exists at all, so the deploy is refused with a visible
-        reason instead of falling back to main's stale ``latest`` images —
-        which would report the session's work deployed while serving the
-        old revision.
-        """
-        pr_number = github.pr_number_from_url(result.get("pr_url") or "")
-        if pr_number is None:
-            await db.add_event(
-                session_id,
-                EventKind.DEPLOY,
-                {
-                    "status": "failed",
-                    "error": "session opened no pull request, so no image of its branch exists to deploy",
-                },
-            )
-            return None
-        pushed_sha = str(result.get("pushed_sha") or "").strip()
-        if not pushed_sha:
-            # Without the pushed commit the build could not be pinned to a
-            # revision: the branch may carry an earlier, already-built
-            # commit, and the run of that commit would be mistaken for the
-            # build of this session's work.
-            await db.add_event(
-                session_id,
-                EventKind.DEPLOY,
-                {"status": "failed", "error": "the finalizer recorded no pushed commit, so the build cannot be pinned"},
-            )
-            return None
-        status, detail = await github.wait_for_pr_builds(branch, pushed_sha)
-        if status != "success":
-            await db.add_event(
-                session_id,
-                EventKind.DEPLOY,
-                {"status": "failed", "error": f"image builds did not succeed ({status}): {detail}"},
-            )
-            return None
-        return f"pr-{pr_number}"
-
-    async def _capture_screenshots(self, session_id: int, deploy: str | None, after_run_id: int | None = None) -> None:
-        """Capture the session's requested dev pages, after everything else.
-
-        Running this in settlement — and only after a requested dev deploy has
-        finished and the environment serves again — is what makes the photos
-        show the revision the session just deployed. A session container would
-        see the previous revision: it exits long before the deploy dispatch
-        is even made. A requested deploy that failed or was skipped skips the
-        photos too, for the same reason: the environment would still be
-        serving the previous revision.
-
-        ``after_run_id`` is the pre-dispatch run marker the dispatch
-        recorded: the wait accepts only a run of the deploy workflow newer
-        than it, so a completed deploy from before this dispatch cannot end
-        the wait and make the photos pass for the revision this session put
-        in the environment.
-        """
-        session = await db.get_session(session_id)
-        paths = (session or {}).get("screenshot_paths") or []
+        if not session or session.get("no_push") or session.get("repo_slug"):
+            return
+        paths = session.get("screenshot_paths") or []
         if not paths:
             return
-
-        if deploy == "dispatched":
-            status, detail = await github.wait_for_dev_deploy(after_run_id=after_run_id)
-            if status != "success":
-                await db.add_event(
-                    session_id,
-                    EventKind.SCREENSHOT,
-                    {"status": "skipped", "reason": f"dev deploy did not succeed ({status}): {detail}"},
-                )
-                return
-            if not await self._wait_dev_ready():
-                await db.add_event(
-                    session_id,
-                    EventKind.SCREENSHOT,
-                    {"status": "skipped", "reason": "dev environment was not serving after the deploy"},
-                )
-                return
-        elif deploy in ("failed", "skipped"):
-            # The session asked for a deploy that did not land (the dispatch
-            # failed, the build did not succeed, or deploys are disabled):
-            # the pages would show the old revision under this session's name.
+        if session.get("deploy_to_dev"):
+            # Older rows requested screenshots of a specific deploy. Showing
+            # the current shared version instead would mislabel their result.
             await db.add_event(
                 session_id,
                 EventKind.SCREENSHOT,
-                {"status": "skipped", "reason": f"requested dev deploy did not land ({deploy})"},
+                {"status": "skipped", "reason": "The requested automatic Dev deployment is no longer supported."},
             )
             return
 
@@ -4180,30 +4032,6 @@ class SessionManager:
                     return _hold(memory_mb)
             if loop.time() >= deadline:
                 return None
-            await asyncio.sleep(poll_s)
-
-    async def _wait_dev_ready(self, *, timeout_s: float = 5 * 60, poll_s: float = 5.0) -> bool:
-        """Wait until the dev environment serves the freshly deployed revision.
-
-        The deploy workflow ends as soon as compose has started the stack, so
-        the first moments after it are a half-started deployment. Any answer
-        from the dev host means the new revision is up and serving; whether
-        the models behind it have finished loading is a matter of what the
-        page shows, not of whether it is the new one.
-        """
-        url = settings.dev_base_url.rstrip("/") + "/"
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout_s
-        while True:
-            try:
-                async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
-                    response = await client.get(url)
-                if response.status_code < 400:
-                    return True
-            except Exception:
-                pass
-            if loop.time() >= deadline:
-                return False
             await asyncio.sleep(poll_s)
 
     async def _take_screenshots(self, session_id: int, paths: list[str]) -> list[str]:

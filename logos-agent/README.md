@@ -4,9 +4,9 @@ Runs coding agents in isolated containers, on serving capacity Logos is not
 otherwise using, and gives that capacity back the moment a user needs it.
 
 A session is one agent run: it gets a working copy, a task, and a Logos key.
-It works unattended, and what it produces arrives as a pull request that
-a human reviews like any other. Sessions can be told to deploy their result to
-the **dev** environment and screenshot the pages they changed.
+It works unattended, and its results stay in Logos or arrive as a pull request
+that a person reviews. An operator deploys changes separately. A platform
+session can request screenshots of the **Dev** instance already running.
 
 ## Why this exists
 
@@ -240,7 +240,7 @@ configuration cannot alter the authoritative build. The finalizer checks the
 same tree ID before pushing. Neither
 the checkout baseline nor the authoritative check outcome comes from an
 agent-written result file. Failed or unavailable checks produce a draft PR with
-diagnostics and a failed session; deployment is not dispatched. Existing PRs
+diagnostics and a failed session. Existing PRs
 are made drafts before such a push. Successful checks do not automatically
 mark an existing draft ready for review. Python and other services still need
 their normal tests; this automatic gate covers Java and Angular.
@@ -292,16 +292,15 @@ content in them. Search results are untrusted external data.
 ## What a session may and may not do
 
 **May:** read and change the working copy, run tests and linters, push a branch
-under `logos/agent/`, open a pull request, and — if enabled — have its result
-deployed to dev and screenshotted. Sessions of a linked repository may, within
+under `logos/agent/`, open a pull request, and request screenshots of the
+currently running Dev instance on the platform repository. Sessions of a linked repository may, within
 the bounds in [Working the way the repository asks](#working-the-way-the-repository-asks),
 reach allowed HTTPS hosts, keep a workspace cache, read issues and — where
 allowed — comment.
 
 **May not:** reach the Docker daemon, run as root, push to `main` or any
-protected branch, dispatch a workflow, or touch production. The deploy is
-dispatched *by this service*, with a token the container never receives, and
-only for `logos_deploy-dev.yml`; any other workflow is refused in code.
+protected branch, dispatch a workflow, deploy, or touch production. Deployment
+is an operator action separate from an agent session.
 
 Branch names are derived from the session id, not chosen by the agent, so two
 sessions cannot collide and no workspace name can steer a push at a protected
@@ -399,7 +398,6 @@ unused and can be removed.
 | `LOGOS_AGENT_SESSION_TIMEOUT_S` | `0` | Wall-clock ceiling per session; `0` is none, which is the default |
 | `LOGOS_AGENT_SESSION_MODEL_URL` | `http://logos-agent-gateway` | Where sessions send model traffic — a gateway that exposes only the orchestrator's `/v1` model surface, so a session never reaches the rest of the internal network |
 | `LOGOS_AGENT_SESSION_GITHUB_TOKEN` | falls back to the token above | Given to containers; best without `workflow` scope |
-| `LOGOS_AGENT_DEPLOY_ENABLED` | `false` | Whether dev deploys may be dispatched at all |
 | `LOGOS_AGENT_EGRESS_PROXY_URL` | `http://logos-agent-egress-proxy:3128` | The allowlisting HTTPS proxy for linked-repository sessions; empty turns internet access off for every session |
 
 ### The GitHub account
@@ -409,11 +407,10 @@ Everything this service does on GitHub happens as one account —
 comments are visibly the platform's own, whose access is withdrawn in one
 place, and which owns nothing a human contributor owns.
 
-A classic personal access token from that account needs exactly two scopes:
-
-- **`repo`** — push branches, open pull requests, read commit status and checks.
-- **`workflow`** — dispatch the dev deploy, and let a session change files
-  under `.github/workflows/` like any other part of the repository.
+A classic personal access token from that account needs **`repo`** to push
+branches, open pull requests, and read commit status and checks. Give the
+publication token **`workflow`** only if it must publish changes to files under
+`.github/workflows/`. The runner does not dispatch deployments.
 
 Nothing else: no `admin:repo_hook` (the runner polls rather than listening for
 webhooks, so it needs no inbound door), no package scopes, no organisation
@@ -736,11 +733,10 @@ an `Authorization` header, and the token is what authorises the read.
   no later pass finds that issue, review or question again.
 - **Nothing merges itself.** A person
   approves and merges exactly as they do for human work.
-- **Screenshots follow the deploy.** A session that asks for dev screenshots
-  gets them only after the runner has dispatched its dev deploy and watched
-  the environment serve again — the runner captures the pages in one-shot
-  containers, so the photos show the revision the session just deployed, not
-  the one that was live while the session ran.
+- **Screenshots show the running Dev instance.** Platform sessions that request
+  Dev screenshots capture the current shared instance in one-shot containers.
+  The screenshots do not put the session's changes on Dev or prove that they
+  are deployed.
 
 ### Coding in linked team repositories
 
@@ -801,7 +797,9 @@ an agent steered by text it read cannot turn it against anybody.
 | **Closing references** from `closes.txt` | Every linked-repository session | Only open issues assigned to the agent account, i.e. given to it or claimed through the repository's process. |
 
 For a manual private session, set `no_push` to `true` and `open_pull_request` to `false`
-in `POST /sessions`. Leave `deploy_to_dev` false and `screenshot_paths` empty.
+in `POST /sessions`. Leave `screenshot_paths` empty. The legacy
+`deploy_to_dev` field can be omitted or set to `false`; `true` returns 400 for
+all sessions.
 The session keeps linked repository issue reads but cannot post comments, create a fork,
 push a branch, or open a pull request. The caller can review the result in **Agent messages**.
 This option does not change repository-triggered sessions.
