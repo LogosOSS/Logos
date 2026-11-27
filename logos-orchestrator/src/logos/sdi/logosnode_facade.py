@@ -345,11 +345,18 @@ class LogosNodeSchedulingDataFacade:
         with self._lock:
             providers: Dict[str, Dict] = {}
             for provider_id, provider in self._providers.items():
+                models = provider.get_debug_state()
+                # Do not hold the provider lock while reading reservations:
+                # request admission takes the locks in the opposite order.
+                for model in models.values():
+                    model["benchmark_reserved"] = (
+                        benchmark_reservations.owner(provider_id, model["model_name"]) is not None
+                    )
                 providers[str(provider_id)] = {
                     "name": provider.name,
                     "base_url": provider.base_url,
                     "runtime": provider.get_runtime_debug_state(),
-                    "models": provider.get_debug_state(),
+                    "models": models,
                 }
             now = time.time()
             tracked_requests: Dict[str, Dict] = {}
