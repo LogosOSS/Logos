@@ -392,16 +392,16 @@ async def test_capacity_read_timeout_pauses_and_recovers_the_same_session(monkey
     async def rows(status):
         return [session] if session_status is status else []
 
-    async def transition(sid, status):
+    async def transition(sid, status, *, capacity_reason):
         nonlocal session_status
         assert sid == session["id"]
+        if status is SessionStatus.PAUSED:
+            assert capacity_reason == "capacity unknown (orchestrator unreachable)"
         session_status = status
         return True
 
     monkeypatch.setattr(sessions.db, "sessions_in_status", rows)
     monkeypatch.setattr(sessions.db, "transition_session", transition)
-    events = AsyncMock()
-    monkeypatch.setattr(sessions.db, "add_event", events)
     operations = {
         name: AsyncMock(return_value=value)
         for name, value in {
@@ -424,10 +424,6 @@ async def test_capacity_read_timeout_pauses_and_recovers_the_same_session(monkey
     await manager._capacity_watch_pass()
     assert session_status is SessionStatus.PAUSED
     operations["pause_container"].assert_awaited_once_with("same-container")
-    assert events.await_args.args[2] == {
-        "decision": "pause",
-        "reason": "capacity unknown (orchestrator unreachable)",
-    }
 
     clock.payload = healthy
     for second in range(0, 10, 2):

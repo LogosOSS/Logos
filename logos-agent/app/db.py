@@ -1123,9 +1123,39 @@ _SESSION_SELECT = """
 """
 
 
-async def get_session(session_id: int) -> dict[str, Any] | None:
+def _session_select_with_pauses(selected: str) -> str:
+    """Only read recorded lifecycle transitions for the bounded result set."""
+    return f"""
+        WITH selected AS MATERIALIZED ({selected}),
+        boundaries AS (
+            SELECT e.session_id, e.ts, e.payload->>'decision' AS decision,
+                   LEAD(e.ts) OVER transitions AS next_ts,
+                   LEAD(e.payload->>'decision') OVER transitions AS next_decision
+              FROM agent_events e
+             WHERE e.session_id = ANY(ARRAY(SELECT id FROM selected))
+               AND e.kind = 'capacity'
+               AND e.payload->>'decision' IN ('pause', 'resume', 'pause_end')
+            WINDOW transitions AS (PARTITION BY e.session_id ORDER BY e.id)
+        ), timings AS (
+            SELECT session_id,
+                   SUM(GREATEST(0, EXTRACT(EPOCH FROM next_ts - ts)))
+                       FILTER (WHERE decision = 'pause' AND next_decision IN ('resume', 'pause_end'))
+                       AS paused_seconds,
+                   MAX(ts) FILTER (WHERE decision = 'pause' AND next_decision IS NULL) AS paused_since
+              FROM boundaries
+             GROUP BY session_id
+        )
+        SELECT s.*, COALESCE(timings.paused_seconds, 0) AS paused_seconds,
+               CASE WHEN s.status = 'paused' THEN timings.paused_since END AS paused_since
+          FROM selected s LEFT JOIN timings ON timings.session_id = s.id
+    """
+
+
+async def get_session(session_id: int, *, include_pauses: bool = False) -> dict[str, Any] | None:
     async with sessionmaker()() as db:
-        row = (await db.execute(text(_SESSION_SELECT + " WHERE s.id = :id"), {"id": session_id})).mappings().first()
+        selected = _SESSION_SELECT + " WHERE s.id = :id"
+        query = _session_select_with_pauses(selected) if include_pauses else selected
+        row = (await db.execute(text(query), {"id": session_id})).mappings().first()
     return dict(row) if row else None
 
 
@@ -1144,7 +1174,12 @@ async def list_sessions(
         rows = (
             (
                 await db.execute(
-                    text(_SESSION_SELECT + where + " ORDER BY s.created_at DESC LIMIT :limit"),
+                    text(
+                        _session_select_with_pauses(
+                            _SESSION_SELECT + where + " ORDER BY s.created_at DESC LIMIT :limit"
+                        )
+                        + " ORDER BY s.created_at DESC"
+                    ),
                     params,
                 )
             )
@@ -1755,7 +1790,12 @@ async def update_session(session_id: int, **fields: Any) -> None:
 
 
 async def transition_session(
-    session_id: int, target: SessionStatus, *, expected_status: SessionStatus | None = None, **fields: Any
+    session_id: int,
+    target: SessionStatus,
+    *,
+    expected_status: SessionStatus | None = None,
+    capacity_reason: str | None = None,
+    **fields: Any,
 ) -> bool:
     """Move a session to `target`, but only from a state that allows it.
 
@@ -1787,7 +1827,27 @@ async def transition_session(
                 "EXTRACT(EPOCH FROM clock_timestamp() - active_since)), 0), active_since = NULL"
             )
         await db.execute(text(f"UPDATE agent_sessions SET {assignments} WHERE id = :id"), payload)
+        decision = None
+        if target is SessionStatus.PAUSED:
+            decision = "pause"
+        elif current == SessionStatus.PAUSED.value:
+            decision = "resume" if target is SessionStatus.RUNNING else "pause_end"
+        if decision:
+            # The timing boundary must survive a runner exit between changing
+            # the row and recording the event. Commit the two together.
+            reason = capacity_reason or (
+                "session ended while paused" if decision == "pause_end" else "runner recovered the container state"
+            )
+            await db.execute(
+                text("""
+                    INSERT INTO agent_events (session_id, ts, kind, payload)
+                    VALUES (:id, clock_timestamp(), 'capacity', CAST(:payload AS jsonb))
+                    """),
+                {"id": session_id, "payload": json.dumps({"decision": decision, "reason": reason})},
+            )
         await db.commit()
+    if decision:
+        pulse.ring(session_id)
     return True
 
 

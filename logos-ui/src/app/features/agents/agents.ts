@@ -822,7 +822,8 @@ export class Agents implements OnInit {
         lines.push(...(payload.lines ?? []));
       } else if (event.kind === 'capacity') {
         const payload = event.payload as { decision?: string; reason?: string };
-        lines.push(`— runner ${payload.decision}: ${payload.reason}`);
+        const decision = payload.decision === 'pause_end' ? 'pause ended' : payload.decision;
+        lines.push(`— runner ${decision}: ${payload.reason}`);
       } else if (event.kind === 'error') {
         const payload = event.payload as { message?: string };
         lines.push(`!! ${payload.message ?? 'error'}`);
@@ -1050,8 +1051,21 @@ export class Agents implements OnInit {
   }
 
   duration(session: AgentSession): string {
-    if (!session.started_at) return '—';
-    return this.elapsed(session.started_at, session.finished_at);
+    if (!session.started_at || (session.status === 'paused' && !session.paused_since)) return '—';
+    const elapsed = (session.finished_at ? Date.parse(session.finished_at) : this.now()) - Date.parse(session.started_at);
+    return this.formatElapsed(elapsed - this.pausedMilliseconds(session));
+  }
+
+  pausedDuration(session: AgentSession): string | null {
+    const paused = this.pausedMilliseconds(session);
+    if (session.status === 'paused' && !session.paused_since && paused === 0) return '—';
+    return paused > 0 || session.status === 'paused' ? this.formatElapsed(paused) : null;
+  }
+
+  private pausedMilliseconds(session: AgentSession): number {
+    const start = session.status === 'paused' && session.paused_since ? Date.parse(session.paused_since) : NaN;
+    const current = Number.isFinite(start) ? Math.max(0, this.now() - start) : 0;
+    return Math.max(0, session.paused_seconds ?? 0) * 1000 + current;
   }
 
   queueDuration(session: AgentSession): string {
@@ -1081,7 +1095,10 @@ export class Agents implements OnInit {
   }
 
   private elapsed(start: string, end: string | null = null): string {
-    const milliseconds = (end ? Date.parse(end) : this.now()) - Date.parse(start);
+    return this.formatElapsed((end ? Date.parse(end) : this.now()) - Date.parse(start));
+  }
+
+  private formatElapsed(milliseconds: number): string {
     if (!Number.isFinite(milliseconds)) return '—';
     const seconds = Math.max(0, Math.floor(milliseconds / 1000));
     if (seconds < 60) return `${seconds}s`;

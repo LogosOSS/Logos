@@ -67,6 +67,8 @@ export interface AgentSession {
   progress_reported_at?: string | null;
   active_seconds?: number;
   active_since?: string | null;
+  paused_seconds?: number;
+  paused_since?: string | null;
   screenshot_count: number;
   /** Set when the runner queued this session itself: 'issue' or 'review'. */
   trigger_kind: string | null;

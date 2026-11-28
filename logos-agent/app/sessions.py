@@ -1405,8 +1405,7 @@ class SessionManager:
         # in-flight answer.
         await self._detach_from_model_gateway(sid, container_id)
         self._say_it_was_interrupted(sid)
-        if await db.transition_session(sid, SessionStatus.PAUSED):
-            await db.add_event(sid, EventKind.CAPACITY, {"decision": "pause", "reason": reason})
+        if await db.transition_session(sid, SessionStatus.PAUSED, capacity_reason=reason):
             logger.info("paused session %s: %s", sid, reason)
 
     def _say_it_was_interrupted(self, session_id: int) -> None:
@@ -1521,8 +1520,7 @@ class SessionManager:
         if not thawed:
             logger.info("session %s could not be resumed; its container is not running", sid)
             return False
-        if await db.transition_session(sid, SessionStatus.RUNNING):
-            await db.add_event(sid, EventKind.CAPACITY, {"decision": "resume", "reason": reason})
+        if await db.transition_session(sid, SessionStatus.RUNNING, capacity_reason=reason):
             logger.info("resumed session %s: %s", sid, reason)
             return True
         return False
