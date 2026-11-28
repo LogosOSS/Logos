@@ -219,9 +219,9 @@ to `<fixture-runner-artifact-root>/<seeded-session-id>/messages.json` for the ru
 `docs-role-screenshots` session whose task starts with “Fix the flaky login spec”.
 
 For `logos-admin-agent-inference.png`, apply `seed/agent-inference.sql` on the
-same disposable database after the standard seed, and start the runner with
-`LOGOS_AGENT_REMOTE_ALLOWED_ORIGINS=https://inference-example.invalid`. The
-fixture selects Cloud and pins the example queued sessions to it. Its origin does
+same disposable database after the standard seed. The fixture selects Cloud
+from the registered Logos provider and pins the example queued sessions to it.
+It does not require an extra runner setting. Its origin does
 not resolve, and the fixture never sends inference. Capture this view separately
 from the local runner views.
 

@@ -104,7 +104,7 @@ class FakeAgentService {
 
   async setInferenceSettings(selection: AgentInferenceSelection): Promise<AgentInferenceSettings> {
     this.inferenceWrites.push(selection);
-    this.inferenceSettings = { ...this.inferenceSettings, ...selection };
+    this.inferenceSettings = { ...this.inferenceSettings, ...selection, cloud_selection_valid: true };
     return this.inferenceSettings;
   }
 
@@ -868,7 +868,7 @@ describe('Agents', () => {
       choose('agent-inference-location', 'cloud');
       const models = root().querySelector<HTMLSelectElement>('select#agent-inference-model')!;
       expect(Array.from(models.options).map(option => option.textContent.trim())).toEqual([
-        'Select a cloud model', 'Cloud One · same-name', 'Cloud Two · same-name',
+        'Select a provider and model', 'Cloud One · same-name', 'Cloud Two · same-name',
       ]);
       expect(component.canSaveInference()).toBe(false);
       choose('agent-inference-model', '20:14');
@@ -920,10 +920,35 @@ describe('Agents', () => {
       await component.refresh();
       fixture.detectChanges();
       choose('agent-inference-location', 'cloud');
-      expect(root().querySelector('.inference')?.textContent).toContain('No allowed cloud targets');
+      expect(root().querySelector('.inference')?.textContent).toContain('No compatible Logos providers');
+      expect(root().querySelector('.inference a')?.getAttribute('href')).toBe('/providers');
+      expect(root().querySelector('.inference')?.textContent).toContain('Messages API');
       expect(root().querySelector('select#agent-inference-model')).toBeNull();
       await component.saveInference();
       expect(agentService.inferenceWrites).toEqual([]);
+    });
+
+    it('blocks new sessions with a stale cloud pin until the operator confirms the same target again', async () => {
+      agentService.inferenceSettings = {
+        ...LOCAL_INFERENCE, mode: 'cloud', model: 'same-name', provider_id: 20, model_id: 14,
+        cloud_options: CLOUD_TARGETS, cloud_selection_valid: false,
+      };
+      await component.refresh();
+      prepManualSession();
+      await fixture.whenStable();
+      fixture.detectChanges();
+      expect(root().querySelector('.form-card [role="alert"]')?.textContent).toContain('saved Cloud target is unavailable');
+      expect(root().querySelector('.inference [role="alert"]')?.textContent).toContain('save to confirm it');
+      expect(component.canSubmit()).toBe(false);
+      await component.submit();
+      expect(agentService.createBodies).toEqual([]);
+      expect(component.canSaveInference()).toBe(true);
+      await component.saveInference();
+      expect(agentService.inferenceWrites).toEqual([
+        { mode: 'cloud', provider_id: 20, model_id: 14, model: 'same-name' },
+      ]);
+      expect(component.canSubmit()).toBe(true);
+      expect(component.canSaveInference()).toBe(false);
     });
 
     it('does not echo backend error details or show a conflicting picker if loading settings fails', async () => {

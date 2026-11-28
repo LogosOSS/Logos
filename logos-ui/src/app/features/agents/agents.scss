@@ -315,6 +315,11 @@
 
   h3, p { margin: 0; }
 
+  a {
+    text-decoration: underline;
+    text-underline-offset: 0.18em;
+  }
+
   &__fields {
     display: flex;
     align-items: flex-end;

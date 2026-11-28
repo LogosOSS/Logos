@@ -189,6 +189,7 @@ export interface AgentInferenceSelection {
 export interface AgentInferenceSettings extends AgentInferenceSelection {
   local_models: string[];
   cloud_options: AgentInferenceTarget[];
+  cloud_selection_valid?: boolean;
 }
 
 /** Whether the runner reacts to the repository, and what it has queued. */

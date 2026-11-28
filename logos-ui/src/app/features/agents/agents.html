@@ -247,7 +247,9 @@
             Model
             @if (mayPickSessionModel()) { <span class="field__optional">(optional)</span> }
           </span>
-          @if (inferencePinLabel(); as pinLabel) {
+          @if (cloudSelectionInvalid()) {
+            <p class="field__hint" role="alert">The saved Cloud target is unavailable. Review it in Runner controls before starting a session.</p>
+          } @else if (inferencePinLabel(); as pinLabel) {
             <span>{{ pinLabel }}</span>
             <span class="field__hint">Set in Runner controls.</span>
           } @else if (mayPickSessionModel()) {
@@ -530,13 +532,15 @@
               />
             </div>
             @if (inferenceMode() === 'cloud' && !settings.cloud_options.length) {
-              <p class="field__hint">No allowed cloud targets are configured for this environment.</p>
+              <p class="field__hint">No compatible Logos providers with connected models.</p>
             } @else {
               <div class="control">
-                <label class="field__label" for="agent-inference-model">Inference model</label>
+                <label class="field__label" for="agent-inference-model">
+                  {{ inferenceMode() === 'cloud' ? 'Cloud provider and model' : 'Inference model' }}
+                </label>
                 <app-select
                   [id]="'agent-inference-model'"
-                  ariaLabel="Inference model"
+                  [ariaLabel]="inferenceMode() === 'cloud' ? 'Cloud provider and model' : 'Inference model'"
                   [options]="inferenceModelOptions()"
                   [value]="inferenceModel()"
                   [disabled]="inferenceBusy()"
@@ -548,6 +552,16 @@
               {{ inferenceBusy() ? 'Saving…' : 'Save inference settings' }}
             </button>
           </div>
+          @if (inferenceMode() === 'cloud') {
+            <p class="field__hint">
+              Cloud supports Logos providers with the Messages API. Manage their models in <a routerLink="/providers">Providers</a>.
+            </p>
+          }
+          @if (cloudSelectionInvalid()) {
+            <p class="field__hint" role="alert">
+              The saved Cloud target changed or is unavailable. Select an available target and save to confirm it.
+            </p>
+          }
           @if (inferenceSaveError()) {
             <p class="field__hint" role="alert">Could not save inference settings. Check the selected target and try again.</p>
           }

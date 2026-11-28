@@ -249,6 +249,11 @@ export class Agents implements OnInit {
     (this.models()?.models ?? []).map((name) => ({ value: name, label: name })),
   );
 
+  readonly cloudSelectionInvalid = computed(() => {
+    const state = this.inference();
+    return state?.mode === 'cloud' && state.cloud_selection_valid === false;
+  });
+
   readonly inferencePinLabel = computed(() => {
     const state = this.inference();
     if (this.inferenceLoading() || !state?.model) return null;
@@ -263,7 +268,7 @@ export class Agents implements OnInit {
     const state = this.inference();
     if (!state) return [];
     return this.inferenceMode() === 'cloud'
-      ? [{ value: '', label: 'Select a cloud model', disabled: true },
+      ? [{ value: '', label: 'Select a provider and model', disabled: true },
         ...state.cloud_options.map(target => ({ value: this.targetKey(target), label: `${target.provider_name} · ${target.model}` }))]
       : [{ value: '', label: 'Runner default (per-session model)' },
         ...state.local_models.map(name => ({ value: name, label: name }))];
@@ -279,7 +284,8 @@ export class Agents implements OnInit {
     const mode = this.inferenceMode();
     const model = this.inferenceModel();
     if (mode === 'cloud') {
-      return !!this.chosenCloudTarget() && (mode !== state.mode || model !== this.targetKey(state));
+      return !!this.chosenCloudTarget() &&
+        (mode !== state.mode || model !== this.targetKey(state) || this.cloudSelectionInvalid());
     }
     return (!model || state.local_models.includes(model)) &&
       (mode !== state.mode || model !== (state.model ?? ''));
@@ -310,7 +316,8 @@ export class Agents implements OnInit {
   });
 
   readonly canSubmit = computed(
-    () => this.formWorkspaceId() !== null && this.formTask().trim().length >= 8 && !this.formRamError(),
+    () => this.formWorkspaceId() !== null && this.formTask().trim().length >= 8 &&
+      !this.formRamError() && !this.cloudSelectionInvalid(),
   );
 
   // ── grouped view ─────────────────────────────────────────────────────────

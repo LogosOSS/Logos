@@ -929,25 +929,36 @@ the teams as proposals on their **Workflows** tab
 
 1. Open **Agents** and go to **Runner controls**.
 2. In **Model inference**, select **Local** or **Cloud**.
-3. In **Inference model**, select the model.
+3. For **Local**, select the **Inference model**. For **Cloud**, select the **Cloud provider and model**.
 4. Select **Save inference settings**.
 
 For **Local**, select a model served by Logos. The selector does not pin a worker.
 Select **Runner default (per-session model)** to keep the model picker in **New session**.
 If you set a model in **Runner controls**, the new session shows this model instead of a picker.
 
-For **Cloud**, choose an allowed provider and model pair. The target must be an approved Logos provider that supports the Messages API.
-This selection pins the exact provider and model and does not use a local worker.
-If the environment has no allowed target, you cannot save a cloud selection.
-The selector never displays or accepts a provider URL, API key, or other secret.
-Use a destination key limited to the intended models and confirm that the repository data may be sent to that gateway.
-A linked repository's team privacy setting still applies and can block the selected cloud provider.
-The destination Logos environment meters calls against that key.
+For **Cloud**, choose a registered Logos provider that serves the Messages API and has a connected model.
+If the list is empty, open [**Providers**](#providers).
+Set **Provider Type** to `cloud` and **Cloud Provider** to `logos`.
+Enter the destination's HTTPS **Base URL** and **API Key**.
+Use the HTTPS origin or its `/v1` path.
+Then connect the model.
+Other provider types do not appear in the Agent selector.
+The agent sends inference through this environment's Logos gateway to the selected provider and model.
+The **Model inference** section does not display or accept a provider URL or an API key.
+
+Use a destination API key that permits only the necessary models.
+Make sure the repository data can go to the destination.
+The team's privacy setting still applies to its linked repositories.
+The destination Logos environment meters calls against the destination API key.
+
+If the provider's base URL changes, review the new destination in **Providers**.
+Then return to **Agents** and save the target again for new sessions.
+Existing sessions keep their original target and do not use the new URL.
 
 Changes apply to new sessions only. A session keeps the environment where it starts, such as Dev or Test.
 Selecting cloud inference does not move the session or its work to another Logos environment.
 
-![Cloud admission status with an approved cloud gateway and model selected](/img/roles/logos-admin-agent-inference.png)
+![Cloud admission with a registered Logos provider and model selected](/img/roles/logos-admin-agent-inference.png)
 
 ### Start a Session
 
