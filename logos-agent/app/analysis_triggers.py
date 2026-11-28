@@ -19,7 +19,7 @@ from typing import Any, Awaitable, Callable
 
 from sqlalchemy import text
 
-from . import controls, db, github, model_policy
+from . import controls, db, github, inference_settings
 from .asyncio_tasks import cancel_and_wait
 from .config import settings
 from .schemas import ACTIVE_STATUSES, SessionStatus
@@ -149,9 +149,9 @@ class AnalysisPoller:
         blocked = control.admission_block()
         if blocked:
             logger.debug("analysis poll queueing while stopped: %s", blocked)
-        policy = model_policy.current()
-        if not policy.ok:
-            logger.debug("analysis poll skipped: %s", policy.detail)
+        selected = await inference_settings.automation_selection()
+        if selected is None:
+            logger.debug("analysis poll skipped: no permitted Agent inference selection")
             self._last_pass = now
             return []
 
@@ -161,11 +161,11 @@ class AnalysisPoller:
 
         queued: list[int] = []
         for link in links:
-            session_id = await self._queue(link)
+            session_id = await self._queue(link, selected=selected)
             if session_id is not None:
                 queued.append(session_id)
         if self._nightly_due(now):
-            queued.extend(await self._nightly_pass())
+            queued.extend(await self._nightly_pass(selected=selected))
             # Only a pass that got through counts: one that raised is retried
             # by the next poll within the same hour.
             self._nightly_done_for = now.date()
@@ -182,7 +182,7 @@ class AnalysisPoller:
         hour = settings.analysis_nightly_hour_utc
         return 0 <= hour <= 23 and now.hour == hour and self._nightly_done_for != now.date()
 
-    async def _nightly_pass(self) -> list[int]:
+    async def _nightly_pass(self, *, selected: dict[str, Any] | None = None) -> list[int]:
         """Re-analyse every analysed repository whose branch moved on.
 
         A repository whose head is still the commit of its latest succeeded
@@ -199,7 +199,7 @@ class AnalysisPoller:
                 skipped += 1
                 logger.info("nightly analysis of %s skipped: still at %s", link["repo_slug"], head[:12])
                 continue
-            session_id = await self._queue(link, previous_commit=previous if head is None else None)
+            session_id = await self._queue(link, previous_commit=previous if head is None else None, selected=selected)
             if session_id is not None:
                 queued.append(session_id)
         self._skipped_unchanged_total += skipped
@@ -350,7 +350,9 @@ class AnalysisPoller:
             )
         return [dict(r) for r in rows]
 
-    async def _queue(self, link: dict[str, Any], *, previous_commit: str | None = None) -> int | None:
+    async def _queue(
+        self, link: dict[str, Any], *, previous_commit: str | None = None, selected: dict[str, Any] | None = None
+    ) -> int | None:
         link_id = int(link["id"])
         team_id = int(link["team_id"])
         repo_url = str(link["repo_url"])
@@ -359,6 +361,14 @@ class AnalysisPoller:
         paths = link.get("paths")
         paths_label = ", ".join(paths) if isinstance(paths, list) and paths else "(entire repository)"
         trigger_ref = f"team-repository:{link_id}"
+
+        if selected is None:
+            selected = await inference_settings.automation_selection()
+        if selected is None or not await inference_settings.permits_automation_repository(
+            selected, link_id, repo_slug, workflow_analysis=True
+        ):
+            logger.info("not queueing analysis for team_repository %s: no permitted Agent inference selection", link_id)
+            return None
 
         workspace_id = await self._ensure_workspace(team_id, link_id, branch)
         if workspace_id is None:
@@ -389,6 +399,7 @@ class AnalysisPoller:
                 repo_slug=repo_slug,
                 team_repository_id=link_id,
                 automatic_analysis=True,
+                expected_inference=selected,
             )
         except ValueError as exc:
             logger.warning("could not queue analysis for team_repository %s: %s", link_id, exc)

@@ -55,7 +55,7 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from . import controls, db, github, model_policy, priority, repository_context
+from . import controls, db, github, inference_settings, priority, repository_context
 from .asyncio_tasks import cancel_and_wait
 from .config import REVIEW_COMMENTS_FILE, settings
 from .conventions import for_task
@@ -1392,10 +1392,6 @@ class TriggerPoller:
 
     async def _queue(self, candidate: dict[str, Any]) -> int | None:
         """Queue one session, making a workspace for it if none is free."""
-        policy = model_policy.current()
-        if not policy.ok:
-            logger.info("not queueing %s: %s", candidate["ref"], policy.detail)
-            return None
         urgency = candidate.get("urgency") or priority.of(candidate["kind"])
         if urgency.refused:
             # Checked here rather than per source: a review, a handover and
@@ -1403,6 +1399,13 @@ class TriggerPoller:
             # issue can, and this is the one place every kind passes
             # through.
             logger.info("not queueing %s: %s", candidate["ref"], urgency.reason)
+            return None
+        repository = self._repository_session_fields()
+        selected = await inference_settings.automation_selection()
+        if selected is None or not await inference_settings.permits_automation_repository(
+            selected, repository.get("team_repository_id"), repository.get("repo_slug")
+        ):
+            logger.info("not queueing %s: no permitted Agent inference selection", candidate["ref"])
             return None
         branch = candidate.get("branch")
         # What the checkout starts from. A branch the session may push to
@@ -1452,7 +1455,8 @@ class TriggerPoller:
                 reaction_target=candidate.get("reaction"),
                 priority=urgency.value,
                 priority_reason=urgency.reason,
-                **self._repository_session_fields(),
+                expected_inference=selected,
+                **repository,
             )
         except ValueError as exc:
             logger.warning("could not queue a session for %s: %s", candidate["ref"], exc)

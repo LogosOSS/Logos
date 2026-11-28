@@ -164,10 +164,11 @@ async def agent_cloud_allowed_for_repository(
     *,
     workflow_analysis: bool = False,
     session_id: int | None = None,
+    queue_automatic_analysis: bool = False,
 ) -> bool:
     """Apply live repository permissions for the session's actual purpose and team privacy."""
     if team_repository_id is None:
-        return repo_slug is None and not workflow_analysis
+        return repo_slug is None and not (workflow_analysis or queue_automatic_analysis)
     if not repo_slug:
         return False
 
@@ -181,7 +182,8 @@ async def agent_cloud_allowed_for_repository(
                     JOIN team_privacy_providers allowed
                       ON allowed.team_id = tr.team_id AND allowed.provider_id = :provider
                     WHERE tr.id = :repo_id AND lower(tr.repo_slug) = lower(:slug)
-                      AND CASE WHEN :analysis THEN EXISTS (
+                      AND CASE WHEN :queue_analysis THEN tr.automatic_workflow_analysis
+                          WHEN :analysis THEN EXISTS (
                             SELECT 1 FROM agent_sessions s
                             JOIN ai_workflow_analyses a ON a.agent_session_id = s.id
                             WHERE s.id = :session_id AND s.trigger_kind = 'analysis' AND s.no_push
@@ -198,6 +200,7 @@ async def agent_cloud_allowed_for_repository(
                         "repo_id": team_repository_id,
                         "slug": repo_slug,
                         "analysis": workflow_analysis,
+                        "queue_analysis": queue_automatic_analysis,
                         "session_id": session_id,
                     },
                 )
@@ -835,6 +838,7 @@ async def create_session(
     automatic_analysis: bool | None = None,
     retry_analysis_session_id: int | None = None,
     retry_inference_session_id: int | None = None,
+    expected_inference: dict[str, Any] | None = None,
 ) -> int:
     """Queue a session. Returns its id.
 
@@ -953,6 +957,8 @@ async def create_session(
             model_pin = original["inference_model_id"]
         else:
             selection = (await db.execute(text(_INFERENCE_SELECTION_SQL))).mappings().one_or_none()
+            if expected_inference is not None and dict(selection or {}) != expected_inference:
+                raise ValueError("The Agent inference selection changed; retry with the new settings")
             if selection:
                 if selection["mode"] == "cloud":
                     model = selection["model"]

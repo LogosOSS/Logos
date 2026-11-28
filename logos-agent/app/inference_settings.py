@@ -89,6 +89,48 @@ async def cloud_options() -> list[dict[str, Any]]:
     ]
 
 
+async def _approved_deployment(provider_id: int, model_id: int, model: str | None) -> bool:
+    return any(
+        row["provider_id"] == provider_id and row["model_id"] == model_id and row["model"] == model
+        for row in await cloud_options()
+    )
+
+
+async def automation_selection() -> dict[str, Any] | None:
+    """Return the authorized default to pin, or None when no automatic work should be queued."""
+    selected = await db.agent_inference_selection()
+    mode = selected.get("mode", "local")
+    model = selected.get("model")
+    if mode == "local":
+        policy = model_policy.current()
+        return selected if policy.ok and (model is None or policy.allows(model)) else None
+    if mode == "cloud":
+        provider_id = selected.get("provider_id")
+        model_id = selected.get("model_id")
+        if (
+            provider_id is not None
+            and model_id is not None
+            and await _approved_deployment(provider_id, model_id, model)
+        ):
+            return selected
+    return None
+
+
+async def permits_automation_repository(
+    selected: dict[str, Any],
+    team_repository_id: int | None,
+    repo_slug: str | None,
+    *,
+    workflow_analysis: bool = False,
+) -> bool:
+    """Check the current team policy before creating a new queue entry."""
+    if selected.get("mode") != "cloud":
+        return True
+    return await db.agent_cloud_allowed_for_repository(
+        selected["provider_id"], team_repository_id, repo_slug, queue_automatic_analysis=workflow_analysis
+    )
+
+
 async def permits_pin(session: dict[str, Any]) -> bool:
     """Recheck the pin's deployment and its live repository privacy policy."""
     provider_id = session.get("inference_provider_id")
@@ -103,10 +145,7 @@ async def permits_pin(session: dict[str, Any]) -> bool:
         session_id=session.get("id"),
     ):
         return False
-    return any(
-        row["provider_id"] == provider_id and row["model_id"] == model_id and row["model"] == session.get("model")
-        for row in await cloud_options()
-    )
+    return await _approved_deployment(provider_id, model_id, session.get("model"))
 
 
 async def issue_remote_grant(session_id: int) -> str | None:
