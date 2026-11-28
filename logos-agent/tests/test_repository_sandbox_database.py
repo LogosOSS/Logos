@@ -12,10 +12,9 @@ from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
+from app import analysis_triggers, controls, db, inference_settings, model_policy, repository_context, triggers
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-
-from app import analysis_triggers, controls, db, inference_settings, model_policy, repository_context, triggers
 
 # Taken before the shared fixture stubs it for the tests without a database.
 REAL_SESSION_MEMORY_MB = db.session_memory_mb
