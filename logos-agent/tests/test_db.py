@@ -39,6 +39,9 @@ class _Result:
     def one(self):
         return self._value
 
+    def one_or_none(self):
+        return self._value
+
 
 class _Connection:
     """One db session over the shared model, honouring the row lock.
@@ -92,6 +95,19 @@ class _Connection:
             # rowcount is the workspace rows deleted, as the statement says.
             self.model.sessions = [s for s in self.model.sessions if s["workspace_id"] != params["id"]]
             return _Result(rowcount=1 if deleted else 0)
+        if "FROM agent_inference_settings WHERE id = 1" in sql:
+            return _Result(self.model.inference_selection)
+        if "FROM agent_sessions WHERE id = :id AND workspace_id = :workspace" in sql:
+            return _Result(
+                next(
+                    (
+                        row
+                        for row in self.model.sessions
+                        if row["id"] == params["id"] and row["workspace_id"] == params["workspace"]
+                    ),
+                    None,
+                )
+            )
         if sql.startswith("INSERT INTO agent_sessions"):
             session_id = max((s["id"] for s in self.model.sessions), default=0) + 1
             self.model.sessions.append(
@@ -102,6 +118,13 @@ class _Connection:
                     "repo_slug": params.get("repo_slug"),
                 }
             )
+            if self.model.inference_selection or params.get("model") is not None:
+                self.model.sessions[-1].update(
+                    model=params.get("model"),
+                    inference_provider_id=params.get("provider_pin"),
+                    inference_model_id=params.get("model_pin"),
+                    inference_base_url=params.get("base_url_pin"),
+                )
             self.model.inserted.set()
             return _Result(session_id)
         raise AssertionError(f"unexpected statement in test: {sql}")
@@ -128,6 +151,7 @@ class _Model:
         self.sessions: list[dict] = []
         self.lock = asyncio.Lock()
         self.inserted = asyncio.Event()
+        self.inference_selection: dict | None = None
 
 
 def _patch_db(monkeypatch, model: _Model) -> None:
@@ -189,6 +213,31 @@ async def test_a_create_that_wins_the_race_keeps_its_session_from_the_delete(mon
     # The accepted session survived: still queued, still in its workspace.
     assert model.sessions == [{"id": session_id, "workspace_id": 1, "status": "queued", "repo_slug": None}]
     assert model.workspaces == {1: dict(WORKSPACE)}
+
+
+async def test_new_sessions_pin_remote_selection_and_retries_keep_the_original_pin(monkeypatch):
+    model = _Model()
+    _patch_db(monkeypatch, model)
+    model.inference_selection = {
+        "mode": "cloud",
+        "model": "test-cloud",
+        "provider_id": 9,
+        "model_id": 41,
+        "provider_base_url": "https://a.example",
+    }
+    original = await db.create_session(**_create_kwargs())
+    model.inference_selection = {"mode": "local", "model": "test-local", "provider_id": None, "model_id": None}
+    await db.create_session(**_create_kwargs())
+    await db.create_session(**_create_kwargs(), retry_inference_session_id=original)
+
+    assert [
+        (row["model"], row["inference_provider_id"], row["inference_model_id"], row["inference_base_url"])
+        for row in model.sessions
+    ] == [
+        ("test-cloud", 9, 41, "https://a.example"),
+        ("test-local", None, None, None),
+        ("test-cloud", 9, 41, "https://a.example"),
+    ]
 
 
 class TestStatementTypes:

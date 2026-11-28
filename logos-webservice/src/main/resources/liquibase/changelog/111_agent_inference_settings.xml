@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.20.xsd">
+
+    <changeSet id="111-agent-inference-settings" author="logos">
+        <sql><![CDATA[
+            CREATE TABLE agent_inference_settings (
+                id SMALLINT PRIMARY KEY CHECK (id = 1),
+                mode TEXT NOT NULL CHECK (mode IN ('local', 'cloud')),
+                model TEXT CHECK (model IS NULL OR length(model) BETWEEN 1 AND 200),
+                provider_id INTEGER,
+                model_id INTEGER,
+                provider_base_url TEXT,
+                updated_by TEXT NOT NULL,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+                CHECK (
+                    (mode = 'local' AND provider_id IS NULL AND model_id IS NULL AND provider_base_url IS NULL)
+                    OR (mode = 'cloud' AND model IS NOT NULL
+                        AND provider_id IS NOT NULL AND model_id IS NOT NULL AND provider_id > 0 AND model_id > 0
+                        AND provider_base_url IS NOT NULL AND length(provider_base_url) > 0)
+                )
+            );
+
+            ALTER TABLE agent_sessions
+                ADD COLUMN inference_provider_id INTEGER,
+                ADD COLUMN inference_model_id INTEGER,
+                ADD COLUMN inference_base_url TEXT,
+                ADD COLUMN inference_grant_hash TEXT UNIQUE,
+                ADD COLUMN inference_client_tag TEXT,
+                ADD CONSTRAINT agent_sessions_inference_pin CHECK (
+                    (inference_provider_id IS NULL AND inference_model_id IS NULL
+                        AND inference_base_url IS NULL AND inference_grant_hash IS NULL AND inference_client_tag IS NULL)
+                    OR (inference_provider_id IS NOT NULL AND inference_model_id IS NOT NULL
+                        AND inference_provider_id > 0 AND inference_model_id > 0 AND model IS NOT NULL
+                        AND inference_base_url IS NOT NULL AND length(inference_base_url) > 0)
+                ),
+                ADD CONSTRAINT agent_sessions_inference_grant CHECK (
+                    (inference_grant_hash IS NULL AND inference_client_tag IS NULL)
+                    OR (inference_grant_hash IS NOT NULL AND inference_grant_hash ~ '^[0-9a-f]{64}$')
+                );
+        ]]></sql>
+        <rollback>
+            <sql>
+                ALTER TABLE agent_sessions
+                    DROP COLUMN inference_client_tag, DROP COLUMN inference_grant_hash,
+                    DROP COLUMN inference_base_url, DROP COLUMN inference_model_id, DROP COLUMN inference_provider_id;
+                DROP TABLE agent_inference_settings;
+            </sql>
+        </rollback>
+    </changeSet>
+</databaseChangeLog>

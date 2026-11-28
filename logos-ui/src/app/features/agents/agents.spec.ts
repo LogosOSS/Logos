@@ -9,6 +9,8 @@ import {
   AgentCapacity,
   AgentControls,
   AgentInstructions,
+  AgentInferenceSelection,
+  AgentInferenceSettings,
   AgentModels,
   AgentRepository,
   AgentSession,
@@ -72,6 +74,16 @@ const CAPACITY: AgentCapacity = {
   models_detail: 'one local model',
 };
 
+const LOCAL_INFERENCE: AgentInferenceSettings = {
+  mode: 'local', model: null, provider_id: null, model_id: null,
+  local_models: ['local-model'], cloud_options: [],
+};
+
+const CLOUD_TARGETS = [
+  { provider_id: 10, provider_name: 'Cloud One', model_id: 14, model: 'same-name' },
+  { provider_id: 20, provider_name: 'Cloud Two', model_id: 14, model: 'same-name' },
+];
+
 class FakeAgentService {
   sessions: AgentSession[] = [];
   sessionCalls = 0;
@@ -82,6 +94,19 @@ class FakeAgentService {
   workspaces: AgentWorkspace[] = [];
   storage: AgentWorkspaceStorage = { artifact_filesystem: null, workspace_used_bytes: {} };
   createBodies: CreateSessionRequest[] = [];
+
+  inferenceSettings = LOCAL_INFERENCE;
+  inferenceWrites: AgentInferenceSelection[] = [];
+
+  async getInferenceSettings(): Promise<AgentInferenceSettings> {
+    return this.inferenceSettings;
+  }
+
+  async setInferenceSettings(selection: AgentInferenceSelection): Promise<AgentInferenceSettings> {
+    this.inferenceWrites.push(selection);
+    this.inferenceSettings = { ...this.inferenceSettings, ...selection, cloud_selection_valid: true };
+    return this.inferenceSettings;
+  }
 
   async getRepositories(): Promise<AgentRepository[]> {
     if (this.repositoriesFail) throw new Error('not found');
@@ -738,6 +763,212 @@ describe('Agents', () => {
       ).map((row) => row.textContent ?? '');
       expect(rows[0]).toContain('ls1intum/artemis');
       expect(rows[1]).not.toContain('ls1intum/artemis');
+    });
+  });
+
+  describe('cloud admission status', () => {
+    const cloud = makeSession({
+      id: 12, status: 'queued', inference_provider_id: 20, inference_model_id: 14,
+    });
+    const local = makeSession({ id: 13, status: 'queued' });
+
+    async function setMode(mode: 'local' | 'cloud'): Promise<void> {
+      agentService.inferenceSettings = { ...LOCAL_INFERENCE, mode };
+      fixture.detectChanges();
+      await fixture.whenStable();
+    }
+
+    function tiles(): HTMLElement {
+      return (fixture.nativeElement as HTMLElement).querySelector<HTMLElement>('.summary')!;
+    }
+
+    it('shows Cloud as available even while the local GPU is holding', async () => {
+      await setMode('cloud');
+      component.capacity.set({
+        ...CAPACITY,
+        load: 0.99,
+        may_start: false,
+        reason: 'Local GPU is full.',
+        remote_may_start: true,
+        remote_reason: 'Cloud sessions can start.',
+      });
+      fixture.detectChanges();
+      expect(tiles().textContent).toContain('Cloud admission');
+      expect(tiles().textContent).toContain('Available');
+      expect(tiles().textContent).toContain('Cloud sessions can start.');
+      expect(tiles().textContent).not.toContain('99% load');
+      expect(tiles().textContent).not.toContain('Holding');
+      expect(tiles().textContent).not.toContain('Local GPU is full.');
+      expect(tiles().querySelector('.slots')).toBeNull();
+      expect(component.statusLabel(cloud)).toBe('queued');
+      expect(component.statusLabel(local)).toContain('waiting for local capacity');
+      component.sessions.set([cloud, local]);
+      fixture.detectChanges();
+      expect(tiles().textContent).toContain('Platform capacity');
+      expect(tiles().textContent).toContain('Cloud admission');
+    });
+
+    it('labels each pinned queue independently of the current default', async () => {
+      await setMode('local');
+      component.sessions.set([cloud, local]);
+      component.capacity.set({
+        ...CAPACITY,
+        may_start: true,
+        remote_may_start: false,
+        remote_reason: 'Not enough runner memory for the next cloud session.',
+      });
+      fixture.detectChanges();
+      expect(tiles().textContent).toContain('Platform capacity');
+      expect(tiles().textContent).toContain('Cloud admission');
+      expect(tiles().textContent).toContain('Holding');
+      expect(tiles().textContent).toContain('Not enough runner memory');
+      expect(component.statusLabel(cloud)).toContain('waiting for cloud admission');
+      expect(component.statusLabel(local)).toBe('queued');
+    });
+
+    it('does not invent remote availability when the API sends no remote decision', async () => {
+      await setMode('cloud');
+      component.capacity.set(CAPACITY);
+      fixture.detectChanges();
+      expect(tiles().textContent).toContain('Unavailable');
+      expect(tiles().textContent).not.toContain('Available');
+      expect(component.statusLabel(cloud)).toContain('cloud admission unavailable');
+    });
+  });
+
+  describe('environment inference selection', () => {
+    beforeEach(async () => {
+      fixture.detectChanges();
+      await fixture.whenStable();
+    });
+
+    function root(): HTMLElement {
+      return fixture.nativeElement;
+    }
+
+    function choose(id: string, value: string): void {
+      const select = root().querySelector<HTMLSelectElement>(`select#${id}`)!;
+      select.value = value;
+      select.dispatchEvent(new Event('change'));
+      fixture.detectChanges();
+    }
+
+    function prepManualSession(): void {
+      component.openForm();
+      component.formWorkspaceId.set(3);
+      component.formTask.set('Fix the failing build');
+      component.formModel.set('local-model');
+    }
+
+    it('saves the exact cloud target, even when providers offer the same model', async () => {
+      agentService.inferenceSettings = { ...LOCAL_INFERENCE, cloud_options: CLOUD_TARGETS };
+      await component.refresh();
+      fixture.detectChanges();
+      expect(root().querySelector('.inference')?.textContent).toContain('New sessions only.');
+      choose('agent-inference-location', 'cloud');
+      const models = root().querySelector<HTMLSelectElement>('select#agent-inference-model')!;
+      expect(Array.from(models.options).map(option => option.textContent.trim())).toEqual([
+        'Select a provider and model', 'Cloud One · same-name', 'Cloud Two · same-name',
+      ]);
+      expect(component.canSaveInference()).toBe(false);
+      choose('agent-inference-model', '20:14');
+      await component.saveInference();
+      fixture.detectChanges();
+      expect(agentService.inferenceWrites).toEqual([
+        { mode: 'cloud', provider_id: 20, model_id: 14, model: 'same-name' },
+      ]);
+      expect(root().querySelector('.inference [role="status"]')?.textContent).toContain('saved');
+      expect(component.canSaveInference()).toBe(false);
+      prepManualSession();
+      await fixture.whenStable();
+      fixture.detectChanges();
+      expect(root().querySelector('.form-card')?.textContent).toContain('same-name (Cloud Two)');
+      expect(root().querySelector('.form-card select[aria-label="Model"]')).toBeNull();
+      await component.submit();
+      expect(agentService.createBodies[0]).not.toHaveProperty('model');
+    });
+
+    it('uses an environment-level local model without a manual override and restores the legacy picker on reset', async () => {
+      agentService.inferenceSettings = { ...LOCAL_INFERENCE, cloud_options: CLOUD_TARGETS };
+      await component.refresh();
+      fixture.detectChanges();
+      choose('agent-inference-model', 'local-model');
+      await component.saveInference();
+      prepManualSession();
+      await fixture.whenStable();
+      fixture.detectChanges();
+      expect(root().querySelector('.form-card')?.textContent).toContain('local-model (Local)');
+      await component.submit();
+      expect(agentService.createBodies[0]).not.toHaveProperty('model');
+
+      fixture.detectChanges();
+      choose('agent-inference-model', '');
+      await component.saveInference();
+      expect(agentService.inferenceWrites).toEqual([
+        { mode: 'local', provider_id: null, model_id: null, model: 'local-model' },
+        { mode: 'local', provider_id: null, model_id: null, model: null },
+      ]);
+      prepManualSession();
+      await fixture.whenStable();
+      fixture.detectChanges();
+      expect(root().querySelector('.form-card select[aria-label="Model"]')).not.toBeNull();
+      await component.submit();
+      expect(agentService.createBodies[1].model).toBe('local-model');
+    });
+
+    it('shows why Cloud is unavailable and does not save without an allowed target', async () => {
+      await component.refresh();
+      fixture.detectChanges();
+      choose('agent-inference-location', 'cloud');
+      expect(root().querySelector('.inference')?.textContent).toContain('No compatible Logos providers');
+      expect(root().querySelector('.inference a')?.getAttribute('href')).toBe('/providers');
+      expect(root().querySelector('.inference')?.textContent).toContain('Messages API');
+      expect(root().querySelector('select#agent-inference-model')).toBeNull();
+      await component.saveInference();
+      expect(agentService.inferenceWrites).toEqual([]);
+    });
+
+    it('blocks new sessions with a stale cloud pin until the operator confirms the same target again', async () => {
+      agentService.inferenceSettings = {
+        ...LOCAL_INFERENCE, mode: 'cloud', model: 'same-name', provider_id: 20, model_id: 14,
+        cloud_options: CLOUD_TARGETS, cloud_selection_valid: false,
+      };
+      await component.refresh();
+      prepManualSession();
+      await fixture.whenStable();
+      fixture.detectChanges();
+      expect(root().querySelector('.form-card [role="alert"]')?.textContent).toContain('saved Cloud target is unavailable');
+      expect(root().querySelector('.inference [role="alert"]')?.textContent).toContain('save to confirm it');
+      expect(component.canSubmit()).toBe(false);
+      await component.submit();
+      expect(agentService.createBodies).toEqual([]);
+      expect(component.canSaveInference()).toBe(true);
+      await component.saveInference();
+      expect(agentService.inferenceWrites).toEqual([
+        { mode: 'cloud', provider_id: 20, model_id: 14, model: 'same-name' },
+      ]);
+      expect(component.canSubmit()).toBe(true);
+      expect(component.canSaveInference()).toBe(false);
+    });
+
+    it('does not echo backend error details or show a conflicting picker if loading settings fails', async () => {
+      const read = vi.spyOn(agentService, 'getInferenceSettings').mockRejectedValue(new Error('private upstream details'));
+      prepManualSession();
+      await fixture.whenStable();
+      fixture.detectChanges();
+      expect(root().querySelector('.inference')?.textContent).toContain('Could not load inference settings.');
+      expect(root().querySelector('.form-card select[aria-label="Model"]')).toBeNull();
+      expect(root().textContent).not.toContain('private upstream details');
+      read.mockResolvedValue({ ...LOCAL_INFERENCE, cloud_options: CLOUD_TARGETS });
+      await component.loadInferenceSettings();
+      fixture.detectChanges();
+      choose('agent-inference-location', 'cloud');
+      choose('agent-inference-model', '10:14');
+      vi.spyOn(agentService, 'setInferenceSettings').mockRejectedValue(new Error('more private details'));
+      await component.saveInference();
+      fixture.detectChanges();
+      expect(root().querySelector('.inference')?.textContent).toContain('Could not save inference settings.');
+      expect(root().textContent).not.toContain('more private details');
     });
   });
 

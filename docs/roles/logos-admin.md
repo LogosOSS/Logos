@@ -873,7 +873,9 @@ The page has these parts, from top to bottom:
 - **Status tiles.** **Runner** shows the mode of the runner. **Sessions** shows
   the running sessions and the limit, and the sessions that wait. **Memory**
   shows the memory that the sessions reserve and the memory budget of the
-  host. **Platform capacity** shows if a new session can start, and the reason.
+  host. **Platform capacity** shows local GPU load and if a local session can start.
+  **Cloud admission** shows if a cloud session can start, and the reason.
+  The cloud decision does not use local GPU load or slots. Both tiles appear when the queues contain both types of session.
 - **Runner controls.** In **Mode**, select **Run**, **Stop new sessions** or
   **Pause everything**. **Stop new sessions** lets the running sessions
   finish. **Pause everything** pauses the running sessions and gives the
@@ -884,9 +886,11 @@ The page has these parts, from top to bottom:
 - **Sessions at once** sets the maximum number of sessions that run at the
   same time. The maximum is the number of sessions that the memory budget
   holds. You can only set a lower value. The value 0 starts no new session.
+- **Model inference** sets where new sessions send model requests. Only Logos Admins can change this setting.
 - **Session lists.** **Active**, **Queue** and **Finished** show the
   sessions. Select a session to show its details and messages. Use the
   arrows of a queued session to change its position in the queue.
+  A queued session keeps its inference target. Its status shows if it waits for local capacity or cloud admission.
   **RAM now** shows the latest total for the session containers, including helpers and file cache.
   The runner samples about every 2 seconds. A short peak between samples can be higher.
   **Observed peak** keeps the highest sample after the session ends or the runner restarts.
@@ -920,6 +924,41 @@ example, after an improvement of the analysis. It does not change repositories
 that already have an analysis that is queued or that runs. The results go to
 the teams as proposals on their **Workflows** tab
 ([Team detail](app-admin.md#workflows)).
+
+### Choose a model for new sessions
+
+1. Open **Agents** and go to **Runner controls**.
+2. In **Model inference**, select **Local** or **Cloud**.
+3. For **Local**, select the **Inference model**. For **Cloud**, select the **Cloud provider and model**.
+4. Select **Save inference settings**.
+
+For **Local**, select a model served by Logos. The selector does not pin a worker.
+Select **Runner default (per-session model)** to keep the model picker in **New session**.
+If you set a model in **Runner controls**, the new session shows this model instead of a picker.
+
+For **Cloud**, choose a registered Logos provider that serves the Messages API and has a connected model.
+If the list is empty, open [**Providers**](#providers).
+Set **Provider Type** to `cloud` and **Cloud Provider** to `logos`.
+Enter the destination's HTTPS **Base URL** and **API Key**.
+Use the HTTPS origin or its `/v1` path.
+Then connect the model.
+Other provider types do not appear in the Agent selector.
+The agent sends inference through this environment's Logos gateway to the selected provider and model.
+The **Model inference** section does not display or accept a provider URL or an API key.
+
+Use a destination API key that permits only the necessary models.
+Make sure the repository data can go to the destination.
+The team's privacy setting still applies to its linked repositories.
+The destination Logos environment meters calls against the destination API key.
+
+If the provider's base URL changes, review the new destination in **Providers**.
+Then return to **Agents** and save the target again for new sessions.
+Existing sessions keep their original target and do not use the new URL.
+
+Changes apply to new sessions only. A session keeps the environment where it starts, such as Dev or Test.
+Selecting cloud inference does not move the session or its work to another Logos environment.
+
+![Cloud admission with a registered Logos provider and model selected](/img/roles/logos-admin-agent-inference.png)
 
 ### Start a Session
 

@@ -102,6 +102,151 @@ async def reachable_deployments() -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
+_INFERENCE_SELECTION_SQL = """
+    SELECT mode, model, provider_id, model_id, provider_base_url FROM agent_inference_settings WHERE id = 1
+"""
+
+
+async def agent_inference_selection() -> dict[str, Any]:
+    async with sessionmaker()() as db:
+        row = (await db.execute(text(_INFERENCE_SELECTION_SQL))).mappings().one_or_none()
+    return dict(row) if row else {}
+
+
+async def save_agent_inference_selection(
+    mode: str,
+    model: str | None,
+    provider_id: int | None,
+    model_id: int | None,
+    author: str,
+    *,
+    provider_base_url: str | None,
+) -> None:
+    async with sessionmaker()() as db:
+        await db.execute(
+            text("""
+                INSERT INTO agent_inference_settings
+                    (id, mode, model, provider_id, model_id, provider_base_url, updated_by, updated_at)
+                VALUES (1, :mode, :model, :provider, :model_id, :base_url, :author, now())
+                ON CONFLICT (id) DO UPDATE SET mode = EXCLUDED.mode, model = EXCLUDED.model,
+                    provider_id = EXCLUDED.provider_id, model_id = EXCLUDED.model_id,
+                    provider_base_url = EXCLUDED.provider_base_url,
+                    updated_by = EXCLUDED.updated_by, updated_at = EXCLUDED.updated_at
+                """),
+            {
+                "mode": mode,
+                "model": model,
+                "provider": provider_id,
+                "model_id": model_id,
+                "base_url": provider_base_url,
+                "author": author,
+            },
+        )
+        await db.commit()
+
+
+async def agent_cloud_deployments() -> list[dict[str, Any]]:
+    """Read approved protocol candidates, never the provider credentials themselves."""
+    async with sessionmaker()() as db:
+        rows = (await db.execute(text("""
+                SELECT p.id AS provider_id, p.name AS provider_name, m.id AS model_id, m.name AS model,
+                       p.base_url
+                FROM model_provider mp
+                JOIN models m ON m.id = mp.model_id
+                JOIN providers p ON p.id = mp.provider_id
+                CROSS JOIN LATERAL (
+                    SELECT COALESCE(NULLIF(mp.api_key, ''), p.api_key, '') AS raw_key
+                ) credential
+                WHERE p.provider_type = 'cloud' AND p.cloud_provider_type = 'logos'
+                  AND length(credential.raw_key) BETWEEN 1 AND 512
+                  AND credential.raw_key ~ '^[A-Za-z0-9._~+/=-]+$'
+                  AND (
+                      (COALESCE(btrim(p.auth_name), '') = '' AND COALESCE(p.auth_format, '') = '')
+                      OR (
+                          lower(COALESCE(btrim(p.auth_name), '')) IN ('', 'authorization')
+                          AND p.auth_format = 'Bearer {}'
+                      )
+                  )
+                ORDER BY p.name, m.name, p.id, m.id
+                """))).mappings().all()
+    return [dict(row) for row in rows]
+
+
+async def agent_cloud_allowed_for_repository(
+    provider_id: int,
+    team_repository_id: int | None,
+    repo_slug: str | None,
+    *,
+    workflow_analysis: bool = False,
+    session_id: int | None = None,
+    queue_automatic_analysis: bool = False,
+) -> bool:
+    """Apply live repository permissions for the session's actual purpose and team privacy."""
+    if team_repository_id is None:
+        return repo_slug is None and not (workflow_analysis or queue_automatic_analysis)
+    if not repo_slug:
+        return False
+
+    async with sessionmaker()() as db:
+        return bool(
+            (
+                await db.execute(
+                    text("""
+                SELECT EXISTS (
+                    SELECT 1 FROM team_repositories tr
+                    JOIN team_privacy_providers allowed
+                      ON allowed.team_id = tr.team_id AND allowed.provider_id = :provider
+                    WHERE tr.id = :repo_id AND lower(tr.repo_slug) = lower(:slug)
+                      AND CASE WHEN :queue_analysis THEN tr.automatic_workflow_analysis
+                          WHEN :analysis THEN EXISTS (
+                            SELECT 1 FROM agent_sessions s
+                            JOIN ai_workflow_analyses a ON a.agent_session_id = s.id
+                            WHERE s.id = :session_id AND s.trigger_kind = 'analysis' AND s.no_push
+                              AND s.team_repository_id = tr.id AND lower(s.repo_slug) = lower(tr.repo_slug)
+                              AND a.team_repository_id = tr.id AND a.team_id = tr.team_id
+                              AND (tr.automatic_workflow_analysis OR NOT (
+                                  a.automatically_queued OR COALESCE(s.created_by = 'logos-agent (analysis)', FALSE)
+                              ))
+                          ) ELSE tr.agent_enabled END
+                )
+                """),
+                    {
+                        "provider": provider_id,
+                        "repo_id": team_repository_id,
+                        "slug": repo_slug,
+                        "analysis": workflow_analysis,
+                        "queue_analysis": queue_automatic_analysis,
+                        "session_id": session_id,
+                    },
+                )
+            ).scalar_one()
+        )
+
+
+async def set_agent_inference_grant(session_id: int, digest: str) -> bool:
+    async with sessionmaker()() as db:
+        changed = await db.execute(
+            text("""
+                UPDATE agent_sessions SET inference_grant_hash = :digest, inference_client_tag = NULL
+                 WHERE id = :id AND status = 'starting' AND NOT starts_with(COALESCE(error, ''), 'cancel_requested:')
+                   AND inference_provider_id IS NOT NULL AND inference_model_id IS NOT NULL
+                   AND inference_base_url IS NOT NULL
+                """),
+            {"id": session_id, "digest": digest},
+        )
+        await db.commit()
+    return bool(changed.rowcount)
+
+
+async def clear_agent_inference_client_tag(session_id: int) -> None:
+    async with sessionmaker()() as db:
+        await db.execute(
+            text("UPDATE agent_sessions SET inference_client_tag = NULL WHERE id = :id"),
+            {"id": session_id},
+        )
+        await db.commit()
+
+
 class Unchanged:
     """ "Leave this alone", as a value.
 
@@ -708,6 +853,8 @@ async def create_session(
     point_workspace_at: str | None = None,
     automatic_analysis: bool | None = None,
     retry_analysis_session_id: int | None = None,
+    retry_inference_session_id: int | None = None,
+    expected_inference: dict[str, Any] | None = None,
 ) -> int:
     """Queue a session. Returns its id.
 
@@ -804,6 +951,38 @@ async def create_session(
                     text("UPDATE agent_workspaces SET base_branch = :base WHERE id = :id"),
                     {"id": workspace_id, "base": point_workspace_at},
                 )
+        provider_pin = model_pin = base_url_pin = None
+        if retry_inference_session_id is not None:
+            original = (
+                (
+                    await db.execute(
+                        text("""
+                        SELECT model, inference_provider_id, inference_model_id, inference_base_url
+                        FROM agent_sessions WHERE id = :id AND workspace_id = :workspace
+                        """),
+                        {"id": retry_inference_session_id, "workspace": workspace_id},
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if original is None:
+                raise ValueError("the session being retried no longer exists in this workspace")
+            model = original["model"]
+            provider_pin = original["inference_provider_id"]
+            model_pin = original["inference_model_id"]
+            base_url_pin = original["inference_base_url"]
+        else:
+            selection = (await db.execute(text(_INFERENCE_SELECTION_SQL))).mappings().one_or_none()
+            if expected_inference is not None and dict(selection or {}) != expected_inference:
+                raise ValueError("The Agent inference selection changed; retry with the new settings")
+            if selection:
+                if selection["mode"] == "cloud":
+                    model = selection["model"]
+                    provider_pin, model_pin = selection["provider_id"], selection["model_id"]
+                    base_url_pin = selection["provider_base_url"]
+                elif selection["model"] is not None:
+                    model = selection["model"]
         session_id = (
             await db.execute(
                 text("""
@@ -813,7 +992,8 @@ async def create_session(
                          no_push, trigger_kind, trigger_ref, branch_name,
                          reply_target, reaction_target, priority, priority_reason,
                          repo_url, repo_slug, team_repository_id, verification_command,
-                         repo_base_branch, memory_override_mb)
+                         repo_base_branch, memory_override_mb,
+                         inference_provider_id, inference_model_id, inference_base_url)
                     VALUES
                         (:workspace_id, :task, :model, 'queued', :created_by,
                          :open_pr, :deploy, CAST(:paths AS jsonb),
@@ -822,7 +1002,7 @@ async def create_session(
                          :reaction_target,
                          :priority, :priority_reason,
                          :repo_url, :repo_slug, :team_repository_id, :verification_command,
-                         :repo_base_branch, :memory_override_mb)
+                         :repo_base_branch, :memory_override_mb, :provider_pin, :model_pin, :base_url_pin)
                     RETURNING id
                     """),
                 {
@@ -856,6 +1036,9 @@ async def create_session(
                     "verification_command": verification_command,
                     "repo_base_branch": repo_base_branch,
                     "memory_override_mb": memory_override_mb,
+                    "provider_pin": provider_pin,
+                    "model_pin": model_pin,
+                    "base_url_pin": base_url_pin,
                 },
             )
         ).scalar_one()
@@ -1100,7 +1283,8 @@ async def count_active_trigger_sessions() -> int:
 
 _SESSION_SELECT = """
     SELECT s.id, s.workspace_id, w.name AS workspace_name, s.task, s.status,
-           s.model, s.branch_name, s.pr_url, s.created_by, s.created_at,
+           s.model, s.inference_provider_id, s.inference_model_id, s.inference_base_url,
+           s.branch_name, s.pr_url, s.created_by, s.created_at,
            s.started_at, s.finished_at, s.exit_code, s.error,
            s.container_id, s.open_pull_request, s.deploy_to_dev,
            s.screenshot_paths, s.no_push, s.trigger_kind, s.trigger_ref,
@@ -1263,7 +1447,18 @@ async def attempts_for_trigger(ref: str) -> int:
     return int(count or 0)
 
 
-async def next_queued_session(*, include_triggered: bool = True) -> dict[str, Any] | None:
+async def has_waiting_remote_sessions() -> bool:
+    """Only read remote admission state when a pinned session actually needs it."""
+    async with sessionmaker()() as db:
+        return bool(await db.scalar(text("""
+            SELECT EXISTS (
+                SELECT 1 FROM agent_sessions
+                WHERE status IN ('queued', 'paused') AND inference_provider_id IS NOT NULL
+            )
+            """)))
+
+
+async def next_queued_session(*, include_triggered: bool = True, remote: bool = False) -> dict[str, Any] | None:
     """The session a claim would take next, without taking it.
 
     Admission decides against a capacity reading, and the reading has to be
@@ -1277,9 +1472,11 @@ async def next_queued_session(*, include_triggered: bool = True) -> dict[str, An
             (
                 await db.execute(
                     text("""
-                    SELECT s.id, s.model, s.workspace_id, s.memory_override_mb
+                    SELECT s.id, s.model, s.workspace_id, s.memory_override_mb,
+                           s.inference_provider_id, s.inference_model_id
                       FROM agent_sessions s
                      WHERE s.status = 'queued'
+                       AND (s.inference_provider_id IS NOT NULL OR s.inference_model_id IS NOT NULL) = :remote
                        AND (:include_triggered OR s.trigger_ref IS NULL)
                        AND NOT EXISTS (
                              SELECT 1 FROM agent_sessions busy
@@ -1305,6 +1502,7 @@ async def next_queued_session(*, include_triggered: bool = True) -> dict[str, An
                     """),
                     {
                         "include_triggered": include_triggered,
+                        "remote": remote,
                         "occupying": [
                             SessionStatus.STARTING.value,
                             SessionStatus.RUNNING.value,
@@ -1414,6 +1612,9 @@ async def claim_session(
                                  SELECT 1 FROM agent_sessions manual
                                   WHERE manual.status = 'queued'
                                     AND manual.trigger_ref IS NULL
+                                    AND (manual.inference_provider_id IS NOT NULL
+                                         OR manual.inference_model_id IS NOT NULL)
+                                        = (s.inference_provider_id IS NOT NULL OR s.inference_model_id IS NOT NULL)
                                     AND NOT EXISTS (
                                         SELECT 1 FROM agent_sessions busy
                                          WHERE busy.status = ANY(:occupying)

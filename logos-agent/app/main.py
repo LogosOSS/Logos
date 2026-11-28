@@ -25,6 +25,7 @@ from . import (
     db,
     docker_engine,
     github,
+    inference_settings,
     memory_budget,
     memory_usage,
     model_policy,
@@ -46,6 +47,8 @@ from .schemas import (
     ControlState,
     ControlUpdate,
     EventKind,
+    InferenceSettings,
+    InferenceSettingsUpdate,
     InstructionState,
     InstructionUpdate,
     QueueMove,
@@ -59,7 +62,7 @@ from .schemas import (
     WorkspaceStorage,
 )
 from .security_models import AssessmentAction, IncidentInput, RepositoryInput
-from .sessions import artifact_dir, cache_volume_for, manager, memory_admission_block
+from .sessions import artifact_dir, cache_volume_for, manager, memory_admission_block, remote_admission_block
 from .sessions import reserved_memory_mb as sessions_reserved_memory_mb
 from .sessions import resumption_base
 
@@ -91,7 +94,7 @@ async def lifespan(_app: FastAPI):
     # up to *show* the reason, and admission is gated on it anyway.
     policy = await model_policy.refresh()
     if not policy.ok:
-        logger.error("no session will start until the model policy is satisfied: %s", policy.detail)
+        logger.error("local sessions cannot start until the model policy is satisfied: %s", policy.detail)
     if settings.session_github_token and settings.session_github_token == settings.github_token:
         logger.warning(
             "session containers get the runner's own GitHub token: it can dispatch "
@@ -252,7 +255,9 @@ async def get_capacity(_: Principal = Depends(require_agent_operator)) -> Capaci
     running = counts.get(SessionStatus.RUNNING.value, 0)
     paused = counts.get(SessionStatus.PAUSED.value, 0)
     control = await controls.current()
-    next_session = await db.next_queued_session() if counts.get(SessionStatus.QUEUED.value, 0) else None
+    queued = counts.get(SessionStatus.QUEUED.value, 0)
+    next_session = await db.next_queued_session() if queued else None
+    next_remote = await db.next_queued_session(remote=True) if queued else None
     memory_override = (next_session or {}).get("memory_override_mb")
     max_parallel = control.parallel_for(memory_override)
     may_start, reason = capacity.start_decision(reading, running=running, paused=paused, max_parallel=max_parallel)
@@ -263,6 +268,11 @@ async def get_capacity(_: Principal = Depends(require_agent_operator)) -> Capaci
         memory_block = await memory_admission_block(control, override_mb=memory_override)
         if memory_block:
             may_start, reason = False, memory_block
+    remote_block = await remote_admission_block(
+        control,
+        active=running + paused + counts.get(SessionStatus.STARTING.value, 0),
+        override_mb=(next_remote or {}).get("memory_override_mb"),
+    )
     # The local-only model policy gates admission as hard as load does, so
     # the page that explains why nothing starts has to show it too — an
     # operator staring at an idle platform should not have to read the logs
@@ -283,11 +293,13 @@ async def get_capacity(_: Principal = Depends(require_agent_operator)) -> Capaci
         own_slots=own_slots,
         other_slots=other_slots,
         sessions_running=running,
-        sessions_queued=counts.get(SessionStatus.QUEUED.value, 0),
+        sessions_queued=queued,
         sessions_paused=paused,
         max_parallel=max_parallel,
         may_start=may_start,
         reason=reason,
+        remote_may_start=not remote_block,
+        remote_reason=remote_block or "Runner has room for remote sessions",
     )
 
 
@@ -370,6 +382,33 @@ async def get_models(_: Principal = Depends(require_agent_operator)) -> dict[str
         "local_only": policy.ok,
         "detail": policy.detail,
     }
+
+
+@app.get("/inference-settings", response_model=InferenceSettings, tags=["capacity"])
+async def get_inference_settings(_: Principal = Depends(require_agent_operator)) -> dict:
+    return await inference_settings.view()
+
+
+@app.put("/inference-settings", response_model=InferenceSettings, tags=["capacity"])
+async def put_inference_settings(
+    body: InferenceSettingsUpdate, principal: Principal = Depends(require_agent_operator)
+) -> dict:
+    if not principal.has_role("logos_admin"):
+        raise HTTPException(status_code=403, detail="Logos administrator role is required")
+    try:
+        state = await inference_settings.save(
+            body.mode, body.model, body.provider_id, body.model_id, principal.username
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    logger.info(
+        "%s selected %s Agent inference (provider_id=%s, model_id=%s)",
+        principal.username,
+        body.mode,
+        body.provider_id,
+        body.model_id,
+    )
+    return state
 
 
 @app.get("/triggers", tags=["capacity"])
@@ -498,16 +537,19 @@ async def create_session(body: SessionCreate, principal: Principal = Depends(req
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Private sessions cannot open a pull request or capture Dev screenshots",
         )
-    # Refuse a model that is not served locally at the point where a person
-    # asks for it, rather than accepting the session and failing it later:
-    # agent work must never bill a cloud provider, and the operator finds out
-    # in the form they submitted.
-    policy = await model_policy.refresh()
-    if not policy.allows(body.model):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=policy.refusal(body.model))
+    # An operator's saved choice applies to every new session, including
+    # this manual endpoint. The central insert captures it transactionally.
+    selected = await db.agent_inference_selection()
+    remote = selected.get("mode") == "cloud"
+    if not remote:
+        chosen = selected.get("model") or body.model
+        policy = await model_policy.refresh()
+        if not policy.allows(chosen):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=policy.refusal(chosen))
 
     task = body.task
     target: dict = {}
+    link = None
     if body.team_repository_id is not None:
         link = await db.coding_repository(body.team_repository_id)
         if link is None:
@@ -521,11 +563,6 @@ async def create_session(body: SessionCreate, principal: Principal = Depends(req
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Dev screenshots are only available for the platform repository",
             )
-        # The same task a triggered session for this repository gets: the
-        # request, followed by the repository's build command and the
-        # instructions its team wrote.
-        with repository_context.scope(link):
-            task = await conventions.for_task(body.task)
         target = {
             "repo_url": link["repo_url"],
             "repo_slug": link["repo_slug"],
@@ -533,6 +570,24 @@ async def create_session(body: SessionCreate, principal: Principal = Depends(req
             "verification_command": link.get("verification_command"),
             "repo_base_branch": link.get("branch") or "main",
         }
+    if remote and not await inference_settings.permits_pin(
+        {
+            "inference_provider_id": selected.get("provider_id"),
+            "inference_model_id": selected.get("model_id"),
+            "inference_base_url": selected.get("provider_base_url"),
+            "model": selected.get("model"),
+            **target,
+        }
+    ):
+        raise HTTPException(
+            status_code=409, detail="The selected remote Agent model is not eligible for this repository"
+        )
+    if link is not None:
+        # The same task a triggered session for this repository gets: the
+        # request, followed by the repository's build command and the
+        # instructions its team wrote.
+        with repository_context.scope(link):
+            task = await conventions.for_task(body.task)
     try:
         session_id = await db.create_session(
             workspace_id=body.workspace_id,
@@ -547,6 +602,7 @@ async def create_session(body: SessionCreate, principal: Principal = Depends(req
             # An idle workspace that last worked on another repository moves
             # to this one's branch; a busy one is refused (db.WorkspaceBusy).
             point_workspace_at=target.get("repo_base_branch") or "main",
+            expected_inference=selected,
             **target,
         )
     except ValueError as exc:
@@ -645,6 +701,7 @@ async def retry_session(session_id: int, principal: Principal = Depends(require_
             automatic_analysis=False if row.get("trigger_kind") == "analysis" else None,
             retry_analysis_session_id=session_id if row.get("trigger_kind") == "analysis" else None,
             point_workspace_at=resumption_base(row),
+            retry_inference_session_id=session_id,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc

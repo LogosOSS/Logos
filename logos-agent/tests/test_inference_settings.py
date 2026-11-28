@@ -1,0 +1,313 @@
+"""Remote Agent settings are operator controlled, pinned, and credential-isolated."""
+
+from dataclasses import replace
+from hashlib import sha256
+from unittest.mock import AsyncMock
+
+import httpx
+import pytest
+from app import controls, db, docker_engine, inference_settings, main, sessions
+from app.auth import Principal
+from app.schemas import SessionStatus
+
+BASE_URL = "https://registered.example/"
+PIN = {
+    "inference_provider_id": 2,
+    "inference_model_id": 8,
+    "model": "cloud-model",
+    "inference_base_url": BASE_URL,
+}
+DEPLOYMENT = {
+    "provider_id": 2,
+    "provider_name": "Example",
+    "model_id": 8,
+    "model": "cloud-model",
+    "base_url": BASE_URL,
+}
+
+
+async def test_remote_catalog_filters_registered_bases_and_does_not_expose_endpoints(monkeypatch):
+    rows = [
+        DEPLOYMENT,
+        {**DEPLOYMENT, "provider_id": 3, "base_url": "https://another-registered.example/"},
+        {**DEPLOYMENT, "provider_id": 4, "base_url": "https://registered.example:444/v1/"},
+        {**DEPLOYMENT, "provider_id": 5, "base_url": "http://registered.example/"},
+        {**DEPLOYMENT, "provider_id": 6, "base_url": "https://user@registered.example/"},
+        {**DEPLOYMENT, "provider_id": 7, "base_url": "https://registered.example:0/"},
+        {**DEPLOYMENT, "provider_id": 8, "base_url": "https://registered.example/v1"},
+        {**DEPLOYMENT, "provider_id": 9, "base_url": "https://registered.example:65536/"},
+    ]
+    monkeypatch.setattr(db, "agent_cloud_deployments", AsyncMock(return_value=rows))
+    options = (await inference_settings.view())["cloud_options"]
+    assert [row["provider_id"] for row in options] == [2, 3, 4, 8]
+    assert all("base_url" not in row for row in options)
+    assert await inference_settings.permits_pin(PIN)
+    assert not await inference_settings.permits_pin({**PIN, "model": "other"})
+    assert not await inference_settings.permits_pin({**PIN, "inference_provider_id": None})
+    assert not await inference_settings.permits_pin({**PIN, "inference_base_url": None})
+    assert not await inference_settings.permits_pin({**PIN, "inference_base_url": "https://retarget.example"})
+
+
+async def test_pinned_remote_uses_the_live_repository_privacy_policy_before_discovery(monkeypatch):
+    current_policy = AsyncMock(side_effect=[True, False])
+    deployments = AsyncMock(return_value=[DEPLOYMENT])
+    monkeypatch.setattr(db, "agent_cloud_allowed_for_repository", current_policy)
+    monkeypatch.setattr(db, "agent_cloud_deployments", deployments)
+    linked = {**PIN, "team_repository_id": 12, "repo_slug": "o/repo"}
+
+    assert await inference_settings.permits_pin(linked)
+    assert not await inference_settings.permits_pin(linked)  # policy was withdrawn between two checks
+    assert [call.args for call in current_policy.await_args_list] == [(2, 12, "o/repo")] * 2
+    assert [call.kwargs for call in current_policy.await_args_list] == [
+        {"workflow_analysis": False, "session_id": None}
+    ] * 2
+    deployments.assert_awaited_once()
+
+
+async def test_manual_request_is_refused_before_queuing_under_disallowed_team_privacy(monkeypatch):
+    workspace = AsyncMock(return_value={"id": 1})
+    linked = AsyncMock(return_value={"id": 12, "repo_url": "https://github.com/o/repo", "repo_slug": "o/repo"})
+    selection = AsyncMock(
+        return_value={
+            "mode": "cloud",
+            "provider_id": 2,
+            "model_id": 8,
+            "model": "cloud-model",
+            "provider_base_url": BASE_URL,
+        }
+    )
+    denied = AsyncMock(return_value=False)
+    create = AsyncMock()
+    monkeypatch.setattr(db, "get_workspace", workspace)
+    monkeypatch.setattr(db, "coding_repository", linked)
+    monkeypatch.setattr(db, "agent_inference_selection", selection)
+    monkeypatch.setattr(db, "agent_cloud_allowed_for_repository", denied)
+    monkeypatch.setattr(db, "create_session", create)
+    main.app.dependency_overrides[main.require_agent_operator] = lambda: Principal(
+        "actor", "operator", frozenset({"logos_admin"})
+    )
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url="http://test") as client:
+            response = await client.post(
+                "/sessions", json={"workspace_id": 1, "team_repository_id": 12, "task": "an example coding task"}
+            )
+    finally:
+        main.app.dependency_overrides.pop(main.require_agent_operator)
+    assert response.status_code == 409
+    assert "not eligible for this repository" in response.json()["detail"]
+    denied.assert_awaited_once_with(2, 12, "o/repo", workflow_analysis=False, session_id=None)
+    create.assert_not_awaited()
+
+
+async def test_remote_resume_does_not_reattach_when_privacy_access_has_been_removed(monkeypatch):
+    manager = sessions.SessionManager()
+    linked = {**PIN, "id": 10, "container_id": "container", "team_repository_id": None, "repo_slug": "o/repo"}
+    monkeypatch.setattr(manager, "_container_now", AsyncMock(return_value=("paused", None)))
+    settle = AsyncMock()
+    attach = AsyncMock()
+    monkeypatch.setattr(manager, "_settle", settle)
+    monkeypatch.setattr(docker_engine, "connect_network", attach)
+
+    assert not await manager._resume(linked, "continue")
+    settle.assert_awaited_once_with(10, exit_code=None, error="The pinned remote Agent model is no longer eligible")
+    attach.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "bad_base",
+    [
+        "not-a-url",
+        None,
+        "https://bad.example/path",
+        "https://bad_host.example",
+        "https://bad.example?",
+        "https://bad.example#",
+        "https://bad.example:0",
+        "https://bad.example:",
+        "https://bad.123",
+        "https://bad.example..",
+        "https://[::1]garbage",
+        "https://[fe80::1%zone]",
+        "https://bad.example\\client",
+    ],
+)
+async def test_malformed_provider_base_does_not_hide_other_registry_options(monkeypatch, bad_base):
+    bad = {**DEPLOYMENT, "provider_id": 3, "base_url": bad_base}
+    monkeypatch.setattr(db, "agent_cloud_deployments", AsyncMock(return_value=[bad, DEPLOYMENT]))
+    assert [row["provider_id"] for row in (await inference_settings.view())["cloud_options"]] == [2]
+
+
+async def test_wrong_network_cannot_enable_remote_models(monkeypatch):
+    monkeypatch.setattr(
+        inference_settings,
+        "settings",
+        replace(
+            inference_settings.settings, remote_inference_network=inference_settings.settings.session_egress_network
+        ),
+    )
+    deployments = AsyncMock()
+    monkeypatch.setattr(db, "agent_cloud_deployments", deployments)
+    assert (await inference_settings.view())["cloud_options"] == []
+    deployments.assert_not_awaited()
+
+
+async def test_non_admin_cannot_update_inference_settings(monkeypatch):
+    main.app.dependency_overrides[main.require_agent_operator] = lambda: Principal(
+        "actor", "operator", frozenset({"app_admin"})
+    )
+    save = AsyncMock()
+    monkeypatch.setattr(inference_settings, "save", save)
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url="http://test") as client:
+            result = await client.put("/inference-settings", json={"mode": "cloud", "provider_id": 2, "model_id": 8})
+    finally:
+        main.app.dependency_overrides.pop(main.require_agent_operator)
+    assert result.status_code == 403
+    save.assert_not_awaited()
+
+
+async def test_admin_saves_an_exact_allowed_model_and_no_endpoint(monkeypatch):
+    monkeypatch.setattr(
+        db,
+        "agent_cloud_deployments",
+        AsyncMock(return_value=[DEPLOYMENT]),
+    )
+    save = AsyncMock()
+    monkeypatch.setattr(db, "save_agent_inference_selection", save)
+    main.app.dependency_overrides[main.require_agent_operator] = lambda: Principal(
+        "actor", "operator", frozenset({"logos_admin"})
+    )
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url="http://test") as client:
+            denied = await client.put(
+                "/inference-settings", json={"mode": "cloud", "provider_id": 2, "model_id": 8, "model": "wrong"}
+            )
+            accepted = await client.put("/inference-settings", json={"mode": "cloud", "provider_id": 2, "model_id": 8})
+    finally:
+        main.app.dependency_overrides.pop(main.require_agent_operator)
+    assert denied.status_code == 400
+    assert accepted.status_code == 200
+    save.assert_awaited_once_with("cloud", "cloud-model", 2, 8, "operator", provider_base_url=BASE_URL)
+
+
+async def test_remote_grant_is_random_and_only_digest_is_stored(monkeypatch):
+    store = AsyncMock(return_value=True)
+    monkeypatch.setattr(db, "set_agent_inference_grant", store)
+    first = await inference_settings.issue_remote_grant(10)
+    second = await inference_settings.issue_remote_grant(10)
+    assert first and second and first != second and len(first) >= 43
+    assert [call.args for call in store.await_args_list] == [
+        (10, sha256(first.encode("ascii")).hexdigest()),
+        (10, sha256(second.encode("ascii")).hexdigest()),
+    ]
+    env = sessions.SessionManager()._session_env({**PIN, "id": 10, "task": "code"}, "branch", inference_grant=first)
+    assert env["ANTHROPIC_BASE_URL"] == "http://logos-agent-remote-gateway"
+    assert env["ANTHROPIC_AUTH_TOKEN"] == first
+    assert env["ANTHROPIC_API_KEY"] == ""
+    assert env["ANTHROPIC_MODEL"] == "cloud-model"
+    with pytest.raises(ValueError, match="requires a gateway grant"):
+        sessions.SessionManager()._session_env({**PIN, "id": 10, "task": "code"}, "branch")
+
+
+async def test_remote_claim_does_not_query_local_gpu_capacity(monkeypatch):
+    manager = sessions.SessionManager()
+    local_pass = AsyncMock(side_effect=AssertionError("remote admission must not depend on local GPUs"))
+    monkeypatch.setattr(manager, "_schedule_local_capacity", local_pass)
+    monkeypatch.setattr(manager, "_honor_cancel_requests", AsyncMock())
+    monkeypatch.setattr(manager, "_launch", AsyncMock())
+    monkeypatch.setattr(controls, "current", AsyncMock(return_value=controls.Controls()))
+    monkeypatch.setattr(db, "sessions_in_status", AsyncMock(return_value=[]))
+    queue = AsyncMock(return_value={**PIN, "id": 10})
+    monkeypatch.setattr(db, "next_queued_session", queue)
+    monkeypatch.setattr(db, "has_waiting_remote_sessions", AsyncMock(return_value=True))
+    claim = AsyncMock(return_value={**PIN, "id": 10})
+    monkeypatch.setattr(db, "claim_session", claim)
+    monkeypatch.setattr(db, "add_event", AsyncMock())
+
+    await manager.scheduler_pass()
+    queue.assert_awaited_once_with(remote=True)
+    assert claim.await_args.kwargs["max_active"] > 0
+    assert claim.await_args.kwargs["memory_mb"] > 0
+    assert manager._launch.await_args.args[0]["inference_provider_id"] == 2
+    local_pass.assert_not_awaited()
+
+
+async def test_remote_resume_clears_the_binding_before_thawing(monkeypatch):
+    manager = sessions.SessionManager()
+    session = {**PIN, "id": 10, "container_id": "remote-container"}
+    monkeypatch.setattr(manager, "_container_now", AsyncMock(return_value=("paused", None)))
+    monkeypatch.setattr(inference_settings, "permits_pin", AsyncMock(return_value=True))
+    called = []
+
+    async def note(name, *args):
+        called.append((name, *args))
+        return True
+
+    monkeypatch.setattr(db, "clear_agent_inference_client_tag", lambda *args: note("clear", *args))
+    monkeypatch.setattr(db, "transition_session", lambda *args: note("state", *args))
+    monkeypatch.setattr(db, "add_event", AsyncMock())
+    monkeypatch.setattr(docker_engine, "connect_network", lambda *args: note("connect", *args))
+    monkeypatch.setattr(docker_engine, "unpause_container", lambda *args: note("thaw", *args))
+
+    assert await manager._resume(session, "continue")
+    assert called == [
+        ("clear", 10),
+        ("connect", "logos-agent-remote-net", "remote-container"),
+        ("state", 10, SessionStatus.RUNNING),
+        ("thaw", "remote-container"),
+    ]
+
+
+@pytest.mark.parametrize("blocked_by", [None, "paused", "parallel", "memory", "unconfigured"])
+async def test_capacity_endpoint_reports_remote_admission_independently_of_local_gpus(monkeypatch, blocked_by):
+    config = inference_settings.settings
+    if blocked_by == "unconfigured":
+        config = replace(config, remote_inference_network=config.session_network)
+    monkeypatch.setattr(inference_settings, "settings", config)
+    monkeypatch.setattr(main, "settings", config)
+    monkeypatch.setattr(db, "agent_key_id", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        db, "count_sessions_by_status", AsyncMock(return_value={"queued": 1, "starting": int(blocked_by == "parallel")})
+    )
+    next_queued = AsyncMock(
+        side_effect=lambda **options: {"memory_override_mb": 1024} if options.get("remote") else None
+    )
+    monkeypatch.setattr(db, "next_queued_session", next_queued)
+    monkeypatch.setattr(main.capacity, "read_load", AsyncMock(return_value=main.capacity.Reading(0, 0, 0, 0, True)))
+    monkeypatch.setattr(main.capacity, "start_decision", lambda *_, **__: (False, "No local lane"))
+    monkeypatch.setattr(
+        main.model_policy,
+        "refresh",
+        AsyncMock(return_value=main.model_policy.ModelPolicy(ok=False, detail="No local model")),
+    )
+    control = controls.Controls(
+        mode=controls.PAUSED if blocked_by == "paused" else controls.RUNNING, max_parallel_override=1
+    )
+    monkeypatch.setattr(controls, "current", AsyncMock(return_value=control))
+    memory = AsyncMock(return_value="Host memory exhausted" if blocked_by == "memory" else "")
+    monkeypatch.setattr(sessions, "memory_admission_block", memory)
+    main.app.dependency_overrides[main.require_agent_operator] = lambda: Principal(
+        "actor", "operator", frozenset({"logos_admin"})
+    )
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url="http://test") as client:
+            response = await client.get("/capacity")
+    finally:
+        main.app.dependency_overrides.pop(main.require_agent_operator)
+    assert response.status_code == 200
+    result = response.json()
+    assert not result["may_start"]
+    assert result["reason"] == "No local model"
+    assert result["remote_may_start"] == (blocked_by is None)
+    expected = {
+        None: "room for remote",
+        "paused": "paused",
+        "parallel": "parallel session limit",
+        "memory": "Host memory",
+        "unconfigured": "not configured",
+    }
+    assert expected[blocked_by] in result["remote_reason"]
+    if blocked_by in (None, "memory"):
+        memory.assert_awaited_once_with(control, override_mb=1024)
+    else:
+        memory.assert_not_awaited()

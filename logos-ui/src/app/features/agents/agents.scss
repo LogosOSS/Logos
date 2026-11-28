@@ -306,6 +306,34 @@
   padding-top: 20px;
 }
 
+.inference {
+  display: grid;
+  gap: 8px;
+  margin-top: 20px;
+  padding-top: 20px;
+  border-top: 1px solid rgb(var(--color-outline-200) / var(--opacity-border));
+
+  h3, p { margin: 0; }
+
+  a {
+    text-decoration: underline;
+    text-underline-offset: 0.18em;
+  }
+
+  &__fields {
+    display: flex;
+    align-items: flex-end;
+    flex-wrap: wrap;
+    gap: 12px;
+
+    .control {
+      flex: 1 1 12rem;
+    }
+  }
+
+  button { justify-self: start; }
+}
+
 .control {
   display: flex;
   flex-direction: column;

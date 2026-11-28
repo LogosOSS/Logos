@@ -630,6 +630,9 @@ services:
       # or every session's model call fails DNS resolution.
       logos-agent-gateway:
         condition: service_healthy
+      logos-agent-remote-gateway:
+        condition: service_healthy
+        required: false
       # Sessions of linked repositories with allowed hosts reach the internet
       # only through this proxy.
       logos-agent-egress-proxy:
@@ -659,6 +662,8 @@ services:
 
       # Optional default among the managed identity's locally served models.
       LOGOS_AGENT_DEFAULT_MODEL: "${LOGOS_AGENT_DEFAULT_MODEL:-}"
+      # The cloud workspace stays isolated from the managed local-only credential.
+      LOGOS_AGENT_REMOTE_NETWORK: "${LOGOS_AGENT_REMOTE_NETWORK:-logos-agent-remote-net}"
 
       # Sessions run in this image, on this network, under these ceilings.
       LOGOS_AGENT_WORKSPACE_IMAGE: "${REGISTRY:-ghcr.io/logososs}/logos-agent-workspace:${IMAGE_TAG:-latest}"
@@ -669,7 +674,7 @@ services:
       LOGOS_AGENT_SESSION_NETWORK: "${LOGOS_AGENT_SESSION_NETWORK:-logos-agent-net}"
       LOGOS_AGENT_SESSION_EGRESS_NETWORK: "${LOGOS_AGENT_SESSION_EGRESS_NETWORK:-logos-agent-egress-net}"
       # Where sessions send model traffic: the gateway that exposes only the
-      # orchestrator's /v1 model surface on the session network.
+      # local Logos gateway's /v1 model surface on the session network.
       LOGOS_AGENT_SESSION_MODEL_URL: "${LOGOS_AGENT_SESSION_MODEL_URL:-http://logos-agent-gateway}"
       # The allowlisting HTTPS proxy on the session network; empty disables
       # internet access for every session.
@@ -796,6 +801,7 @@ services:
       retries: 5
     depends_on:
       - logos-orchestrator
+      - logos-webservice
     environment:
       # Existing internal trust root; only short-lived inference tokens are
       # forwarded, never this secret or credentials to session containers.
@@ -803,6 +809,25 @@ services:
     networks:
       - internal
       - agent
+
+  # Separate bridge so a remote session cannot opt into the local model credential.
+  logos-agent-remote-gateway:
+    image: ${REGISTRY:-ghcr.io/logososs}/logos-agent-gateway:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    profiles: ["agent"]
+    healthcheck:
+      test: ["CMD-SHELL", "nginx -t && wget -q --spider http://127.0.0.1/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    depends_on:
+      - logos-webservice
+    environment:
+      LOGOS_AGENT_MODEL_GATEWAY_MODE: "remote"
+      LOGOS_INTERNAL_SECRET: "${LOGOS_INTERNAL_SECRET:-}"
+    networks:
+      - internal
+      - agent-remote
 
   # The only route from the session network to the internet, and only for
   # sessions of a linked repository whose link names allowed hosts: HTTPS
@@ -840,6 +865,7 @@ services:
     networks:
       - internal
       - agent
+      - agent-remote
 
   logos-ui:
     image: ${REGISTRY:-ghcr.io/logososs}/logos-ui:${IMAGE_TAG:-latest}
@@ -894,6 +920,10 @@ networks:
   # traffic must go. The runner creates it if it does not exist.
   agent:
     name: ${LOGOS_AGENT_SESSION_NETWORK:-logos-agent-net}
+    driver: bridge
+    internal: true
+  agent-remote:
+    name: ${LOGOS_AGENT_REMOTE_NETWORK:-logos-agent-remote-net}
     driver: bridge
     internal: true
   # The runner's trusted helper containers (checkout preparation, post-agent

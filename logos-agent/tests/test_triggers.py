@@ -293,7 +293,7 @@ def allow_models(monkeypatch, ok: bool = True):
             self.ok = ok
             self.detail = "test policy"
 
-    monkeypatch.setattr(triggers.model_policy, "current", lambda: Policy())
+    monkeypatch.setattr(triggers.inference_settings.model_policy, "current", lambda: Policy())
 
 
 def ceiling(monkeypatch, limit: int):

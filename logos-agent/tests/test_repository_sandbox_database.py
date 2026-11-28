@@ -7,14 +7,23 @@ Every run uses and removes its own schema; application data is untouched.
 import asyncio
 import os
 import uuid
+from dataclasses import replace
+from pathlib import Path
+from unittest.mock import AsyncMock
 
+import httpx
 import pytest
-from app import analysis_triggers, db
+from app import analysis_triggers, controls, db, inference_settings, main, model_policy, repository_context, triggers
+from app.auth import Principal
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 # Taken before the shared fixture stubs it for the tests without a database.
 REAL_SESSION_MEMORY_MB = db.session_memory_mb
+REAL_INFERENCE_SELECTION = db.agent_inference_selection
+REAL_CLOUD_DEPLOYMENTS = db.agent_cloud_deployments
+REAL_HAS_WAITING_REMOTE = db.has_waiting_remote_sessions
+REAL_ENABLED_CODING = db.enabled_coding_repositories
 REAL_NEXT_QUEUED = db.next_queued_session
 REAL_SESSIONS_IN_STATUS = db.sessions_in_status
 REAL_OWING_REPLACEMENT = db.sessions_owing_a_replacement
@@ -51,6 +60,7 @@ async def database(monkeypatch):
             await conn.execute(text("""CREATE TABLE agent_sessions (
                 id SERIAL PRIMARY KEY, workspace_id integer REFERENCES agent_workspaces(id),
                 task text, model text, status text, created_by text, created_at timestamptz DEFAULT now(),
+                inference_provider_id integer, inference_model_id integer, inference_base_url text,
                 started_at timestamptz, finished_at timestamptz, exit_code integer, error text,
                 container_id text, branch_name text, pr_url text, open_pull_request boolean,
                 deploy_to_dev boolean, screenshot_paths jsonb, no_push boolean DEFAULT FALSE,
@@ -62,6 +72,9 @@ async def database(monkeypatch):
                 progress_percent integer, progress_active_s bigint, progress_reported_at timestamptz,
                 active_seconds double precision NOT NULL DEFAULT 0, active_since timestamptz,
                 tokens_in bigint, tokens_out bigint, cost_usd numeric)"""))
+            await conn.execute(text("""CREATE TABLE agent_inference_settings (
+                id integer PRIMARY KEY, mode text, model text, provider_id integer, model_id integer,
+                provider_base_url text, updated_by text, updated_at timestamptz)"""))
             await conn.execute(text("""CREATE TABLE ai_workflow_analyses (
                 id SERIAL PRIMARY KEY, team_id integer, team_repository_id integer, status text, source text,
                 commit_sha text, error text, started_at timestamptz, finished_at timestamptz,
@@ -146,6 +159,299 @@ async def test_grants_follow_the_link_only_while_it_names_the_sessions_repositor
         "agent_may_comment": False,
     }
     assert (await db.egress_grant(session_id))["hosts"] == []
+
+
+async def _seed_provider_privacy(database):
+    path = Path(__file__).resolve().parents[2] / "logos-webservice/src/main/resources/liquibase/changelog"
+    migration = (path / "095_team_privacy.xml").read_text()
+    async with database.begin() as conn:
+        await conn.execute(text("ALTER TABLE teams ADD COLUMN privacy_scope text"))
+        await conn.execute(text("""CREATE TABLE providers (
+            id integer, provider_type text, privacy_level text, eu_processing_verified boolean, base_url text,
+            cloud_provider_type text, name text, auth_name text, auth_format text, api_key text)"""))
+        await conn.execute(text("CREATE TABLE models (id integer, name text)"))
+        await conn.execute(
+            text("CREATE TABLE model_provider (provider_id integer, endpoint text, model_id integer, api_key text)")
+        )
+        await conn.execute(text("INSERT INTO teams VALUES (1, 'team', 'WORLDWIDE')"))
+        await conn.execute(text("""INSERT INTO providers VALUES
+            (3, 'cloud', 'CLOUD_NOT_IN_EU_BY_US_PROVIDER', FALSE, 'https://cloud.example',
+                 'logos', 'Synthetic Logos', NULL, NULL, 'fake-key'),
+            (4, 'cloud', 'CLOUD_IN_EU_BY_EU_PROVIDER', TRUE, 'https://cloud-eu.example',
+                 'logos', 'Synthetic Logos EU', NULL, NULL, 'fake-key')"""))
+        await conn.execute(text("INSERT INTO models VALUES (8, 'cloud-model')"))
+        await conn.execute(text("INSERT INTO model_provider VALUES (3, NULL, 8, NULL), (4, NULL, 8, NULL)"))
+        for name in ("provider_processing_privacy", "team_privacy_providers"):
+            statement = f"CREATE VIEW {name}" + migration.split(f"CREATE VIEW {name}", 1)[1].split(";", 1)[0]
+            await conn.execute(text(statement))
+
+
+async def test_remote_agent_applies_live_team_privacy_view_and_never_upgrades_a_deleted_link_to_platform(database):
+    await _seed_provider_privacy(database)
+    assert await db.agent_cloud_allowed_for_repository(3, None, None)
+    assert not await db.agent_cloud_allowed_for_repository(3, None, "o/a")
+    assert not await db.agent_cloud_allowed_for_repository(3, 1, None)
+    assert not await db.agent_cloud_allowed_for_repository(3, 1, "o/other")
+    assert await db.agent_cloud_allowed_for_repository(3, 1, "O/A")
+    async with database.begin() as conn:
+        await conn.execute(text("UPDATE teams SET privacy_scope = 'EU' WHERE id = 1"))
+
+    assert not await db.agent_cloud_allowed_for_repository(3, 1, "o/a")
+    assert await db.agent_cloud_allowed_for_repository(4, 1, "o/a")
+
+    async with database.begin() as conn:
+        await conn.execute(text("UPDATE teams SET privacy_scope = 'LOCAL' WHERE id = 1"))
+    assert not await db.agent_cloud_allowed_for_repository(4, 1, "o/a")
+
+    async with database.begin() as conn:
+        await conn.execute(text("UPDATE teams SET privacy_scope = 'WORLDWIDE' WHERE id = 1"))
+        await conn.execute(text("UPDATE team_repositories SET agent_enabled = FALSE WHERE id = 1"))
+    assert not await db.agent_cloud_allowed_for_repository(3, 1, "o/a")
+    poller = analysis_triggers.AnalysisPoller()
+    (link,) = await poller._links_needing_analysis()
+    automatic_id = await poller._queue(link)
+    assert automatic_id is not None
+
+    # Coding is disabled, but the linked read-only analysis is independent.
+    async def permitted(session_id):
+        row = await db.get_session(session_id)
+        return await db.agent_cloud_allowed_for_repository(
+            3,
+            row["team_repository_id"],
+            row["repo_slug"],
+            workflow_analysis=True,
+            session_id=session_id,
+        )
+
+    assert await permitted(automatic_id)
+    assert not await db.agent_cloud_allowed_for_repository(3, None, None, workflow_analysis=True)
+    assert not await db.agent_cloud_allowed_for_repository(3, 1, "o/a", workflow_analysis=True, session_id=99)
+    async with database.begin() as conn:
+        await conn.execute(text("UPDATE team_repositories SET automatic_workflow_analysis = FALSE"))
+        await conn.execute(text("UPDATE ai_workflow_analyses SET status = 'failed'"))
+    assert not await permitted(automatic_id)
+    manual_id = await db.create_session(**_session(trigger_kind="analysis", no_push=True), automatic_analysis=False)
+    assert await permitted(manual_id)
+    async with database.begin() as conn:
+        await conn.execute(text("UPDATE agent_sessions SET no_push = FALSE WHERE id = :id"), {"id": manual_id})
+    assert not await permitted(manual_id)
+    async with database.begin() as conn:
+        await conn.execute(text("UPDATE agent_sessions SET no_push = TRUE WHERE id = :id"), {"id": manual_id})
+        await conn.execute(text("UPDATE teams SET privacy_scope = 'LOCAL'"))
+    assert not await permitted(manual_id)
+    async with database.begin() as conn:
+        await conn.execute(text("DELETE FROM team_repositories WHERE id = 1"))
+    assert not await permitted(manual_id)
+    assert not await db.agent_cloud_allowed_for_repository(3, 1, "o/a")
+    assert not await db.agent_cloud_allowed_for_repository(3, None, "o/a")
+
+
+async def test_registry_cloud_settings_manual_queue_and_retries_fail_closed_on_retarget(database, monkeypatch):
+    await _seed_provider_privacy(database)
+    monkeypatch.setattr(db, "agent_inference_selection", REAL_INFERENCE_SELECTION)
+    monkeypatch.setattr(db, "agent_cloud_deployments", REAL_CLOUD_DEPLOYMENTS)
+    monkeypatch.setattr(db, "has_waiting_remote_sessions", REAL_HAS_WAITING_REMOTE)
+    monkeypatch.setattr(main.manager, "request_scheduler_pass", lambda: None)
+    monkeypatch.setattr(model_policy, "_current", model_policy.ModelPolicy(detail="No local models"))
+    monkeypatch.setitem(
+        main.app.dependency_overrides,
+        main.require_agent_operator,
+        lambda: Principal("subject", "operator", frozenset({"logos_admin"})),
+    )
+    selection = {"mode": "cloud", "provider_id": 3, "model_id": 8}
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url="http://test") as client:
+        catalog = (await client.get("/inference-settings")).json()
+        assert catalog["mode"] == "local" and catalog["cloud_selection_valid"]
+        assert [row["provider_id"] for row in catalog["cloud_options"]] == [3, 4]
+        assert not await db.has_waiting_remote_sessions()
+
+        selected = await client.put("/inference-settings", json=selection)
+        assert selected.status_code == 200
+        assert selected.json()["cloud_selection_valid"]
+        payload = {"workspace_id": 1, "task": "synthetic task"}
+        accepted = await client.post("/sessions", json=payload)
+        assert accepted.status_code == 202, accepted.text
+        assert accepted.json()["inference_provider_id"] == 3
+        for response in (selected, accepted):
+            assert "https://" not in response.text
+            assert "fake-key" not in response.text
+        original = await db.get_session(accepted.json()["id"])
+        assert original["inference_base_url"] == "https://cloud.example"
+        assert await db.has_waiting_remote_sessions()
+        assert await inference_settings.permits_pin(original)
+
+        async with database.begin() as conn:
+            await conn.execute(text("UPDATE providers SET base_url = 'https://new-cloud.example/v1/' WHERE id = 3"))
+        assert (await client.get("/inference-settings")).json()["cloud_selection_valid"] is False
+        assert (await client.post("/sessions", json=payload)).status_code == 409
+        assert not await inference_settings.permits_pin(original)
+        assert await inference_settings.automation_selection() is None
+
+        reselected = await client.put("/inference-settings", json=selection)
+        assert reselected.status_code == 200 and reselected.json()["cloud_selection_valid"]
+        new_session = await client.post("/sessions", json=payload)
+        assert new_session.status_code == 202, new_session.text
+        new_pin = await db.get_session(new_session.json()["id"])
+        assert new_pin["inference_base_url"] == "https://new-cloud.example/v1/"
+        assert await inference_settings.permits_pin(new_pin)
+        assert not await inference_settings.permits_pin(original)
+
+        # A retry does not inherit the re-confirmed setting or contact the
+        # new domain. It keeps the original already-stale endpoint pin.
+        retry = await db.create_session(**_session(repo_slug=None), retry_inference_session_id=original["id"])
+        retry_pin = await db.get_session(retry)
+        assert retry_pin["inference_base_url"] == original["inference_base_url"]
+        assert not await inference_settings.permits_pin(retry_pin)
+
+
+@pytest.mark.parametrize(
+    "scenario,expected_kinds",
+    [
+        ("cloud-only", {"issue", "analysis"}),
+        ("platform-cloud-only", {"issue", "analysis"}),
+        ("cloud-nightly", {"issue", "analysis"}),
+        ("legacy-local", {"issue", "analysis"}),
+        ("pinned-local", {"issue", "analysis"}),
+        ("no-local", set()),
+        ("unapproved-cloud", set()),
+        ("retargeted-cloud", set()),
+        ("wrong-model", set()),
+        ("invalid-credential", set()),
+        ("privacy-local", set()),
+        ("analysis-opt-out", {"issue"}),
+        ("coding-opt-out", {"analysis"}),
+        ("settings-changed", set()),
+    ],
+)
+async def test_automatic_pollers_admit_only_the_selected_permitted_inference(
+    database, monkeypatch, scenario, expected_kinds
+):
+    await _seed_provider_privacy(database)
+    monkeypatch.setattr(db, "agent_inference_selection", REAL_INFERENCE_SELECTION)
+    monkeypatch.setattr(db, "enabled_coding_repositories", REAL_ENABLED_CODING)
+    monkeypatch.setattr(db, "agent_cloud_deployments", REAL_CLOUD_DEPLOYMENTS)
+    monkeypatch.setattr(
+        analysis_triggers, "settings", replace(analysis_triggers.settings, analysis_nightly_hour_utc=-1)
+    )
+    local_available = scenario in {
+        "legacy-local",
+        "pinned-local",
+        "unapproved-cloud",
+        "wrong-model",
+        "invalid-credential",
+    }
+    if not local_available:
+        monkeypatch.setattr(model_policy, "_current", model_policy.ModelPolicy(detail="No local models"))
+    monkeypatch.setattr(controls, "current", AsyncMock(return_value=controls.Controls()))
+    async with database.begin() as conn:
+        if scenario == "pinned-local":
+            await conn.execute(
+                text("INSERT INTO agent_inference_settings (id, mode, model) VALUES (1, 'local', 'local-model')")
+            )
+        elif scenario not in {"legacy-local", "no-local"}:
+            model = "wrong" if scenario == "wrong-model" else "cloud-model"
+            await conn.execute(
+                text("""
+                    INSERT INTO agent_inference_settings (id, mode, model, provider_id, model_id, provider_base_url)
+                    VALUES (1, 'cloud', :model, 3, 8, 'https://cloud.example')
+                    """),
+                {"model": model},
+            )
+        if scenario == "unapproved-cloud":
+            await conn.execute(text("UPDATE providers SET cloud_provider_type = 'openai' WHERE id = 3"))
+        if scenario == "retargeted-cloud":
+            await conn.execute(text("UPDATE providers SET base_url = 'https://different.example' WHERE id = 3"))
+        if scenario == "cloud-nightly":
+            await conn.execute(text("""
+                INSERT INTO ai_workflow_analyses (team_id, team_repository_id, status, commit_sha)
+                VALUES (1, 1, 'succeeded', 'old-head')
+                """))
+        if scenario == "invalid-credential":
+            await conn.execute(text("UPDATE providers SET auth_name = 'x-api-key' WHERE id = 3"))
+        if scenario == "privacy-local":
+            await conn.execute(text("UPDATE teams SET privacy_scope = 'LOCAL'"))
+        if scenario == "analysis-opt-out":
+            await conn.execute(text("UPDATE team_repositories SET automatic_workflow_analysis = FALSE"))
+        if scenario == "coding-opt-out":
+            await conn.execute(text("UPDATE team_repositories SET agent_enabled = FALSE"))
+
+    coding = triggers.TriggerPoller()
+    analysis = analysis_triggers.AnalysisPoller()
+
+    async def candidates(_now):
+        platform = repository_context.current() is None
+        if platform != (scenario == "platform-cloud-only"):
+            return []
+        return [{"ref": "issue-812", "task": "Synthetic assigned issue", "kind": "issue"}]
+
+    # Only GitHub discovery/notification is simulated. Workspaces, the saved
+    # selection, privacy views, and queue writes all use PostgreSQL.
+    monkeypatch.setattr(coding, "_candidates", candidates)
+    monkeypatch.setattr(coding, "_mark_comments_scanned", AsyncMock())
+    monkeypatch.setattr(coding, "_acknowledge", AsyncMock())
+    if scenario == "cloud-nightly":
+        monkeypatch.setattr(analysis, "_nightly_due", lambda _now: True)
+        monkeypatch.setattr(analysis_triggers.github, "branch_head", AsyncMock(return_value="new-head"))
+    changed_after_preflight = []
+    if scenario == "settings-changed":
+        free_workspace = coding._free_workspace
+        ensure_workspace = analysis._ensure_workspace
+
+        async def change_selection():
+            async with database.begin() as conn:
+                await conn.execute(
+                    text("UPDATE agent_inference_settings SET model = 'other-model', provider_id = 4, model_id = 9")
+                )
+
+        async def original_selection():
+            async with database.begin() as conn:
+                await conn.execute(
+                    text("UPDATE agent_inference_settings SET model = 'cloud-model', provider_id = 3, model_id = 8")
+                )
+
+        async def change_after_free(**kwargs):
+            workspace = await free_workspace(**kwargs)
+            await change_selection()
+            changed_after_preflight.append("coding")
+            return workspace
+
+        async def change_after_ensure(*args):
+            workspace = await ensure_workspace(*args)
+            await change_selection()
+            changed_after_preflight.append("analysis")
+            return workspace
+
+        monkeypatch.setattr(coding, "_free_workspace", change_after_free)
+        monkeypatch.setattr(analysis, "_ensure_workspace", change_after_ensure)
+
+    coding_ids = await coding.poll_once()
+    if scenario == "settings-changed":
+        await original_selection()
+    analysis_ids = await analysis.poll_once()
+    if scenario == "settings-changed":
+        assert changed_after_preflight == ["coding", "analysis"]
+    rows = await db.list_sessions()
+    assert {row["trigger_kind"] for row in rows} == expected_kinds, coding.status()["last_error"]
+    assert set(coding_ids + analysis_ids) == {row["id"] for row in rows}
+    assert coding._acknowledge.await_count == len(coding_ids)
+    for row in rows:
+        pin = row["model"], row["inference_provider_id"], row["inference_model_id"], row["inference_base_url"]
+        if scenario == "legacy-local":
+            assert pin == (None, None, None, None)
+        elif scenario == "pinned-local":
+            assert pin == ("local-model", None, None, None)
+        else:
+            assert pin == ("cloud-model", 3, 8, "https://cloud.example")
+        platform_issue = scenario == "platform-cloud-only" and row["trigger_kind"] == "issue"
+        assert row["team_repository_id"] == (None if platform_issue else 1)
+        assert row["status"] == "queued"
+        if row["trigger_kind"] == "analysis":
+            assert row["no_push"]
+            async with database.begin() as conn:
+                assert await conn.scalar(
+                    text("SELECT automatically_queued FROM ai_workflow_analyses WHERE agent_session_id = :id"),
+                    {"id": row["id"]},
+                )
 
 
 async def test_unrestricted_access_follows_the_link_only_while_it_names_the_sessions_repository(database):

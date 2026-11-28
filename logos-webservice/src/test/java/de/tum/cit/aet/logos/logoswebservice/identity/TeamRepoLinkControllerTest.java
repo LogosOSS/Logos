@@ -639,6 +639,71 @@ class TeamRepoLinkControllerTest {
     }
 
     @Test
+    void allWorkflowAnalysisProducersPinTheInferenceSelectionAtQueueTime() throws Exception {
+        String base = "/admin/teams/2001/repositories";
+        int legacyId = createAnalysisLink(base, "pin-legacy");
+        int localId = createAnalysisLink(base, "pin-local");
+        int cloudId = createAnalysisLink(base, "pin-cloud");
+        int manualCloudId = createAnalysisLink(base, "pin-manual-cloud");
+        String confirmedBase = "https://logs.example/v1";
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM agent_inference_settings", Integer.class));
+        try {
+            queueManualAnalysis(base, legacyId);
+            assertAnalysisPin(legacyId, null, null, null, null, false);
+            jdbc.update("INSERT INTO agent_inference_settings (id, mode, model, updated_by) VALUES (1, 'local', 'local-exact', 'test')");
+            queueManualAnalysis(base, localId);
+            assertAnalysisPin(localId, "local-exact", null, null, null, false);
+            jdbc.update("""
+                UPDATE agent_inference_settings SET mode='cloud', model='remote-exact', provider_id=71,
+                    model_id=72, provider_base_url=? WHERE id=1
+                """, confirmedBase);
+            queueManualAnalysis(base, manualCloudId);
+            assertAnalysisPin(manualCloudId, "remote-exact", 71, 72, confirmedBase, false);
+            mvc.perform(post("/admin/repositories/analyze").with(TestJwt.logosAdmin())).andExpect(status().isOk());
+            assertAnalysisPin(cloudId, "remote-exact", 71, 72, confirmedBase, true);
+
+            jdbc.update("""
+                UPDATE agent_inference_settings SET mode='local', model=NULL, provider_id=NULL,
+                    model_id=NULL, provider_base_url=NULL WHERE id=1
+                """);
+            assertAnalysisPin(legacyId, null, null, null, null, false);
+            assertAnalysisPin(localId, "local-exact", null, null, null, false);
+            assertAnalysisPin(cloudId, "remote-exact", 71, 72, confirmedBase, true);
+        } finally {
+            jdbc.update("DELETE FROM agent_inference_settings WHERE id=1");
+        }
+    }
+
+    private int createAnalysisLink(String base, String repo) throws Exception {
+        var created = mvc.perform(post(base).with(TestJwt.logosAdmin()).contentType("application/json")
+                .content("{\"repo_url\":\"https://github.com/example/" + repo + "\"}"))
+            .andExpect(status().isOk()).andReturn();
+        return mapper.readTree(created.getResponse().getContentAsString()).get("id").asInt();
+    }
+
+    private void queueManualAnalysis(String base, int id) throws Exception {
+        mvc.perform(post(base + "/" + id + "/analyze/agent").with(TestJwt.logosAdmin()))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("queued"));
+    }
+
+    private void assertAnalysisPin(int linkId, String model, Integer providerId, Integer modelId,
+            String baseUrl, boolean automatic) {
+        var row = jdbc.queryForMap("""
+            SELECT s.model, s.inference_provider_id, s.inference_model_id, s.inference_base_url,
+                   s.no_push, s.trigger_kind, a.automatically_queued
+              FROM agent_sessions s JOIN ai_workflow_analyses a ON a.agent_session_id = s.id
+             WHERE s.team_repository_id = ?
+            """, linkId);
+        assertEquals(model, row.get("model"));
+        assertEquals(providerId, row.get("inference_provider_id"));
+        assertEquals(modelId, row.get("inference_model_id"));
+        assertEquals(baseUrl, row.get("inference_base_url"));
+        assertEquals(true, row.get("no_push"));
+        assertEquals("analysis", row.get("trigger_kind"));
+        assertEquals(automatic, row.get("automatically_queued"));
+    }
+
+    @Test
     void analyzeAll_queuesEveryLinkOnceAndIsLogosAdminOnly() throws Exception {
         for (String repo : new String[] {"all-a", "all-b"}) {
             mvc.perform(post("/admin/teams/2001/repositories")

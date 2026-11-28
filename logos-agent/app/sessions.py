@@ -41,6 +41,7 @@ from . import (
     egress_proxy,
     github,
     github_broker,
+    inference_settings,
     memory_budget,
     memory_usage,
     model_policy,
@@ -311,6 +312,18 @@ async def memory_admission_block(control: controls.Controls, *, override_mb: int
     )
 
 
+async def remote_admission_block(control: controls.Controls, *, active: int, override_mb: int | None = None) -> str:
+    """Why new remote sessions cannot start; local GPU measurements are irrelevant."""
+    if not inference_settings.remote_transport_configured():
+        return "The remote inference relay is not configured"
+    blocked = control.admission_block(override_mb)
+    if blocked:
+        return blocked
+    if active >= control.parallel_for(override_mb):
+        return "The runner has reached its parallel session limit"
+    return await memory_admission_block(control, override_mb=override_mb)
+
+
 # The memory each session was started with, from the claim or, after a
 # restart, from its row. Its helpers get the same limit.
 _session_memory: dict[int, int] = {}
@@ -388,9 +401,10 @@ def _sessions_lane(
     embedding or speech lane that reports no engine observation — must not
     make that reading unknown and pause, or hold back, unrelated work.
     """
-    if not sessions:
+    local = [session for session in sessions if not inference_settings.is_remote(session)]
+    if not local:
         return None
-    lanes = [policy.lane(policy.resolve(session.get("model"))) or frozenset() for session in sessions]
+    lanes = [policy.lane(policy.resolve(session.get("model"))) or frozenset() for session in local]
     return frozenset().union(*lanes)
 
 
@@ -404,6 +418,8 @@ def _ours_by_model(running: list[dict[str, Any]], policy: model_policy.ModelPoli
     """
     counted: dict[str, int] = {}
     for session in running:
+        if inference_settings.is_remote(session):
+            continue
         # Under the name the platform's own figures use: a session created
         # with an alias would otherwise be counted under a key that matches
         # no lane, and the discount would quietly do nothing.
@@ -1101,7 +1117,8 @@ class SessionManager:
             # interrupted or cancelled upstream a second time.
             running = await db.sessions_in_status(SessionStatus.RUNNING)
             for session in running:
-                await self._pause(session, why)
+                if control.paused or not inference_settings.is_remote(session):
+                    await self._pause(session, why)
         return True
 
     async def _capacity_watch_pass(self) -> None:
@@ -1117,7 +1134,9 @@ class SessionManager:
         )
         self._last_reading = measured
         self._observe_capacity(reading)
-        await self._yield_for_capacity(reading, control, running=bool(running))
+        await self._yield_for_capacity(
+            reading, control, running=any(not inference_settings.is_remote(row) for row in running)
+        )
 
     async def _capacity_watch_loop(self) -> None:
         while not self._stopping.is_set():
@@ -1154,6 +1173,57 @@ class SessionManager:
         task.add_done_callback(self._requested_passes.discard)
 
     async def scheduler_pass(self) -> None:
+        if await db.has_waiting_remote_sessions():
+            await self._honor_cancel_requests()
+            if await self._advance_remote_sessions():
+                return
+        await self._schedule_local_capacity()
+
+    async def _advance_remote_sessions(self) -> bool:
+        """Use the regular global controls and memory limits, not local GPU load."""
+        async with self._admission_lock:
+            control = await controls.current()
+            if not control.may_resume():
+                return False
+            running = await db.sessions_in_status(SessionStatus.RUNNING)
+            paused = await db.sessions_in_status(SessionStatus.PAUSED)
+            for session in paused:
+                if inference_settings.is_remote(session) and len(running) < control.parallel_for(
+                    session.get("memory_override_mb")
+                ):
+                    if await self._resume(session, "remote inference does not occupy local GPUs"):
+                        return True
+
+            candidate = await db.next_queued_session(remote=True)
+            if candidate is None:
+                return False
+            override_mb = candidate.get("memory_override_mb")
+            ceiling = control.parallel_for(override_mb)
+            if await remote_admission_block(control, active=len(running) + len(paused), override_mb=override_mb):
+                return False
+            limit_mb = override_mb or control.session_memory_mb
+            budget = memory_budget.current()
+            memory_claim = (
+                {
+                    "memory_budget_mb": budget.budget_mb - sum(_held_memory.values()),
+                    "legacy_default_mb": settings.session_memory_mb,
+                }
+                if budget is not None
+                else {}
+            )
+            taken = await db.claim_session(int(candidate["id"]), max_active=ceiling, memory_mb=limit_mb, **memory_claim)
+            if not taken:
+                return False
+            taken = {**taken, "memory_mb": limit_mb}
+            _remember_memory(taken)
+            self._register_launch(taken["id"])
+            await db.add_event(
+                taken["id"], EventKind.CAPACITY, {"decision": "start", "reason": "pinned remote Agent inference"}
+            )
+            await self._launch(taken)
+            return True
+
+    async def _schedule_local_capacity(self) -> None:
         # Permissions first, then the measurement they describe: a key moved
         # to another model — or stripped of its local one while a session was
         # paused — must not have its old lane decide whether that session is
@@ -1206,10 +1276,13 @@ class SessionManager:
         # 1. Give capacity back first. Yielding always takes precedence over
         #    admitting, so a burst of user traffic is never met by the runner
         #    starting another session in the same pass.
-        if await self._yield_for_capacity(reading, control, running=bool(running)):
+        if await self._yield_for_capacity(
+            reading, control, running=any(not inference_settings.is_remote(row) for row in running)
+        ):
             return
 
         # 2. Resume what was paused, oldest first.
+        paused = [row for row in paused if not inference_settings.is_remote(row)]
         if paused and reading.dynamic:
             # A fresh engine sample buys at most one transition. Quiet time
             # and a newer measurement are both required after yielding.
@@ -1217,7 +1290,11 @@ class SessionManager:
                 policy = await model_policy.refresh()
                 control = await controls.current()
                 running = await db.sessions_in_status(SessionStatus.RUNNING)
-                paused = await db.sessions_in_status(SessionStatus.PAUSED)
+                paused = [
+                    row
+                    for row in await db.sessions_in_status(SessionStatus.PAUSED)
+                    if not inference_settings.is_remote(row)
+                ]
                 if not policy.ok or not control.may_resume():
                     return
                 for session in paused:
@@ -1311,7 +1388,7 @@ class SessionManager:
             # The queue prefers claimable manual work. If none is waiting,
             # automated work can use the same capacity instead of reserving it.
             candidate = await db.next_queued_session()
-            if candidate is None:
+            if candidate is None or inference_settings.is_remote(candidate):
                 return
             wanted = admission_policy.resolve(candidate.get("model"))
             running = await db.sessions_in_status(SessionStatus.RUNNING)
@@ -1399,7 +1476,10 @@ class SessionManager:
         # than when each answer is done. The agent sees a network error on
         # resume and retries, which is the cheapest possible way to lose an
         # in-flight answer.
-        await self._detach_from_model_gateway(sid, container_id)
+        if inference_settings.is_remote(session):
+            await self._detach_from_model_gateway(sid, container_id, remote=True)
+        else:
+            await self._detach_from_model_gateway(sid, container_id)
         self._say_it_was_interrupted(sid)
         if await db.transition_session(sid, SessionStatus.PAUSED):
             await db.add_event(sid, EventKind.CAPACITY, {"decision": "pause", "reason": reason})
@@ -1448,7 +1528,19 @@ class SessionManager:
             # giving capacity back matters more than being able to explain it.
             logger.info("could not mark session %s as interrupted: %s", session_id, exc)
 
-    async def _detach_from_model_gateway(self, session_id: int, container_id: str) -> None:
+    async def _detach_from_model_gateway(self, session_id: int, container_id: str, *, remote: bool = False) -> None:
+        if remote:
+            # Remote streams need no local worker cancellation request. The
+            # detached connection closes and any later binding must be new.
+            try:
+                await docker_engine.disconnect_network(inference_settings.remote_network(), container_id)
+            except Exception:
+                logger.warning("Could not detach the remote agent session %s", session_id, exc_info=True)
+            try:
+                await db.clear_agent_inference_client_tag(session_id)
+            except Exception:
+                logger.warning("Could not clear the remote Agent client binding for session %s", session_id)
+            return
         # The address is read before the detach takes it away: it is what
         # the gateway tagged this session's requests with.
         try:
@@ -1496,13 +1588,25 @@ class SessionManager:
         # Attach first: a session thawed without its network would fail on
         # its next model call, which is worse than staying paused one more
         # tick.
+        remote = inference_settings.is_remote(session)
         try:
-            attached = await docker_engine.connect_network(settings.session_network, container_id)
+            if remote:
+                if not await inference_settings.permits_pin(session):
+                    await self._settle(sid, exit_code=None, error="The pinned remote Agent model is no longer eligible")
+                    return False
+                await db.clear_agent_inference_client_tag(sid)
+            attached = await docker_engine.connect_network(inference_settings.session_network(session), container_id)
         except Exception as exc:
             logger.error("could not reattach session %s to the session network: %s", sid, exc)
             return False
         if not attached:
             logger.error("session %s could not be reattached to the session network; leaving it paused", sid)
+            return False
+        if remote and not await db.transition_session(sid, SessionStatus.RUNNING):
+            # On remote sessions the relay checks the row before accepting
+            # a request. Publish its running state before thaw, while the
+            # authenticated container cannot make a request yet.
+            await self._detach_from_model_gateway(sid, container_id, remote=True)
             return False
         if session.get("active_seconds") is not None:
             self._publish_active_origin(sid, time.time() - session["active_seconds"])
@@ -1513,11 +1617,14 @@ class SessionManager:
             # pass down with it: everything behind this session — resuming,
             # admitting, sweeping — would stop with it.
             logger.error("could not resume session %s: %s", sid, exc)
-            return False
+            thawed = False
         if not thawed:
+            if remote:
+                await db.transition_session(sid, SessionStatus.PAUSED)
+                await self._detach_from_model_gateway(sid, container_id, remote=True)
             logger.info("session %s could not be resumed; its container is not running", sid)
             return False
-        if await db.transition_session(sid, SessionStatus.RUNNING):
+        if remote or await db.transition_session(sid, SessionStatus.RUNNING):
             await db.add_event(sid, EventKind.CAPACITY, {"decision": "resume", "reason": reason})
             logger.info("resumed session %s: %s", sid, reason)
             return True
@@ -1612,26 +1719,24 @@ class SessionManager:
             )
             return
 
-        # The model is checked again here, against the policy this pass
-        # established: a session queued while its model was local must not
-        # start after that model gained a cloud deployment. This is the last
-        # point before a container is given the gateway's address.
-        policy = model_policy.current()
-        if not policy.allows(session.get("model")):
-            await self._settle(sid, exit_code=None, error=policy.refusal(session.get("model")))
-            return
-        # What the session will actually be driven by, recorded on the row:
-        # everything it publishes names this model, and "the default" says
-        # nothing once the default has changed.
-        resolved = policy.resolve(session.get("model"))
-        if resolved and resolved != session.get("model"):
-            session = {**session, "model": resolved}
-            try:
-                await db.update_session(sid, model=resolved)
-            except Exception as exc:
-                # Publishing falls back to the policy's default; the launch
-                # does not fail over a record.
-                logger.info("could not record the model of session %s: %s", sid, exc)
+        remote = inference_settings.is_remote(session)
+        if remote:
+            if not await self._remote_pin_is_eligible(session):
+                await self._settle(sid, exit_code=None, error="The pinned remote Agent model is no longer eligible")
+                return
+        else:
+            # Local grants may change after the session was queued.
+            policy = model_policy.current()
+            if not policy.allows(session.get("model")):
+                await self._settle(sid, exit_code=None, error=policy.refusal(session.get("model")))
+                return
+            resolved = policy.resolve(session.get("model"))
+            if resolved and resolved != session.get("model"):
+                session = {**session, "model": resolved}
+                try:
+                    await db.update_session(sid, model=resolved)
+                except Exception as exc:
+                    logger.info("could not record the model of session %s: %s", sid, exc)
 
         container_id: str | None = None
         try:
@@ -1736,6 +1841,24 @@ class SessionManager:
             except Exception as exc:
                 logger.info("could not record what session %s was told: %s", sid, exc)
 
+            network = {}
+            grant_env = {}
+            if remote:
+                # Checkout can take minutes: revalidate immediately before
+                # granting access. The digest commits before the container can
+                # connect. The only recipient of the random plaintext is its env.
+                if not await self._remote_pin_is_eligible(session):
+                    await self._settle(sid, exit_code=None, error="The pinned remote Agent model is no longer eligible")
+                    return
+                await docker_engine.ensure_network(inference_settings.remote_network(), internal=True)
+                if launch.cancelled:
+                    return
+                grant = await inference_settings.issue_remote_grant(sid)
+                if grant is None or launch.cancelled:
+                    return
+                grant_env = {"inference_grant": grant}
+                network = {"network": inference_settings.remote_network()}
+
             container_id = await docker_engine.create_session_container(
                 name=container_name(sid),
                 image=settings.workspace_image,
@@ -1747,6 +1870,7 @@ class SessionManager:
                     notes=notes,
                     egress_token=egress_token,
                     sandboxed=sandboxed,
+                    **grant_env,
                 ),
                 workspace_volume=workspace["volume_name"],
                 artifact_host_path=artifact_host_path,
@@ -1759,6 +1883,7 @@ class SessionManager:
                 session_id=sid,
                 cache_volume=cache_volume_for(workspace) if sandboxed else None,
                 memory_mb=session.get("memory_mb"),
+                **network,
             )
             # Boundary: the container exists but has not run. Give it back
             # rather than starting an agent for a cancelled session.
@@ -1772,17 +1897,21 @@ class SessionManager:
                 # The failure is the cancellation working: the helper was
                 # stopped under the launch. The row is already terminal, so
                 # settling it again would only record a spurious error.
-                logger.info("launch of cancelled session %s ended: %s", sid, exc)
+                logger.info("launch of cancelled session %s ended: %s", sid, type(exc).__name__ if remote else exc)
                 if container_id:
                     await self._relinquish_container(container_id, _memory_of(session))
                 return
-            logger.exception("failed to launch session %s", sid)
+            if remote:
+                logger.warning("Failed to launch remote Agent session %s (%s)", sid, type(exc).__name__)
+            else:
+                logger.exception("failed to launch session %s", sid)
             # Settlement removes the container by the id stored in the
             # database, which is still null on a failed start — remove the
             # created container here or it survives until a reconcile.
             if container_id:
                 await _remove_held_container(_hold(_memory_of(session)), container_id)
-            await self._settle(sid, exit_code=None, error=f"launch failed: {exc}")
+            error = "remote Agent container launch failed" if remote else f"launch failed: {exc}"
+            await self._settle(sid, exit_code=None, error=error)
             return
 
         if launch.cancelled:
@@ -1875,6 +2004,14 @@ class SessionManager:
             logger.info("session %s was given %s image(s) from its request", session_id, len(paths))
         return paths
 
+    async def _remote_pin_is_eligible(self, session: dict[str, Any]) -> bool:
+        try:
+            return await inference_settings.permits_pin(session)
+        except Exception:
+            # The failure body never contains the endpoint or any credentials.
+            logger.warning("Could not verify Agent inference deployment for session %s", session["id"])
+            return False
+
     def _session_env(
         self,
         session: dict[str, Any],
@@ -1885,18 +2022,22 @@ class SessionManager:
         notes: str = "",
         egress_token: str = "",
         sandboxed: bool = False,
+        inference_grant: str = "",
     ) -> dict[str, str]:
         """The environment the untrusted agent phase runs with.
 
-        Nothing reusable: no GitHub token (the helper phases do the
-        authenticated work), no model credential (the gateway injects it —
-        the placeholder only keeps the CLI from refusing to start without a
-        token). No workflow scope, no production URL, no internal secret.
+        No GitHub or upstream-provider keys. Trusted helpers handle GitHub.
+        Local inference uses the credential-injecting gateway. A remote
+        session receives only its own short-scope gateway grant.
         """
         # The policy resolves what "no model named" means — the configured
         # default, or the single local model of a one-model deployment — and
         # it has already refused anything that is not served locally.
-        model = model_policy.current().resolve(session.get("model"))
+        remote = inference_settings.is_remote(session)
+        if remote and not inference_grant:
+            raise ValueError("A pinned remote session requires a gateway grant")
+        model = session.get("model") if remote else model_policy.current().resolve(session.get("model"))
+        model_url = inference_settings.REMOTE_GATEWAY if remote else settings.session_model_url
         env = {
             "LOGOS_SESSION_PHASE": "agent",
             # Set when the preparation restored this workspace's earlier
@@ -1917,8 +2058,8 @@ class SessionManager:
             # the internal session network reaches only the gateway, and the
             # gateway replaces whatever credential the container sends with
             # the real one — the container holds none.
-            "ANTHROPIC_BASE_URL": settings.session_model_url,
-            "ANTHROPIC_AUTH_TOKEN": "injected-by-logos-agent-gateway",
+            "ANTHROPIC_BASE_URL": model_url,
+            "ANTHROPIC_AUTH_TOKEN": inference_grant if remote else "injected-by-logos-agent-gateway",
             "ANTHROPIC_API_KEY": "",
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
             "LOGOS_SESSION_ID": str(session["id"]),
@@ -1945,7 +2086,7 @@ class SessionManager:
             env["LOGOS_CACHE_DIR"] = "/cache"
         if egress_token:
             proxy = _proxy_url(settings.egress_proxy_url, int(session["id"]), egress_token)
-            gateway = urlsplit(settings.session_model_url).hostname or ""
+            gateway = urlsplit(model_url).hostname or ""
             # HTTPS goes through the allowlisting proxy, which refuses hosts
             # the repository was not granted. Plain HTTP is not proxied at all
             # (the proxy only tunnels HTTPS), so the model gateway, reached
@@ -3125,6 +3266,7 @@ class SessionManager:
                 repo_base_branch=session.get("repo_base_branch"),
                 retry_analysis_session_id=session.get("id") if session.get("trigger_kind") == "analysis" else None,
                 point_workspace_at=resumption_base(session),
+                retry_inference_session_id=int(session["id"]),
             )
         except Exception as exc:
             logger.warning("could not take session %s up again: %s", session.get("id"), exc)

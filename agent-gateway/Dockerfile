@@ -20,3 +20,5 @@ FROM nginx:1.31-alpine
 
 COPY agent-gateway/nginx.conf /etc/nginx/templates/default.conf.template
 COPY --chmod=755 agent-gateway/internal-secret.envsh /docker-entrypoint.d/18-internal-secret.envsh
+COPY agent-gateway/remote-model-gateway.conf.template agent-gateway/remote-model-proxy.conf.template /etc/nginx/
+COPY --chmod=755 agent-gateway/select-model-gateway.sh /docker-entrypoint.d/17-select-model-gateway.sh

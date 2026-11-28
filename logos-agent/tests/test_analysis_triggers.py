@@ -31,7 +31,7 @@ def _poller(monkeypatch, links: list[dict], heads: dict[str, str | None]) -> tup
     async def links_for_nightly():
         return links
 
-    async def queue(link, *, previous_commit=None):
+    async def queue(link, *, previous_commit=None, selected=None):
         queued.append((link["repo_slug"], previous_commit))
         return 1000 + int(link["id"])
 
@@ -126,7 +126,7 @@ async def test_a_failed_nightly_pass_is_retried_within_the_hour(monkeypatch):
     async def nothing(*args, **kwargs):
         return []
 
-    async def boom():
+    async def boom(*, selected):
         raise RuntimeError("db down")
 
     class _Control:
@@ -140,7 +140,11 @@ async def test_a_failed_nightly_pass_is_retried_within_the_hour(monkeypatch):
     monkeypatch.setattr(poller, "_links_needing_analysis", nothing)
     monkeypatch.setattr(poller, "_nightly_pass", boom)
     monkeypatch.setattr(analysis_triggers.controls, "current", current)
-    monkeypatch.setattr(analysis_triggers.model_policy, "current", lambda: type("P", (), {"ok": True, "detail": ""})())
+    monkeypatch.setattr(
+        analysis_triggers.inference_settings.model_policy,
+        "current",
+        lambda: type("P", (), {"ok": True, "detail": ""})(),
+    )
 
     night = datetime(2026, 10, 3, 1, 5, tzinfo=timezone.utc)
 
@@ -174,7 +178,7 @@ async def test_a_stopped_runner_still_queues_analysis(monkeypatch):
     async def needing():
         return [link]
 
-    async def queue(item, *, previous_commit=None):
+    async def queue(item, *, previous_commit=None, selected=None):
         queued_links.append(item)
         return 42
 
@@ -189,7 +193,11 @@ async def test_a_stopped_runner_still_queues_analysis(monkeypatch):
     monkeypatch.setattr(poller, "_links_needing_analysis", needing)
     monkeypatch.setattr(poller, "_queue", queue)
     monkeypatch.setattr(analysis_triggers.controls, "current", current)
-    monkeypatch.setattr(analysis_triggers.model_policy, "current", lambda: type("P", (), {"ok": True, "detail": ""})())
+    monkeypatch.setattr(
+        analysis_triggers.inference_settings.model_policy,
+        "current",
+        lambda: type("P", (), {"ok": True, "detail": ""})(),
+    )
 
     sessions = await poller.poll_once()
 
@@ -209,7 +217,7 @@ async def test_a_stopped_runner_still_queues_nightly_analysis(monkeypatch):
     async def for_nightly():
         return [link]
 
-    async def queue(item, *, previous_commit=None):
+    async def queue(item, *, previous_commit=None, selected=None):
         queued.append((item, previous_commit))
         return 99
 
@@ -236,7 +244,11 @@ async def test_a_stopped_runner_still_queues_nightly_analysis(monkeypatch):
     monkeypatch.setattr(poller, "_queue", queue)
     monkeypatch.setattr(github, "branch_head", head)
     monkeypatch.setattr(analysis_triggers.controls, "current", current)
-    monkeypatch.setattr(analysis_triggers.model_policy, "current", lambda: type("P", (), {"ok": True, "detail": ""})())
+    monkeypatch.setattr(
+        analysis_triggers.inference_settings.model_policy,
+        "current",
+        lambda: type("P", (), {"ok": True, "detail": ""})(),
+    )
     monkeypatch.setattr(analysis_triggers, "datetime", _Clock)
 
     sessions = await poller.poll_once()

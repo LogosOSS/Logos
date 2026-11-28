@@ -1,0 +1,25 @@
+# This instance is reachable only from the remote session network and
+# exposes no route to the legacy local model gateway or the runner.
+geo $logos_dollar {
+    default "$";
+}
+
+server {
+    listen 80;
+    # Do not record bearer grants, query strings or client-provided headers.
+    access_log off;
+    client_max_body_size 51m;
+
+    location = /v1/messages {
+        include /etc/nginx/conf.d/includes/remote-model-proxy.conf;
+        proxy_pass http://logos-webservice:8081/v1/messages;
+    }
+
+    location = /healthz {
+        return 200;
+    }
+
+    location / {
+        return 404;
+    }
+}

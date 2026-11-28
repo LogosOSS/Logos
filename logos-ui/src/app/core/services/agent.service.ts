@@ -7,6 +7,8 @@ import {
   AgentControls,
   AgentEvent,
   AgentInstructions,
+  AgentInferenceSelection,
+  AgentInferenceSettings,
   AgentModels,
   AgentRepository,
   AgentSession,
@@ -22,6 +24,16 @@ export class AgentService {
   private http = inject(HttpClient);
   private keycloak = inject(KEYCLOAK);
   private static readonly BASE = '/api/agent';
+
+  getInferenceSettings(): Promise<AgentInferenceSettings> {
+    return firstValueFrom(this.http.get<AgentInferenceSettings>(`${AgentService.BASE}/inference-settings`));
+  }
+
+  setInferenceSettings(selection: AgentInferenceSelection): Promise<AgentInferenceSettings> {
+    return firstValueFrom(
+      this.http.put<AgentInferenceSettings>(`${AgentService.BASE}/inference-settings`, selection),
+    );
+  }
 
   // ── workspaces ───────────────────────────────────────────────────────────
   getWorkspaces(): Promise<AgentWorkspace[]> {

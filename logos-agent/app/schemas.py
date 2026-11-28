@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -162,6 +163,26 @@ class SessionCreate(BaseModel):
         return v
 
 
+class InferenceSettingsUpdate(BaseModel):
+    mode: Literal["local", "cloud"]
+    model: str | None = Field(default=None, min_length=1, max_length=255)
+    provider_id: int | None = Field(default=None, strict=True, ge=1, le=2147483647)
+    model_id: int | None = Field(default=None, strict=True, ge=1, le=2147483647)
+
+
+class CloudInferenceOption(BaseModel):
+    provider_id: int
+    provider_name: str
+    model_id: int
+    model: str
+
+
+class InferenceSettings(InferenceSettingsUpdate):
+    local_models: list[str]
+    cloud_options: list[CloudInferenceOption]
+    cloud_selection_valid: bool = True
+
+
 class SessionSummary(BaseModel):
     id: int
     workspace_id: int
@@ -169,6 +190,8 @@ class SessionSummary(BaseModel):
     task: str
     status: SessionStatus
     model: str | None
+    inference_provider_id: int | None = None
+    inference_model_id: int | None = None
     branch_name: str | None
     pr_url: str | None
     created_by: str
@@ -334,6 +357,8 @@ class CapacityState(BaseModel):
     max_parallel: int
     may_start: bool
     reason: str
+    remote_may_start: bool
+    remote_reason: str
     # Whether every model the runner's key can reach is served locally. False
     # stops admission outright: agent work is paid for in idle GPU time, never
     # in cloud tokens.

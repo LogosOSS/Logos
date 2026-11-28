@@ -33,4 +33,12 @@ public class SchedulingConfig {
         scheduler.setThreadNamePrefix("provider-spend-");
         return scheduler;
     }
+    /** Cancel stale agent streams independently of gateway accounting refresh. */
+    @Bean(defaultCandidate = false, destroyMethod = "shutdown")
+    public ThreadPoolTaskScheduler agentInferenceRelayScheduler() {
+        ThreadPoolTaskScheduler scheduler = new ThreadPoolTaskScheduler();
+        scheduler.setPoolSize(1);
+        scheduler.setThreadNamePrefix("agent-inference-relay-");
+        return scheduler;
+    }
 }
