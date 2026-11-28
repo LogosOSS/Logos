@@ -7,7 +7,6 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
-import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Locale;
@@ -20,10 +19,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataAccessException;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
@@ -34,14 +30,15 @@ import org.springframework.web.server.ResponseStatusException;
 /** Privileged upstream transport. The workspace grant is never an upstream credential. */
 @Service
 final class AgentInferenceRelay {
-    private static final Logger LOG = LoggerFactory.getLogger(AgentInferenceRelay.class);
     private static final Duration IDLE = Duration.ofMinutes(30);
+    private static final Set<String> MESSAGES_BASE_PATHS = Set.of("", "/", "/v1", "/v1/");
     private static final String ACTIVE_SESSION = """
         s.status IN ('starting', 'running') AND COALESCE(s.error, '') NOT LIKE 'cancel_requested:%'
         """;
 
     private static final String REMOTE_SCOPE = """
         p.provider_type = 'cloud' AND p.cloud_provider_type = 'logos'
+        AND p.base_url = s.inference_base_url
         AND (
             (LOWER(BTRIM(COALESCE(p.auth_name, ''))) = '' AND COALESCE(p.auth_format, '') = '')
             OR (LOWER(BTRIM(COALESCE(p.auth_name, ''))) IN ('', 'authorization') AND p.auth_format = 'Bearer {}')
@@ -71,59 +68,51 @@ final class AgentInferenceRelay {
         """;
 
     record Grant(long sessionId, String hash, String tag, int providerId, int modelId, String model,
-                 URI origin, String operatingKey) {
+                 URI target, String operatingKey) {
         // Do not expose credential-bearing record component values in logging.
         @Override public String toString() { return "AgentInferenceGrant[sessionId=" + sessionId + "]"; }
     }
 
-    private record Scope(String hash, String tag, int providerId, int modelId, String model, URI origin) { }
+    private record Scope(String hash, String tag, int providerId, int modelId, String model, URI target) { }
 
     private final NamedParameterJdbcTemplate jdbc;
     private final ProviderSpendCapService providerSpend;
     private final HttpClient upstream;
-    private final Set<URI> allowedOrigins;
     private final Semaphore admission = new Semaphore(8);
     private final Set<ActiveRelay> activeRelays = ConcurrentHashMap.newKeySet();
 
     @Autowired
-    AgentInferenceRelay(NamedParameterJdbcTemplate jdbc, ProviderSpendCapService providerSpend,
-            @Value("${LOGOS_AGENT_REMOTE_ALLOWED_ORIGINS:}") String origins) {
-        this(jdbc, providerSpend, origins, HttpClient.newBuilder()
+    AgentInferenceRelay(NamedParameterJdbcTemplate jdbc, ProviderSpendCapService providerSpend) {
+        this(jdbc, providerSpend, HttpClient.newBuilder()
             .version(HttpClient.Version.HTTP_1_1).followRedirects(HttpClient.Redirect.NEVER)
             .connectTimeout(Duration.ofSeconds(10)).build());
     }
 
     AgentInferenceRelay(NamedParameterJdbcTemplate jdbc, ProviderSpendCapService providerSpend,
-            String origins, HttpClient upstream) {
+            HttpClient upstream) {
         this.jdbc = jdbc;
         this.providerSpend = providerSpend;
         this.upstream = upstream;
-        Set<URI> parsed = new HashSet<>();
-        try {
-            Arrays.stream(origins.split(",", -1)).filter(s -> !s.isBlank()).forEach(s -> parsed.add(origin(s.strip())));
-        } catch (IllegalArgumentException e) {
-            // Disable the optional relay without making other routes unavailable.
-            LOG.warn("Invalid remote agent origin configuration; agent inference relay disabled");
-            parsed.clear();
-        }
-        this.allowedOrigins = Set.copyOf(parsed);
     }
 
-    static URI origin(String value) {
+    static URI messagesTarget(String value) {
         URI url = URI.create(value);
-        if (!"https".equalsIgnoreCase(url.getScheme()) || url.getHost() == null || url.getPort() == 0
-                || url.getPort() > 65535 || url.getRawUserInfo() != null
+        // Logos providers support Messages on the standard surface. The
+        // registry can store the root or the same root with the API version.
+        // Neither a per-model endpoint nor caller input chooses this URL.
+        if (!"https".equalsIgnoreCase(url.getScheme()) || url.getHost() == null
+                || url.getRawAuthority().endsWith(":") || url.getHost().contains("%")
+                || url.getPort() == 0 || url.getPort() > 65535 || url.getRawUserInfo() != null
                 || url.getRawQuery() != null || url.getRawFragment() != null
-                || !("".equals(url.getRawPath()) || "/".equals(url.getRawPath()))) {
-            throw new IllegalArgumentException("Remote agent deployment requires an HTTPS origin");
+                || !MESSAGES_BASE_PATHS.contains(url.getRawPath())) {
+            throw new IllegalArgumentException("Remote Agent deployment requires a Logos HTTPS base URL");
         }
         int port = url.getPort();
         return URI.create("https://" + url.getHost().toLowerCase(Locale.ROOT)
-            + (port < 0 || port == 443 ? "" : ":" + port));
+            + (port < 0 || port == 443 ? "" : ":" + port) + "/v1/messages");
     }
 
     Grant authorize(String hash, String tag) {
-        if (allowedOrigins.isEmpty()) throw unavailable();
         try {
             Map<String, String> identity = Map.of("hash", hash, "tag", tag);
             // Bind on first use. UPDATE only touches the one unbound row; matched
@@ -150,12 +139,12 @@ final class AgentInferenceRelay {
                     }
                     URI destination;
                     try {
-                        destination = origin(rs.getString("base_url"));
+                        destination = messagesTarget(rs.getString("base_url"));
                     } catch (IllegalArgumentException | NullPointerException e) {
                         throw unavailable();
                     }
                     String key = rs.getString("operating_key");
-                    if (!allowedOrigins.contains(destination) || key == null || key.isBlank()
+                    if (key == null || key.isBlank()
                             || key.length() > 512 || !key.matches("[A-Za-z0-9._~+/=-]+")) {
                         throw unavailable();
                     }
@@ -178,8 +167,7 @@ final class AgentInferenceRelay {
     HttpResponse<InputStream> forward(ActiveRelay relay, byte[] body, String beta) {
         Grant grant = relay.grant;
         providerSpend.check(grant.providerId());
-        URI target = grant.origin().resolve("/v1/messages");
-        HttpRequest.Builder request = HttpRequest.newBuilder(target).timeout(IDLE)
+        HttpRequest.Builder request = HttpRequest.newBuilder(grant.target()).timeout(IDLE)
             .header("Authorization", "Bearer " + grant.operatingKey())
             .header("Content-Type", "application/json")
             .header("Accept", "application/json, text/event-stream")
@@ -226,7 +214,7 @@ final class AgentInferenceRelay {
                     try {
                         valid.put(id, new Scope(rs.getString("inference_grant_hash"),
                             rs.getString("inference_client_tag"), rs.getInt("inference_provider_id"),
-                            rs.getInt("inference_model_id"), rs.getString("name"), origin(rs.getString("base_url"))));
+                            rs.getInt("inference_model_id"), rs.getString("name"), messagesTarget(rs.getString("base_url"))));
                     } catch (IllegalArgumentException | NullPointerException ignored) {
                         // A changed/invalid target must no longer own an active stream.
                     }
@@ -237,7 +225,7 @@ final class AgentInferenceRelay {
                 Scope scope = valid.get(grant.sessionId());
                 if (scope == null || !grant.hash().equals(scope.hash()) || !grant.tag().equals(scope.tag())
                         || grant.providerId() != scope.providerId() || grant.modelId() != scope.modelId()
-                        || !grant.model().equals(scope.model()) || !grant.origin().equals(scope.origin())
+                        || !grant.model().equals(scope.model()) || !grant.target().equals(scope.target())
                         || now - relay.lastActivity > IDLE.toNanos()) {
                     relay.close();
                 }

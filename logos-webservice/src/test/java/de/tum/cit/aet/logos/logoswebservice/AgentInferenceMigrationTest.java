@@ -34,24 +34,37 @@ class AgentInferenceMigrationTest {
                 assertThat(jdbc.queryForObject("SELECT model FROM agent_sessions WHERE id = 1", String.class))
                     .isEqualTo("existing-local");
                 assertThat(jdbc.queryForObject("SELECT count(*) FROM agent_inference_settings", Integer.class)).isZero();
-                jdbc.update("""
+                assertThatThrownBy(() -> jdbc.update("""
                     INSERT INTO agent_inference_settings (id, mode, model, provider_id, model_id, updated_by)
                     VALUES (1, 'cloud', 'fixture-model', 12, 34, 'fixture-admin')
+                    """)).isInstanceOf(DataIntegrityViolationException.class);
+                connection.rollback();
+                jdbc.update("""
+                    INSERT INTO agent_inference_settings (id, mode, model, provider_id, model_id, provider_base_url, updated_by)
+                    VALUES (1, 'cloud', 'fixture-model', 12, 34, 'https://logs.example/v1', 'fixture-admin')
                     """);
+                connection.commit();
                 assertThatThrownBy(() -> jdbc.update("""
-                    INSERT INTO agent_sessions (id, model, inference_provider_id, inference_model_id, inference_client_tag)
-                    VALUES (2, 'fixture-model', 12, 34, 'agent:10.0.1.2')
+                    INSERT INTO agent_sessions (id, model, inference_provider_id, inference_model_id)
+                    VALUES (2, 'fixture-model', 12, 34)
+                    """)).isInstanceOf(DataIntegrityViolationException.class);
+                connection.rollback();
+                assertThatThrownBy(() -> jdbc.update("""
+                    INSERT INTO agent_sessions (id, model, inference_provider_id, inference_model_id,
+                        inference_base_url, inference_client_tag)
+                    VALUES (2, 'fixture-model', 12, 34, 'https://logs.example/v1', 'agent:10.0.1.2')
                     """)).isInstanceOf(DataIntegrityViolationException.class);
                 connection.rollback();
                 jdbc.update("""
                     INSERT INTO agent_sessions (id, model, inference_provider_id, inference_model_id,
-                        inference_grant_hash, inference_client_tag)
-                    VALUES (2, 'fixture-model', 12, 34, repeat('1', 64), 'agent:10.0.1.2')
+                        inference_base_url, inference_grant_hash, inference_client_tag)
+                    VALUES (2, 'fixture-model', 12, 34, 'https://logs.example/v1', repeat('1', 64), 'agent:10.0.1.2')
                     """);
                 connection.commit();
                 assertThatThrownBy(() -> jdbc.update("""
-                    INSERT INTO agent_sessions (id, model, inference_provider_id, inference_model_id, inference_grant_hash)
-                    VALUES (3, 'fixture-model', 12, 34, repeat('1', 64))
+                    INSERT INTO agent_sessions (id, model, inference_provider_id, inference_model_id,
+                        inference_base_url, inference_grant_hash)
+                    VALUES (3, 'fixture-model', 12, 34, 'https://logs.example/v1', repeat('1', 64))
                     """)).isInstanceOf(DataIntegrityViolationException.class);
                 connection.rollback();
                 liquibase.rollback(1, new Contexts(), new LabelExpression());

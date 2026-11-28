@@ -489,14 +489,15 @@ public class AiWorkflowAnalysisService {
                 open_pull_request, deploy_to_dev, screenshot_paths,
                 no_push, trigger_kind, trigger_ref,
                 repo_url, repo_slug, team_repository_id, priority, priority_reason,
-                inference_provider_id, inference_model_id
+                inference_provider_id, inference_model_id, inference_base_url
             )
             SELECT ?, ?, settings.model, 'queued', ?,
                    FALSE, FALSE, '[]'::jsonb,
                    TRUE, 'analysis', ?,
                    ?, ?, ?, 10, 'workflow analysis — spare capacity',
                    CASE WHEN settings.mode = 'cloud' THEN settings.provider_id END,
-                   CASE WHEN settings.mode = 'cloud' THEN settings.model_id END
+                   CASE WHEN settings.mode = 'cloud' THEN settings.model_id END,
+                   CASE WHEN settings.mode = 'cloud' THEN settings.provider_base_url END
             FROM (VALUES (1)) AS singleton(id)
             LEFT JOIN agent_inference_settings settings ON settings.id = singleton.id
             RETURNING id

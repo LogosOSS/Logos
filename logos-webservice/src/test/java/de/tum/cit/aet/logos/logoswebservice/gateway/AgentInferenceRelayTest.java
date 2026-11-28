@@ -2,7 +2,6 @@ package de.tum.cit.aet.logos.logoswebservice.gateway;
 
 import static de.tum.cit.aet.logos.logoswebservice.gateway.AgentInferenceRelayController.MESSAGES;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch;
@@ -42,7 +41,6 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.ServletRequestAttributes;
-import org.springframework.web.server.ResponseStatusException;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -61,7 +59,7 @@ class AgentInferenceRelayTest {
     @TempDir static Path tmp;
 
     private static HttpsServer server;
-    private static String allowedOrigin;
+    private static String registeredBase;
     private static HttpClient client;
     private static JdbcTemplate db;
     private static final AtomicReference<String> MODE = new AtomicReference<>();
@@ -90,10 +88,11 @@ class AgentInferenceRelayTest {
               WHERE t.privacy_scope='WORLDWIDE' OR
                 (t.privacy_scope='EU' AND p.privacy_level IN ('CLOUD_IN_EU_BY_EU_PROVIDER','CLOUD_IN_EU_BY_US_PROVIDER'));
             CREATE TABLE models(id integer primary key, name text);
-            CREATE TABLE model_provider(provider_id integer, model_id integer, api_key text,
+            CREATE TABLE model_provider(provider_id integer, model_id integer, api_key text, endpoint text,
                                         primary key(provider_id, model_id));
             CREATE TABLE agent_sessions(id bigint primary key, status text, error text, inference_grant_hash text UNIQUE,
                                         inference_client_tag text, inference_provider_id integer, inference_model_id integer, model text,
+                                        inference_base_url text,
                                         team_repository_id integer REFERENCES team_repositories ON DELETE SET NULL, repo_slug text,
                                         trigger_kind text, no_push boolean, created_by text NOT NULL);
             CREATE TABLE ai_workflow_analyses(agent_session_id bigint, team_repository_id integer, team_id integer,
@@ -132,7 +131,7 @@ class AgentInferenceRelayTest {
             String mode = MODE.get();
             try (exchange) {
                 if ("redirect".equals(mode)) {
-                    exchange.getResponseHeaders().set("Location", allowedOrigin + "/attempted-redirect");
+                    exchange.getResponseHeaders().set("Location", registeredBase + "/attempted-redirect");
                     exchange.getResponseHeaders().set("Set-Cookie", PROVIDER_KEY);
                     byte[] leak = PROVIDER_KEY.getBytes(StandardCharsets.UTF_8);
                     exchange.sendResponseHeaders(307, leak.length);
@@ -160,7 +159,7 @@ class AgentInferenceRelayTest {
             }
         });
         server.start();
-        allowedOrigin = "https://127.0.0.1:" + server.getAddress().getPort();
+        registeredBase = "https://127.0.0.1:" + server.getAddress().getPort();
         client = HttpClient.newBuilder().sslContext(tls).followRedirects(HttpClient.Redirect.NEVER).build();
     }
 
@@ -173,23 +172,27 @@ class AgentInferenceRelayTest {
     @BeforeEach
     void seed() {
         db.execute("TRUNCATE ai_workflow_analyses, agent_sessions, model_provider, models, providers, team_repositories, teams");
-        db.update("INSERT INTO providers VALUES (3, ?, 'wrong-provider-key', 'cloud', 'logos', 'Authorization', 'Bearer {}', 'CLOUD_IN_EU_BY_EU_PROVIDER')", allowedOrigin);
+        db.update("INSERT INTO providers VALUES (3, ?, 'wrong-provider-key', 'cloud', 'logos', 'Authorization', 'Bearer {}', 'CLOUD_IN_EU_BY_EU_PROVIDER')", registeredBase);
         db.update("INSERT INTO models VALUES (4, 'claude-test')");
-        db.update("INSERT INTO model_provider VALUES (3, 4, ?)", PROVIDER_KEY);
-        db.update("INSERT INTO agent_sessions VALUES (2, 'starting', null, ?, null, 3, 4, 'claude-test', null, null, null, false, 'test-operator')", HASH);
+        db.update("INSERT INTO model_provider VALUES (3, 4, ?, NULL)", PROVIDER_KEY);
+        db.update("INSERT INTO agent_sessions VALUES (2, 'starting', null, ?, null, 3, 4, 'claude-test', ?, null, null, null, false, 'test-operator')", HASH, registeredBase);
         MODE.set("ok");
         SEEN.set(null);
         CALLS.set(0);
         RELEASE.set(new CountDownLatch(1));
         cap = mock(ProviderSpendCapService.class);
-        relay = new AgentInferenceRelay(new NamedParameterJdbcTemplate(db), cap, allowedOrigin, client);
+        relay = new AgentInferenceRelay(new NamedParameterJdbcTemplate(db), cap, client);
         capacity = new GatewayInFlightLimit(1);
         controller = new AgentInferenceRelayController(relay, capacity, INTERNAL);
         mvc = MockMvcBuilders.standaloneSetup(controller).build();
     }
 
+    private org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder agentPost(String path) {
+        return post(path).header("X-Logos-Agent-Inference", "cloud");
+    }
+
     private org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder relayRequest(String path, String json) {
-        return post(path).contentType("application/json").content(json)
+        return agentPost(path).contentType("application/json").content(json)
             .header("Authorization", "Bearer " + GRANT).header("X-Logos-Agent-Relay-Secret", INTERNAL)
             .header("X-Logos-Client-Tag", TAG);
     }
@@ -210,7 +213,7 @@ class AgentInferenceRelayTest {
     void rejectsWrongIdentityModelAndUnknownOrPausedGrantBeforeContact() throws Exception {
         mvc.perform(relayRequest(MESSAGES, JSON).header("X-Logos-Client-Tag", "agent:192.0.2.10"))
             .andExpect(status().isUnauthorized());
-        mvc.perform(post(MESSAGES).contentType("application/json").content(JSON)
+        mvc.perform(agentPost(MESSAGES).contentType("application/json").content(JSON)
                 .header("Authorization", "Bearer " + "B".repeat(43)).header("X-Logos-Agent-Relay-Secret", INTERNAL)
                 .header("X-Logos-Client-Tag", TAG)).andExpect(status().isUnauthorized());
         mvc.perform(relayRequest(MESSAGES, JSON).header("X-Logos-Agent-Relay-Secret", "spoofed"))
@@ -248,16 +251,50 @@ class AgentInferenceRelayTest {
     }
 
     @Test
-    void rejectsAnUnapprovedOrNonOriginUrlAndDoesNotFollowOrLeakARedirect() throws Exception {
-        db.update("UPDATE providers SET base_url = 'https://other.test' WHERE id=3");
-        mvc.perform(relayRequest(MESSAGES, JSON)).andExpect(status().isServiceUnavailable());
-        db.update("UPDATE providers SET base_url = ? WHERE id=3", allowedOrigin + "/v1");
-        mvc.perform(relayRequest(MESSAGES, JSON)).andExpect(status().isServiceUnavailable());
-        assertThat(CALLS).hasValue(0);
-        db.update("UPDATE providers SET base_url = ?, cloud_provider_type='anthropic' WHERE id=3", allowedOrigin);
+    void registryVersionSuffixUsesTheSameNativeMessagesSurfaceWithoutAnAllowlist() throws Exception {
+        // Ordinary model registry endpoint metadata need not describe the
+        // Messages surface and cannot change the pinned provider destination.
+        db.update("UPDATE model_provider SET endpoint='https://unused.example/v1/chat/completions'");
+        for (String suffix : List.of("/v1", "/v1/")) {
+            String base = registeredBase + suffix;
+            db.update("UPDATE providers SET base_url=? WHERE id=3", base);
+            db.update("UPDATE agent_sessions SET inference_base_url=? WHERE id=2", base);
+            var result = mvc.perform(relayRequest(MESSAGES, JSON)).andExpect(request().asyncStarted()).andReturn();
+            mvc.perform(asyncDispatch(result)).andExpect(status().isOk());
+            assertThat(SEEN.get().getFirst()).isEqualTo("/v1/messages");
+        }
+        assertThat(CALLS).hasValue(2);
+    }
+
+    @Test
+    void rejectsChangedBaseOrUnrelatedProviderTypeBeforeAnyContact() throws Exception {
+        db.update("UPDATE providers SET base_url=? WHERE id=3", registeredBase + "/v1");
+        mvc.perform(relayRequest(MESSAGES, JSON)).andExpect(status().isUnauthorized());
+        db.update("UPDATE providers SET base_url=?, cloud_provider_type='anthropic' WHERE id=3", registeredBase);
+        mvc.perform(relayRequest(MESSAGES, JSON)).andExpect(status().isUnauthorized());
+        db.update("UPDATE providers SET cloud_provider_type='logos' WHERE id=3");
+        db.update("UPDATE agent_sessions SET inference_base_url=NULL WHERE id=2");
         mvc.perform(relayRequest(MESSAGES, JSON)).andExpect(status().isUnauthorized());
         assertThat(CALLS).hasValue(0);
-        db.update("UPDATE providers SET cloud_provider_type='logos' WHERE id=3");
+    }
+
+    @Test
+    void rejectsMalformedRegistryTargetsWithoutSendingCredentials() throws Exception {
+        for (String base : List.of("http://example.test", "https:///no-host", "https://example.test:0",
+                "https://example.test:", "https://example.test:65536", "https://example.test/#fragment",
+                "https://example.test/?x=1", "https://name:pass@example.test", "https://example.test/v2",
+                "https://example.test/tenant/v1", "https://[fe80::1%25eth0]/v1")) {
+            db.update("UPDATE providers SET base_url=? WHERE id=3", base);
+            db.update("UPDATE agent_sessions SET inference_base_url=? WHERE id=2", base);
+            mvc.perform(relayRequest(MESSAGES, JSON)).andExpect(status().isServiceUnavailable());
+        }
+        assertThat(CALLS).hasValue(0);
+        assertThat(AgentInferenceRelay.messagesTarget("HTTPS://EXAMPLE.TEST:443/v1/").toString())
+            .isEqualTo("https://example.test/v1/messages");
+    }
+
+    @Test
+    void doesNotFollowOrLeakARedirectFromTheRegisteredProvider() throws Exception {
         MODE.set("redirect");
         var result = mvc.perform(relayRequest(MESSAGES, JSON)).andExpect(request().asyncStarted()).andReturn();
         var response = mvc.perform(asyncDispatch(result)).andExpect(status().isBadGateway())
@@ -266,15 +303,6 @@ class AgentInferenceRelayTest {
         assertThat(response.getContentAsString()).doesNotContain(PROVIDER_KEY, INTERNAL, GRANT);
         assertThat(CALLS).hasValue(1);
         assertThat(capacity.inFlight()).isZero();
-        assertThatThrownBy(() -> AgentInferenceRelay.origin("https://name:pass@example.test"))
-            .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> AgentInferenceRelay.origin("https://example.test/?x=1"))
-            .isInstanceOf(IllegalArgumentException.class);
-        for (String origin : List.of("https:///no-host", "https://example.test:0",
-                "https://example.test:65536", "https://example.test/#fragment")) {
-            assertThatThrownBy(() -> AgentInferenceRelay.origin(origin)).isInstanceOf(IllegalArgumentException.class);
-        }
-        assertThat(AgentInferenceRelay.origin("HTTPS://EXAMPLE.TEST:443/").toString()).isEqualTo("https://example.test");
     }
 
     @Test
@@ -303,13 +331,13 @@ class AgentInferenceRelayTest {
 
     @Test
     void rejectsMissingAndInvalidRelayCredentialsBeforeAnUpstreamConnection() throws Exception {
-        mvc.perform(post(MESSAGES).contentType("application/json").content(JSON)).andExpect(status().isUnauthorized());
-        mvc.perform(post(MESSAGES).contentType("application/json").content(JSON)
+        mvc.perform(agentPost(MESSAGES).contentType("application/json").content(JSON)).andExpect(status().isUnauthorized());
+        mvc.perform(agentPost(MESSAGES).contentType("application/json").content(JSON)
             .header("X-Logos-Agent-Relay-Secret", INTERNAL)).andExpect(status().isUnauthorized());
-        mvc.perform(post(MESSAGES).contentType("application/json").content(JSON)
+        mvc.perform(agentPost(MESSAGES).contentType("application/json").content(JSON)
             .header("X-Logos-Agent-Relay-Secret", INTERNAL).header("Authorization", "Bearer " + GRANT))
             .andExpect(status().isUnauthorized());
-        mvc.perform(post(MESSAGES).contentType("application/json").content(JSON)
+        mvc.perform(agentPost(MESSAGES).contentType("application/json").content(JSON)
             .header("X-Logos-Agent-Relay-Secret", INTERNAL).header("Authorization", "Bearer " + GRANT)
             .header("X-Logos-Client-Tag", "agent:192.0.2.999")).andExpect(status().isUnauthorized());
         mvc.perform(relayRequest(MESSAGES, JSON).header("anthropic-beta", "not:allowed"))
@@ -330,13 +358,13 @@ class AgentInferenceRelayTest {
     }
 
     @Test
-    void aMissingOrMalformedOriginConfigurationDisablesOnlyTheRelay() {
-        for (String origins : List.of("", allowedOrigin + ",http://untrusted.test")) {
-            var disabled = new AgentInferenceRelay(new NamedParameterJdbcTemplate(db), cap, origins, client);
-            assertThatThrownBy(() -> disabled.authorize(HASH, TAG))
-                .isInstanceOfSatisfying(ResponseStatusException.class, e -> assertThat(e.getStatusCode().value()).isEqualTo(503));
-        }
-        assertThat(CALLS).hasValue(0);
+    void acceptsOperatingKeyRotationWithoutRetargetingTheSession() throws Exception {
+        db.update("UPDATE model_provider SET api_key='rotated-key'");
+        var result = mvc.perform(relayRequest(MESSAGES, JSON)).andExpect(request().asyncStarted()).andReturn();
+        mvc.perform(asyncDispatch(result)).andExpect(status().isOk());
+        assertThat(SEEN.get().get(1)).isEqualTo("Bearer rotated-key");
+        assertThat(SEEN.get().getFirst()).isEqualTo("/v1/messages");
+        assertThat(CALLS).hasValue(1);
     }
 
     private void linkRepository() {
@@ -412,9 +440,17 @@ class AgentInferenceRelayTest {
         assertIdleStreamClosedBy(() -> db.update("UPDATE agent_sessions SET status='paused' WHERE id=2"));
     }
 
+    @Test
+    void closesAnActiveStreamAndRejectsNewCallsIfTheRegistryBaseChanges() throws Exception {
+        assertIdleStreamClosedBy(() -> db.update("UPDATE providers SET base_url=? WHERE id=3", registeredBase + "/v1"));
+        mvc.perform(relayRequest(MESSAGES, JSON)).andExpect(status().isUnauthorized());
+        assertThat(CALLS).hasValue(1);
+    }
+
     private void assertIdleStreamClosedBy(Runnable revoke) throws Exception {
         MODE.set("hold");
         var input = new MockHttpServletRequest("POST", MESSAGES);
+        input.addHeader("X-Logos-Agent-Inference", "cloud");
         input.addHeader("Authorization", "Bearer " + GRANT);
         input.addHeader("X-Logos-Agent-Relay-Secret", INTERNAL);
         input.addHeader("X-Logos-Client-Tag", TAG);
