@@ -1109,7 +1109,11 @@ class SessionManager:
         policy = await model_policy.refresh()
         control = await controls.current()
         running = await db.sessions_in_status(SessionStatus.RUNNING)
-        lane = _sessions_lane(running, policy)
+        # With nothing running, the watch's observations still update the
+        # resume quiet window. Use the scheduler's paused lanes so unrelated
+        # waiters elsewhere in the key's policy cannot keep resetting it.
+        watched = running or await db.sessions_in_status(SessionStatus.PAUSED)
+        lane = _sessions_lane(watched, policy)
         measured, reading = await capacity.read_load_pair(
             lane=lane if lane is not None else policy.lane(),
             ours=_ours_by_model(running, policy),
