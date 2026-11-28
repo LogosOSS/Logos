@@ -395,7 +395,6 @@ services:
       SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE: "${LOGOS_WEBSERVICE_DB_POOL_MIN_IDLE:-10}"
       LOGOS_ORCHESTRATOR_URL: "http://logos-orchestrator:8080"
       LOGOS_INTERNAL_SECRET: "${LOGOS_INTERNAL_SECRET:-}"
-      LOGOS_AGENT_REMOTE_ALLOWED_ORIGINS: "${LOGOS_AGENT_REMOTE_ALLOWED_ORIGINS:-}"
       # Deploy-key PEM encryption. Production must set LOGOS_REPO_CREDENTIALS_KEY.
       LOGOS_REPO_CREDENTIALS_KEY: "${LOGOS_REPO_CREDENTIALS_KEY:-}"
       LOGOS_REPO_CREDENTIALS_DEV_FALLBACK: "${LOGOS_REPO_CREDENTIALS_DEV_FALLBACK:-}"
@@ -663,8 +662,7 @@ services:
 
       # Optional default among the managed identity's locally served models.
       LOGOS_AGENT_DEFAULT_MODEL: "${LOGOS_AGENT_DEFAULT_MODEL:-}"
-      # Approved compatible Logos inference origins, not URLs submitted by the UI.
-      LOGOS_AGENT_REMOTE_ALLOWED_ORIGINS: "${LOGOS_AGENT_REMOTE_ALLOWED_ORIGINS:-}"
+      # The cloud workspace stays isolated from the managed local-only credential.
       LOGOS_AGENT_REMOTE_NETWORK: "${LOGOS_AGENT_REMOTE_NETWORK:-logos-agent-remote-net}"
 
       # Sessions run in this image, on this network, under these ceilings.
@@ -676,7 +674,7 @@ services:
       LOGOS_AGENT_SESSION_NETWORK: "${LOGOS_AGENT_SESSION_NETWORK:-logos-agent-net}"
       LOGOS_AGENT_SESSION_EGRESS_NETWORK: "${LOGOS_AGENT_SESSION_EGRESS_NETWORK:-logos-agent-egress-net}"
       # Where sessions send model traffic: the gateway that exposes only the
-      # orchestrator's /v1 model surface on the session network.
+      # local Logos gateway's /v1 model surface on the session network.
       LOGOS_AGENT_SESSION_MODEL_URL: "${LOGOS_AGENT_SESSION_MODEL_URL:-http://logos-agent-gateway}"
       # The allowlisting HTTPS proxy on the session network; empty disables
       # internet access for every session.
@@ -803,6 +801,7 @@ services:
       retries: 5
     depends_on:
       - logos-orchestrator
+      - logos-webservice
     environment:
       # Existing internal trust root; only short-lived inference tokens are
       # forwarded, never this secret or credentials to session containers.

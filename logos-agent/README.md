@@ -390,7 +390,6 @@ unused and can be removed.
 | `LOGOS_AGENT_GITHUB_TOKEN` | — | The agent account's token. **Required.** |
 | `LOGOS_AGENT_GITHUB_LOGIN` | `LogosOSSAgent` | The account every token must belong to |
 | `LOGOS_AGENT_DEFAULT_MODEL` | — | Model when a session does not name one. Optional: without it, the alias `local-most-powerful` is the default when the agent key reaches it locally, and otherwise the only local model, if there is exactly one |
-| `LOGOS_AGENT_REMOTE_ALLOWED_ORIGINS` | — | Comma-separated HTTPS roots of trusted Logos Messages gateways. Set the same value in the runner and webservice. Empty disables cloud choices. |
 | `LOGOS_AGENT_REMOTE_NETWORK` | `logos-agent-remote-net` | Dedicated internal bridge for cloud-inference sessions. It must not be the local session or helper bridge. |
 | `LOGOS_AGENT_TRIGGERS_ENABLED` | `true` | Kill switch for reacting to the repository |
 | `LOGOS_AGENT_ANALYSIS_NIGHTLY_HOUR_UTC` | `0` | UTC hour of the nightly re-analysis of linked team repositories whose branch head moved; `-1` turns it off |
@@ -867,7 +866,7 @@ Existing branch retries still verify the complete pull request diff.
 
 #### Environment inference selection
 
-Logos Admins can save a local model or an approved Logos cloud provider/model
+Logos Admins can save a local model or a registered Logos cloud provider/model
 pair under **Agents → Runner controls → Model inference**. The configured
 platform remains the origin of every session. The stored
 `agent_inference_settings` singleton is the environment's selection that new
@@ -875,16 +874,27 @@ session consumers can read; existing sessions and retries keep their selected
 model and provider. No row or a local selection without a model preserves
 the previous per-session/default local policy.
 
-To make a cloud option available, register a provider of cloud vendor
-`logos`, use its approved HTTPS origin as the provider base URL, link the
-exact model, and provision a dedicated operating key with the model and
-permissions needed on the destination. The relay only forwards native
-`POST /v1/messages`; it does not accept arbitrary endpoints, pass
-workspace credentials upstream, or select a fallback deployment. Running
-requests are streamed without buffering and are closed when the session is
-paused, stopped, or loses its pin. The selected provider does not tie the
-source runner to a worker: the destination Logos instance decides how the
-model is served and records usage against the operating key.
+Register the destination once using the ordinary **Providers** page: choose
+the Logos cloud provider type, its HTTPS base (root or `/v1`), and a dedicated
+operating key that can use the intended model on the destination. Link the
+model as usual. The Agent selection needs no environment-level allowlist or
+second copy of that setup. Registering a provider does not send it Agent
+traffic: an administrator must explicitly select the provider and model.
+Other cloud types are not Agent options; the current Cloud route uses the
+native Messages protocol and does not invoke the orchestrator's dialect
+translation.
+
+Both modes enter the environment's local inference gateway on `/v1`. Local
+sessions are proxied to the orchestrator with the existing managed local-only
+credential. Cloud sessions submit native `POST /v1/messages` through the
+separate Agent bridge with an opaque session grant. The gateway resolves the
+selected registry deployment and keeps its operating key server-side. It
+does not accept a caller's URL, adapt to a different provider, or follow
+upstream redirects. Streams are not buffered and are closed when the
+session is paused, stopped, or loses its pin. Changing the registered
+provider URL requires re-confirming the default and never retargets an
+existing session. The destination Logos instance decides how the model is
+served and records usage against its operating key.
 
 Choose a destination permitted to process the repository data. Linked
 repositories retain their source team's mandatory provider privacy policy.

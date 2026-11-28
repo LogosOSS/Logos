@@ -11,7 +11,6 @@ import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
 import de.tum.cit.aet.logos.logoswebservice.common.RequestTiming;
-import de.tum.cit.aet.logos.logoswebservice.gateway.AgentInferenceRelayController;
 import de.tum.cit.aet.logos.logoswebservice.gateway.GatewayRelayCleanup;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -33,8 +32,7 @@ public class WebConfig implements WebMvcConfigurer {
     @Override
     public void addInterceptors(InterceptorRegistry registry) {
         registry.addInterceptor(relayCleanup)
-            .addPathPatterns("/v1", "/v1/**", "/openai", "/openai/**", "/jobs", "/jobs/**",
-                AgentInferenceRelayController.MESSAGES);
+            .addPathPatterns("/v1", "/v1/**", "/openai", "/openai/**", "/jobs", "/jobs/**");
         registry.addInterceptor(jwtAuthInterceptor)
             // get_model_health and models_discovered authenticate API key /
             // internal secret in their controllers, not a JWT. The inference
@@ -43,7 +41,6 @@ public class WebConfig implements WebMvcConfigurer {
                 "/error", "/info", "/public/stats", "/ws/**",
                 "/logosdb/get_model_health", "/internal/models_discovered",
                 "/internal/notifications", "/internal/provider-spend/status",
-                AgentInferenceRelayController.MESSAGES,
                 "/internal/gateway_relay_stats", "/internal/gateway_relay_stats/**",
                 // The deployers of the hosts authenticate with their own key in the controller.
                 "/deployments/deployer/**",

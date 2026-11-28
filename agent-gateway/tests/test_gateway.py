@@ -43,27 +43,26 @@ def gateway(tmp_path, request):
     config.write_text("""log_format authorization escape=none '$http_authorization';
     server {
         listen 8080;
-        listen 8081;
-        location /internal/agent-inference/ {
-            default_type application/json;
-            add_header X-Logos-Agent-Relay-Secret "not visible to callers";
-            add_header Authorization "not visible to callers";
-            return 200 '{"path":"$uri","authorization":"$http_authorization",
-                         "secret":"$http_x_logos_agent_relay_secret", "tag":"$http_x_logos_client_tag",
-                         "alternative":"$http_logos_key", "anthropic":"$http_x_api_key",
-                         "anthropic_version":"$http_anthropic_version","anthropic_beta":"$http_anthropic_beta"}';
-        }
         location = /internal/agent_credentials {
             access_log /tmp/authorization.log authorization;
             if (-f /tmp/revoked) { return 403; }
             add_header X-Logos-Agent-Token "test-short-lived-token" always;
             return 204;
         }
+        location / { return 503; }
+    }
+    server {
+        listen 8081;
         location /v1/ {
             default_type application/json;
-            return 200 '{"authorization":"$http_authorization",
-                         "alternative":"$http_logos_key","anthropic":"$http_x_api_key",
-                         "tag":"$http_x_logos_client_tag"}';
+            add_header X-Logos-Agent-Relay-Secret "not visible to callers";
+            add_header X-Logos-Agent-Inference "not visible to callers";
+            add_header Authorization "not visible to callers";
+            return 200 '{"path":"$uri","authorization":"$http_authorization",
+                         "secret":"$http_x_logos_agent_relay_secret", "tag":"$http_x_logos_client_tag",
+                         "mode":"$http_x_logos_agent_inference",
+                         "alternative":"$http_logos_key", "anthropic":"$http_x_api_key",
+                         "anthropic_version":"$http_anthropic_version","anthropic_beta":"$http_anthropic_beta"}';
         }
     }""")
     # Use the published image's root context and allowlist, not an unfiltered hand-made context.
@@ -135,13 +134,18 @@ def test_gateway_injects_credentials_hides_issuer_and_denies_revoked_identity(ga
             "logos_key": "attacker-key",
             "x-api-key": "attacker-key",
             "X-Logos-Client-Tag": "spoofed",
+            "X-Logos-Agent-Inference": "cloud",
+            "X-Logos-Agent-Relay-Secret": "spoofed",
         },
     )
     with urlopen(request, timeout=5) as response:
         body = json.load(response)
         assert response.headers.get("X-Logos-Agent-Token") is None
         assert response.headers.get("Authorization") is None
+        assert response.headers.get("X-Logos-Agent-Relay-Secret") is None
+        assert response.headers.get("X-Logos-Agent-Inference") is None
     assert body["authorization"] == "Bearer test-short-lived-token"
+    assert body["path"] == "/v1/messages" and body["mode"] == "local" and body["secret"] == SECRET
     assert authorizations(upstream) == ["Bearer " + SECRET]
     assert body["alternative"] == body["anthropic"] == ""
     assert body["tag"].startswith("agent:")
@@ -191,6 +195,7 @@ def test_remote_gateway_only_exposes_messages_and_replaces_control_headers(gatew
         "X-Api-Key": "untrusted-key",
         "X-Logos-Client-Tag": "spoofed",
         "X-Logos-Agent-Relay-Secret": "spoofed",
+        "X-Logos-Agent-Inference": "local",
         "Anthropic-Version": "2023-06-01",
         "Anthropic-Beta": "test-beta",
     }
@@ -204,7 +209,7 @@ def test_remote_gateway_only_exposes_messages_and_replaces_control_headers(gatew
     assert body["alternative"] == body["anthropic"] == ""
     assert body["anthropic_version"] == "2023-06-01"
     assert body["anthropic_beta"] == "test-beta"
-    assert body["path"] == "/internal/agent-inference/messages"
+    assert body["path"] == "/v1/messages" and body["mode"] == "cloud"
     for path in (
         "/v1/models",
         "/internal/agent-inference/messages",

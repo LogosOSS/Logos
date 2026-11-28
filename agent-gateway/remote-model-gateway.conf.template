@@ -12,7 +12,7 @@ server {
 
     location = /v1/messages {
         include /etc/nginx/conf.d/includes/remote-model-proxy.conf;
-        proxy_pass http://logos-webservice:8081/internal/agent-inference/messages;
+        proxy_pass http://logos-webservice:8081/v1/messages;
     }
 
     location = /healthz {

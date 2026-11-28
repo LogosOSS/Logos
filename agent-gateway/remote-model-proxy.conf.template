@@ -9,9 +9,11 @@ proxy_set_header Content-Type $http_content_type;
 proxy_set_header Accept $http_accept;
 proxy_set_header Anthropic-Version $http_anthropic_version;
 proxy_set_header Anthropic-Beta $http_anthropic_beta;
+proxy_set_header X-Logos-Agent-Inference "cloud";
 proxy_set_header X-Logos-Agent-Relay-Secret "${LOGOS_INTERNAL_SECRET_NGINX}";
 proxy_set_header X-Logos-Client-Tag "agent:$remote_addr";
 proxy_hide_header Authorization;
+proxy_hide_header X-Logos-Agent-Inference;
 proxy_hide_header X-Logos-Agent-Relay-Secret;
 proxy_hide_header X-Logos-Client-Tag;
 

@@ -6,7 +6,7 @@ Python 3.13 / FastAPI service that runs coding agents in isolated containers on 
 
 - **Isolation boundary**: the runner holds the Docker socket; session containers get no socket, no root, no capabilities, a read-only root filesystem, and memory/CPU/PID ceilings. That asymmetry is set in exactly one place: `app/docker_engine.py:create_session_container` — keep it that way.
 - **Session network** is an *internal* bridge with no route off the host; the runner verifies this and refuses to start on a plain bridge. Session containers may only reach the model gateway.
-- Local model traffic goes through `logos-orchestrator`. An explicitly pinned approved Logos cloud deployment uses a separate internal bridge and the webservice's Messages relay; do not put its operating key in an agent container. Platform sessions can capture the already-running Dev instance. Sessions do not deploy changes.
+- Both modes enter the local Logos webservice inference gateway. Local model traffic goes through `logos-orchestrator`; an explicitly pinned Logos cloud deployment uses a separate internal bridge and the webservice's native Messages relay from the registered provider. Never put its operating key in an agent container. Platform sessions can capture the already-running Dev instance. Sessions do not deploy changes.
 
 ## Commands
 

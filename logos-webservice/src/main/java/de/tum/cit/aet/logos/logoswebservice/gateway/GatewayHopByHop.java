@@ -18,7 +18,9 @@ final class GatewayHopByHop {
         // h2c preface — must not be copied when re-buffering the body.
         "http2-settings",
         // JDK HttpClient rejects these restricted request headers.
-        "expect"
+        "expect",
+        // Consumed by this gateway, never propagated to any upstream or caller.
+        "x-logos-agent-inference", "x-logos-agent-relay-secret", "x-logos-agent-token"
     );
 
     private GatewayHopByHop() {

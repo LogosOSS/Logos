@@ -14,9 +14,7 @@ import java.net.InetAddress;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.util.Collections;
 import java.util.HexFormat;
-import java.util.List;
 import java.util.regex.Pattern;
 
 import org.springframework.beans.factory.annotation.Value;
@@ -31,9 +29,7 @@ import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBo
 
 @RestController
 public final class AgentInferenceRelayController {
-    public static final String MESSAGES = "/internal/agent-inference/messages";
-    private static final String RELAY_SECRET = "X-Logos-Agent-Relay-Secret";
-    private static final String CLIENT_TAG = "X-Logos-Client-Tag";
+    static final String MESSAGES = "/v1/messages";
     private static final int MAX_BODY_BYTES = 32 * 1024 * 1024;
     private static final Pattern GRANT = Pattern.compile("^Bearer ([A-Za-z0-9_-]{43})$");
     private static final Pattern BETA = Pattern.compile("^[A-Za-z0-9][A-Za-z0-9_,. -]{0,1023}$");
@@ -48,24 +44,21 @@ public final class AgentInferenceRelayController {
             @Value("${logos.orchestrator.internal-secret:}") String secret) {
         this.relay = relay;
         this.capacity = capacity;
-        this.secret = secret.isBlank() ? new byte[0] : secret.getBytes(StandardCharsets.UTF_8);
+        this.secret = AgentGatewayHeaders.secretBytes(secret);
     }
 
-    @PostMapping(path = MESSAGES, consumes = MediaType.APPLICATION_JSON_VALUE)
+    @PostMapping(path = MESSAGES, headers = AgentGatewayHeaders.MODE + "=cloud",
+        consumes = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<StreamingResponseBody> relayMessages(HttpServletRequest request) throws IOException {
-        String presentedSecret = singleHeader(request, RELAY_SECRET);
-        if (secret.length == 0 || presentedSecret == null
-                || !MessageDigest.isEqual(secret, presentedSecret.getBytes(StandardCharsets.UTF_8))) {
-            throw invalidGrant();
-        }
-        String authorization = singleHeader(request, HttpHeaders.AUTHORIZATION);
+        AgentGatewayHeaders.require(request, secret);
+        String authorization = AgentGatewayHeaders.single(request, HttpHeaders.AUTHORIZATION);
         var bearer = GRANT.matcher(authorization == null ? "" : authorization);
-        if (!bearer.matches()) throw invalidGrant();
-        String tag = clientTag(singleHeader(request, CLIENT_TAG));
+        if (!bearer.matches()) throw AgentGatewayHeaders.invalidAuthorization();
+        String tag = clientTag(AgentGatewayHeaders.single(request, AgentGatewayHeaders.CLIENT_TAG));
         // Anthropic's beta client may include this marker. Never copy the
         // original URI/query string to the remote operating-key request.
         if (request.getQueryString() != null && !"beta=true".equals(request.getQueryString())) throw invalidBody();
-        String beta = singleHeader(request, "anthropic-beta");
+        String beta = AgentGatewayHeaders.single(request, "anthropic-beta");
         if (beta != null && !BETA.matcher(beta).matches()) throw invalidBody();
 
         var grant = relay.authorize(tokenHash(bearer.group(1)), tag);
@@ -192,24 +185,14 @@ public final class AgentInferenceRelayController {
     }
 
     static String clientTag(String value) {
-        if (value == null || !value.matches("agent:[0-9A-Fa-f:.]{2,45}")) throw invalidGrant();
+        if (value == null || !value.matches("agent:[0-9A-Fa-f:.]{2,45}")) throw AgentGatewayHeaders.invalidAuthorization();
         try {
             InetAddress.ofLiteral(value.substring("agent:".length()));
             // Keep this exact gateway-written value for the DB comparison.
             return value;
         } catch (IllegalArgumentException e) {
-            throw invalidGrant();
+            throw AgentGatewayHeaders.invalidAuthorization();
         }
-    }
-
-    private static String singleHeader(HttpServletRequest request, String name) {
-        List<String> values = Collections.list(request.getHeaders(name));
-        if (values.size() > 1) throw invalidGrant();
-        return values.isEmpty() ? null : values.getFirst();
-    }
-
-    private static ResponseStatusException invalidGrant() {
-        return new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Invalid agent inference authorization");
     }
 
     private static ResponseStatusException invalidBody() {
