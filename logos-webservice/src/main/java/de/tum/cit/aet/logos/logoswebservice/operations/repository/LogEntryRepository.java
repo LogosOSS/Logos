@@ -181,17 +181,27 @@ public interface LogEntryRepository extends JpaRepository<LogEntry, Integer> {
             JOIN teams t ON t.id = le.team_id AND t.show_on_public_stats = TRUE
             WHERE le.result_status = 'success'
               AND le.timestamp_request >= :start AND le.timestamp_request < :end
+              AND NOT logos_stats_is_internal_benchmark(le)
               AND NOT EXISTS (
                   SELECT 1 FROM api_keys k WHERE k.id = le.api_key_id AND k.internal_service = 'agent'
               )
             GROUP BY 1, 2
+        ), team_blocks AS (
+            SELECT hour_of_day / 4 * 4 AS start_hour, team_id, SUM(requests)::bigint AS requests
+            FROM team_hours
+            GROUP BY 1, 2
         )
-        SELECT hour_of_day AS hour, SUM(requests)::bigint AS requests,
+        SELECT hour_of_day AS hour, 1 AS span, SUM(requests)::bigint AS requests,
                COUNT(*) AS teams, MAX(requests) AS largestTeamRequests
         FROM team_hours
         GROUP BY hour_of_day
         UNION ALL
-        SELECT -1 AS hour, COALESCE(SUM(requests), 0)::bigint AS requests,
+        SELECT start_hour AS hour, 4 AS span, SUM(requests)::bigint AS requests,
+               COUNT(*) AS teams, MAX(requests) AS largestTeamRequests
+        FROM team_blocks
+        GROUP BY start_hour
+        UNION ALL
+        SELECT -1 AS hour, 0 AS span, COALESCE(SUM(requests), 0)::bigint AS requests,
                COUNT(DISTINCT team_id) AS teams, 0::bigint AS largestTeamRequests
         FROM team_hours
         """, nativeQuery = true)

@@ -23,6 +23,22 @@ describe('Public hourly load', () => {
     expect(root.querySelector('output')?.textContent).toContain('20 to <25 requests per hour');
   });
 
+  it('labels a grouped band with its full time range and spans those columns', () => {
+    const fixture = TestBed.createComponent(PublicStatsHourly);
+    fixture.componentRef.setInput('load', {
+      time_zone: 'Europe/Berlin', from: '2026-10-26', until: '2026-11-23', band_size: 5,
+      hours: [{ hour: 20, span: 4, band_start: 0, zero: false }],
+    });
+    fixture.detectChanges();
+    const root: HTMLElement = fixture.nativeElement;
+    expect(root.querySelector<HTMLElement>('.hourly-public-column')?.style.gridColumn).toBe('21 / span 4');
+    const button = root.querySelector('button')!;
+    expect(button.getAttribute('aria-label')).toBe('20:00 to 00:00: Under 5 requests per hour');
+    button.click();
+    fixture.detectChanges();
+    expect(root.querySelector('output')?.textContent).toContain('20:00–00:00');
+  });
+
   it('does not invent a chart without a publishable cohort', () => {
     const fixture = TestBed.createComponent(PublicStatsHourly);
     fixture.detectChanges();

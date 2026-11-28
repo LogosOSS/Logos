@@ -78,8 +78,8 @@
         <section class="chart-panel" aria-labelledby="hourly-public-title">
           <h2 class="chart-title" id="hourly-public-title">Typical hourly request load</h2>
           <p class="chart-hint">
-            Successful requests from published teams, excluding internal traffic. The fixed four-week average is at
-            least one week old. It does not show GPU utilization.
+            Successful local and cloud requests from published teams. Excludes Logos Agent and internal benchmarks.
+            The four-week average is at least one week old. It does not show GPU utilization.
           </p>
           <app-public-stats-hourly [load]="stats()!.hourly_request_load ?? null" />
         </section>

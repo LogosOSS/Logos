@@ -73,29 +73,37 @@ class PublicStatsControllerTest {
                            (2201, 7, 1000, 'error', false), (CAST(NULL AS integer), 7, 1000, 'success', false),
                            (2201, 7, 1000, 'success', true), (2201, 8, 15, 'success', false),
                            (2202, 8, 15, 'success', false), (2203, 8, 15, 'success', false),
-                           (2201, 9, 1000, 'success', false)
+                           (2201, 9, 1000, 'success', false), (2201, 12, 10, 'success', false),
+                           (2202, 13, 10, 'success', false), (2203, 14, 10, 'success', false),
+                           (2201, 20, 1000, 'success', false)
                 )
-                INSERT INTO log_entry (request_id, team_id, api_key_id, timestamp_request, result_status, environment)
+                INSERT INTO log_entry (request_id, team_id, api_key_id, timestamp_request, result_status, environment, benchmark_job_id)
                 SELECT 'public-hourly-test-' || nextval('log_entry_id_seq'), s.team_id,
                     CASE WHEN s.internal THEN (SELECT id FROM api_keys WHERE internal_service = 'agent') END,
                     (monday.block_end - 7 + make_time(s.hour, 0, 0)) AT TIME ZONE 'Europe/Berlin',
                     s.result_status::result_status_enum,
-                    CASE WHEN team_id IS NULL THEN 'model-provider-benchmark' END
+                    CASE WHEN team_id IS NULL THEN 'model-provider-benchmark' END,
+                    CASE WHEN s.hour = 20 THEN 123 END
                 FROM samples s CROSS JOIN monday CROSS JOIN LATERAL generate_series(1, s.requests)
                 """);
             for (String window : java.util.List.of("7", "all")) {
                 mvc.perform(get("/public/stats").param("days", window))
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.successful_requests").value("all".equals(window) ? 1645 : 0))
+                    .andExpect(jsonPath("$.successful_requests").value("all".equals(window) ? 2675 : 0))
                     .andExpect(jsonPath("$.hourly_request_load.time_zone").value("Europe/Berlin"))
                     .andExpect(jsonPath("$.hourly_request_load.band_size").value(5))
-                    .andExpect(jsonPath("$.hourly_request_load.hours.length()").value(24))
+                    .andExpect(jsonPath("$.hourly_request_load.hours.length()").value(21))
                     .andExpect(jsonPath("$.hourly_request_load.hours[7].band_start").value(20))
                     .andExpect(jsonPath("$.hourly_request_load.hours[8].band_start").value(0))
                     .andExpect(jsonPath("$.hourly_request_load.hours[8].zero").value(false))
                     .andExpect(jsonPath("$.hourly_request_load.hours[9].band_start").isEmpty())
                     .andExpect(jsonPath("$.hourly_request_load.hours[9].zero").value(false))
                     .andExpect(jsonPath("$.hourly_request_load.hours[10].zero").value(true))
+                    .andExpect(jsonPath("$.hourly_request_load.hours[12].span").value(4))
+                    .andExpect(jsonPath("$.hourly_request_load.hours[12].band_start").value(0))
+                    .andExpect(jsonPath("$.hourly_request_load.hours[?(@.hour == 13)]").isEmpty())
+                    .andExpect(jsonPath("$.hourly_request_load.hours[17].hour").value(20))
+                    .andExpect(jsonPath("$.hourly_request_load.hours[17].zero").value(true))
                     .andExpect(jsonPath("$.hourly_request_load.hours[7].requests").doesNotExist())
                     .andExpect(jsonPath("$.hourly_request_load.hours[7].teams").doesNotExist());
             }

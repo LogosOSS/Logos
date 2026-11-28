@@ -6,12 +6,12 @@
     <span class="hourly-public-axis" aria-hidden="true">{{ maximum() }}</span>
     <div class="hourly-public-slots">
       @for (slot of slots(); track slot.hour) {
-        <div class="hourly-public-column">
+        <div class="hourly-public-column" [style.grid-column]="(slot.hour + 1) + ' / span ' + (slot.span ?? 1)">
           <button type="button" class="hourly-public-hour"
             [class.suppressed]="slot.band_start === null && !slot.zero"
             [class.quiet]="slot.zero"
             [attr.aria-pressed]="selected() === slot.hour"
-            [attr.aria-label]="hourLabel(slot.hour) + ' to ' + hourLabel(slot.hour + 1) + ': ' + slotLabel(slot)"
+            [attr.aria-label]="hourLabel(slot.hour) + ' to ' + hourLabel(slot.hour + (slot.span ?? 1)) + ': ' + slotLabel(slot)"
             [title]="slotLabel(slot)"
             (click)="selected.set(slot.hour)"
             (focus)="preview.set(slot.hour)"
@@ -28,13 +28,13 @@
   <div class="hourly-public-detail">
     <output aria-live="polite">
       @if (activeSlot(); as slot) {
-        <strong>{{ hourLabel(slot.hour) }}–{{ hourLabel(slot.hour + 1) }}:</strong> {{ slotLabel(slot) }}
+        <strong>{{ hourLabel(slot.hour) }}–{{ hourLabel(slot.hour + (slot.span ?? 1)) }}:</strong> {{ slotLabel(slot) }}
       } @else {
-        Hover, focus, or tap a bar for its hour and range.
+        Hover, focus, or tap a bar for its time and range.
       }
     </output>
   </div>
-  <p class="hourly-public-note">Bars show ranges, not exact counts. Dashed marks mean there is not enough combined traffic to publish. A solid line marks zero logged requests.</p>
+  <p class="hourly-public-note">Wider bars combine four hours and show an average per hour. Dashed lines mark ranges we cannot publish. Solid lines mark zero requests.</p>
 } @else {
   <p class="hourly-public-note">No hourly figures are available for the latest publication period.</p>
 }

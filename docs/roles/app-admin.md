@@ -276,10 +276,13 @@ A confirmation appears after saving. The public page refreshes periodically, so
 changes may take up to 30 minutes to appear with the default cache setting.
 
 The public page also shows **Typical hourly request load**. It includes
-successful requests from published teams, but not internal requests. The
-chart uses the same four-week period for all time-window selections. Data
-appears at least one week after the period ends. The chart shows ranges and
-does not show hours with too little combined traffic. It does not show GPU use.
+successful local and cloud requests from published teams. It excludes Logos
+Agent requests and internal benchmarks. The chart uses the same 4-week
+period for all time-window selections. Data appears at least 1 week after
+the period ends. The chart shows ranges, not exact counts. If an hour does
+not meet the publication thresholds, the chart can combine it with its
+4-hour block. Wider bars show the average per hour for that block. The
+chart does not show GPU use.
 
 ![Public stats page with ranges for hourly request load](/img/roles/public-stats-hourly-load.png)
 

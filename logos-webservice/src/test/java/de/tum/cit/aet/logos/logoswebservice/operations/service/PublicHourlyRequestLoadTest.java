@@ -36,9 +36,40 @@ class PublicHourlyRequestLoadTest {
         assertThat(PublicHourlyRequestLoad.summarize(block, List.of(row(-1, 1000, 2, 0)))).isNull();
     }
 
+    @Test
+    void poolsSparseHoursWithoutPublishingOverlappingBandsOrChangingThresholds() {
+        var block = new PublicHourlyRequestLoad.PublicationBlock(LocalDate.of(2026, 10, 5), LocalDate.of(2026, 11, 2));
+        var chart = PublicHourlyRequestLoad.summarize(block, List.of(
+            row(-1, 1000, 3, 0), row(0, 100, 2, 50), row(3, 465, 3, 200), group(0, 565, 3, 250),
+            row(4, 600, 1, 600), row(5, 25, 2, 14), group(4, 625, 3, 600)));
+        // The first group has 113 hour occurrences at the autumn clock change.
+        assertThat(chart.hours().getFirst()).isEqualTo(new PublicHourlyRequestLoad.Hour(0, 5L, false, 4));
+        assertThat(chart.hours()).hasSize(21).noneMatch(hour -> hour.hour() > 0 && hour.hour() < 4);
+        for (int h : List.of(4, 5)) assertThat(chart.hours()).contains(new PublicHourlyRequestLoad.Hour(h, null, false));
+        assertThat(chart.hours()).contains(new PublicHourlyRequestLoad.Hour(6, null, true));
+    }
+
+    @Test
+    void doesNotPoolAnAlreadyPublishableGroupOrBypassTheOverallCohort() {
+        var block = PublicHourlyRequestLoad.block(Instant.parse("2026-11-29T23:00:00Z"));
+        var rows = List.of(row(-1, 150, 3, 0), row(10, 150, 3, 50), group(8, 150, 3, 50));
+        assertThat(PublicHourlyRequestLoad.summarize(block, rows).hours()).hasSize(24)
+            .contains(new PublicHourlyRequestLoad.Hour(10, 5L, false));
+        assertThat(PublicHourlyRequestLoad.summarize(block, List.of(row(-1, 150, 2, 0), group(8, 150, 2, 75)))).isNull();
+    }
+
+    private static PublicHourlyRequestsProjection group(int hour, long requests, long teams, long largest) {
+        return row(hour, 4, requests, teams, largest);
+    }
+
     private static PublicHourlyRequestsProjection row(int hour, long requests, long teams, long largest) {
+        return row(hour, 1, requests, teams, largest);
+    }
+
+    private static PublicHourlyRequestsProjection row(int hour, int span, long requests, long teams, long largest) {
         return new PublicHourlyRequestsProjection() {
             @Override public int getHour() { return hour; }
+            @Override public int getSpan() { return span; }
             @Override public long getRequests() { return requests; }
             @Override public long getTeams() { return teams; }
             @Override public long getLargestTeamRequests() { return largest; }

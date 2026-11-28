@@ -27,7 +27,7 @@ export class PublicStatsHourly {
 
   protected slotLabel(slot: PublicHourlySlot): string {
     if (slot.zero) return '0 logged requests';
-    if (slot.band_start === null) return 'Not enough combined traffic to publish';
+    if (slot.band_start === null) return 'Range not published';
     const upper = slot.band_start + (this.load()?.band_size ?? 0);
     return slot.band_start === 0 ? 'Under ' + upper + ' requests per hour'
       : slot.band_start + ' to <' + upper + ' requests per hour';

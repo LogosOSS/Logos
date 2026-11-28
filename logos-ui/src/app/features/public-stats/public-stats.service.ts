@@ -28,6 +28,8 @@ export const DEFAULT_PUBLIC_STATS_DAYS: PublicStatsDays = '30';
  */
 export interface PublicHourlySlot {
   hour: number;
+  /** Number of consecutive hours covered; omitted by older responses. */
+  span?: number;
   /** Lower bound of a coarse band, or null when no band is published. */
   band_start: number | null;
   zero: boolean;
