@@ -157,6 +157,7 @@ ENV PATH="/opt/venv/bin:$PATH"
 
 WORKDIR /app
 # Version changes keep the Python and APT layers cached.
+ENV LOGOS_PREFETCH_TEST=1
 ARG VLLM_PIP_SPEC
 ARG TORCH_INDEX_URL
 ARG NCCL_PIP_SPEC

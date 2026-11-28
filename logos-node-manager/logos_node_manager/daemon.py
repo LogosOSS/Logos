@@ -5,7 +5,8 @@ deployment writes a record: the command line does, and so does the intake of the
 host for orders. The daemon finds the record on its next pass.
 
 Between the deployments the daemon lets the self-update do its part (see ``self_update``). While a helper replaces the
-manager, no deployment starts.
+manager, no deployment starts. With no deployment queued, it also downloads early the images of a deployment that Logos
+announced, and reports to Logos how that download stands.
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ from logos_node_manager.config import Settings
 from logos_node_manager.deployer import Deployer
 from logos_node_manager.docker_ops import Docker, describe_registry_login
 from logos_node_manager.errors import Interrupted
-from logos_node_manager.logos_link import LogosLink
+from logos_node_manager.logos_link import DownloadState, LogosLink
 from logos_node_manager.self_update import SelfUpdater
 from logos_node_manager.state import Deployment, StateStore
 
@@ -70,10 +71,12 @@ class Daemon:
             while not self._stop.is_set():
                 self._report_endings()
                 deployment = self._store.next_unfinished()
-                if self._self_update(pending=deployment is not None) or deployment is None:
+                if self._self_update(pending=deployment is not None):
                     self._stop.wait(self._settings.loop_interval_s)
-                    continue
-                self._process(deployment)
+                elif deployment is not None:
+                    self._process(deployment)
+                elif not self._prefetch():
+                    self._stop.wait(self._settings.loop_interval_s)
         finally:
             self._stop.set()
             beat.join(timeout=2.0)
@@ -100,6 +103,28 @@ class Daemon:
         except Exception:  # noqa: BLE001 - the update must never stop the deployments
             logger.exception("The self-update could not be looked at")
             return False
+
+    def _prefetch(self) -> bool:
+        """Download early what Logos announced, if it announced something new. True if it tried.
+
+        Logos is told when the download starts and how it ends. A problem here fails nothing: the deployment downloads
+        the images itself and reports what goes wrong.
+        """
+        link = self._link
+        announced = link.take_prefetch() if link is not None else None
+        if announced is None:
+            return False
+        link.report_download(announced.id, DownloadState.DOWNLOADING)
+        try:
+            problem = self._deployer.prefetch(announced.tag)
+        except Exception as exc:  # noqa: BLE001 - an early download must never stop the deployments
+            logger.warning("The early download of tag %s failed", announced.tag, exc_info=True)
+            problem = str(exc)
+        if problem is None:
+            link.report_download(announced.id, DownloadState.DOWNLOADED)
+        else:
+            link.report_download(announced.id, DownloadState.FAILED, problem)
+        return True
 
     def _heartbeat(self) -> None:
         while not self._stop.wait(HEARTBEAT_INTERVAL_S):

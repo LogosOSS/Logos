@@ -56,6 +56,12 @@ class CoreTarget:
         # The services that the last check found wrong, for the log that goes into the record.
         self._failing: list[str] = []
 
+    # ------------------------------------------------------------------ Early download
+
+    def prefetch(self, tag: str) -> str | None:
+        """Nothing to do: the core gets its order first, so there is no wait to use for a download."""
+        return None
+
     # ------------------------------------------------------------------ Steps
 
     def begin(self, deployment: Deployment) -> None:

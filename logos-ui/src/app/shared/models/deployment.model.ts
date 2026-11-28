@@ -29,10 +29,17 @@ export interface DeploymentEvent {
   note: string;
 }
 
+/** How the image download stands that a worker does while it waits for the core. */
+export interface EarlyDownload {
+  state: 'downloading' | 'downloaded' | 'failed';
+  message?: string;
+}
+
 export interface StepDetails {
   drained_requests?: number;
   drain_seconds?: number;
   sole_replica_models?: string[];
+  early_download?: EarlyDownload;
 }
 
 export interface DeploymentStep {
@@ -168,7 +175,8 @@ const FAILURE_INDEX: Record<string, number> = {
   rollback_failed: 3,
 };
 
-type PhaseInput = Pick<DeploymentStep, 'status' | 'phase' | 'failure'>;
+type PhaseInput = Pick<DeploymentStep, 'status' | 'phase' | 'failure'> &
+  Partial<Pick<DeploymentStep, 'details'>>;
 
 /** The state of each segment of the phase bar for a step. */
 export function phaseStates(step: PhaseInput): PhaseState[] {
@@ -185,6 +193,17 @@ export function phaseStates(step: PhaseInput): PhaseState[] {
       return upTo(FAILURE_INDEX[step.failure ?? ''] ?? at(step.phase), 'failed');
     case 'rolled_back':
       return upTo(FAILURE_INDEX[step.failure ?? ''] ?? 3, 'failed');
+    case 'waiting':
+    case 'ordered':
+      // A worker can download its image before it starts. That fills the first segment early.
+      switch (step.details?.early_download?.state) {
+        case 'downloading':
+          return upTo(0, 'active');
+        case 'downloaded':
+          return upTo(0, 'done');
+        default:
+          return PHASE_NAMES.map(() => 'pending');
+      }
     default:
       return PHASE_NAMES.map(() => 'pending');
   }
@@ -202,9 +221,17 @@ export function firstLine(text: string | null | undefined): string {
 
 const DRAIN_NOTE = /^waiting for the node to drain: (\d+) request\(s\)/i;
 
+/** What the second line of a status says about an early download. */
+const EARLY_DOWNLOAD_LINE: Record<EarlyDownload['state'], string> = {
+  downloading: 'downloading the image',
+  downloaded: 'image downloaded',
+  failed: 'early download failed',
+};
+
 /**
  * What a node is doing, in a few words: the status line of a node row. While a node drains, the line is cut to the
  * number of requests that are left, on a second line. The page of the deployment has the full message in its events.
+ * How an early download stands is a second line too, never part of the first one.
  */
 export function stepStatusText(step: DeploymentStep, tag: string): string {
   switch (step.status) {
@@ -212,7 +239,11 @@ export function stepStatusText(step: DeploymentStep, tag: string): string {
       const note = firstLine(step.events[step.events.length - 1]?.note);
       const drain = DRAIN_NOTE.exec(note);
       if (drain) return `Waiting for the node to drain:\n${drain[1]} request(s)`;
-      return note || STEP_STATUS_LABEL.running;
+      if (note) return note;
+      // A node that took its order, and has nothing to tell yet, may still download early.
+      return step.details?.early_download?.state === 'downloading'
+        ? `${STEP_STATUS_LABEL.running}\n${EARLY_DOWNLOAD_LINE.downloading}`
+        : STEP_STATUS_LABEL.running;
     }
     case 'succeeded':
       return `Done, runs ${tag}`;
@@ -221,9 +252,30 @@ export function stepStatusText(step: DeploymentStep, tag: string): string {
     case 'failed':
     case 'rolled_back':
       return firstLine(step.message) || STEP_STATUS_LABEL[step.status];
+    case 'waiting':
+    case 'ordered':
+      return waitingText(step);
     default:
       return STEP_STATUS_LABEL[step.status];
   }
+}
+
+/** What a node says while it waits, with how its early download stands. */
+function waitingText(step: DeploymentStep): string {
+  const label = STEP_STATUS_LABEL[step.status];
+  const state = step.details?.early_download?.state;
+  return state ? `${label}\n${EARLY_DOWNLOAD_LINE[state]}` : label;
+}
+
+/**
+ * Why the early download of a node that still waits failed, for the warning on that node. The status line only says
+ * that it failed. Null if there is nothing to warn about.
+ */
+export function earlyDownloadProblem(step: DeploymentStep): string | null {
+  const download = step.details?.early_download;
+  const waits = step.status === 'waiting' || step.status === 'ordered';
+  if (!waits || download?.state !== 'failed') return null;
+  return firstLine(download.message) || 'No reason given.';
 }
 
 /** "Oct 31, 2026, 1:58:00 PM": the full time for the title of a relative time. */

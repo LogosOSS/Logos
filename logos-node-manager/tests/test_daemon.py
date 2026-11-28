@@ -12,6 +12,7 @@ from conftest import OLD
 
 from logos_node_manager.daemon import MAX_ATTEMPTS, Daemon
 from logos_node_manager.errors import DockerError, Interrupted
+from logos_node_manager.logos_link import DownloadState, Prefetch
 from logos_node_manager.state import Deployment, FailureKind, Outcome, Phase
 
 
@@ -26,11 +27,19 @@ class ScriptedDeployer:
         self.seen: list[str] = []
         self.reports = 0
         self.report_error: Exception | None = None
+        self.prefetch_error: Exception | None = None
+        self.prefetch_problem: str | None = None
 
     def report_pending(self) -> None:
         self.reports += 1
         if self.report_error is not None:
             raise self.report_error
+
+    def prefetch(self, tag: str) -> str | None:
+        self.seen.append(f"download {tag}")
+        if self.prefetch_error is not None:
+            raise self.prefetch_error
+        return self.prefetch_problem
 
     def process(self, deployment: Deployment) -> Deployment:
         self.seen.append(deployment.id)
@@ -459,3 +468,82 @@ def test_a_self_update_that_fails_does_not_stop_the_deployments(settings, store)
     finally:
         stop.set()
         thread.join(timeout=5)
+
+
+# ---------------------------------------------------------------------- Early download
+
+
+class StubLink:
+    """Stands for the link to Logos: hands out the announcements it was given, one per call."""
+
+    def __init__(self, *tags: str) -> None:
+        self.announced = [Prefetch(id=f"plan-{tag}", tag=tag) for tag in tags]
+        # What the daemon told about the downloads.
+        self.downloads: list[tuple[str, DownloadState, str]] = []
+
+    def start(self) -> None:
+        pass
+
+    def join(self) -> None:
+        pass
+
+    def take_prefetch(self) -> Prefetch | None:
+        return self.announced.pop(0) if self.announced else None
+
+    def report_download(self, announced_id: str, state: DownloadState, message: str = "") -> None:
+        self.downloads.append((announced_id, state, message))
+
+
+def test_an_announced_download_waits_for_the_queued_deployments(settings, store):
+    stop = threading.Event()
+    deployer = ScriptedDeployer(store, stop)
+    queue(store, "first", "2026-01-01T00:00:01")
+
+    thread = start(settings, store, deployer, stop, link=StubLink("v3"))
+    try:
+        assert wait_for(lambda: len(deployer.seen) == 2)
+    finally:
+        stop.set()
+        thread.join(timeout=5)
+
+    assert deployer.seen == ["first", "download v3"]
+
+
+def test_a_download_that_fails_does_not_stop_the_deployments(settings, store, caplog):
+    stop = threading.Event()
+    deployer = ScriptedDeployer(store, stop)
+    deployer.prefetch_error = DockerError("docker is gone")
+    link = StubLink("v3")
+
+    with caplog.at_level(logging.WARNING):
+        thread = start(settings, store, deployer, stop, link=link)
+        try:
+            assert wait_for(lambda: deployer.seen == ["download v3"])
+            queue(store, "first", "2026-01-01T00:00:01")
+            assert wait_for(lambda: deployer.seen == ["download v3", "first"])
+        finally:
+            stop.set()
+            thread.join(timeout=5)
+
+    assert "early download of tag v3 failed" in caplog.text
+    assert link.downloads[-1] == ("plan-v3", DownloadState.FAILED, "docker is gone")
+
+
+@pytest.mark.parametrize(
+    "problem, ending",
+    [(None, (DownloadState.DOWNLOADED, "")), ("manifest unknown", (DownloadState.FAILED, "manifest unknown"))],
+)
+def test_logos_is_told_when_a_download_starts_and_how_it_ends(settings, store, problem, ending):
+    stop = threading.Event()
+    deployer = ScriptedDeployer(store, stop)
+    deployer.prefetch_problem = problem
+    link = StubLink("v3")
+
+    thread = start(settings, store, deployer, stop, link=link)
+    try:
+        assert wait_for(lambda: len(link.downloads) == 2)
+    finally:
+        stop.set()
+        thread.join(timeout=5)
+
+    assert link.downloads == [("plan-v3", DownloadState.DOWNLOADING, ""), ("plan-v3", *ending)]

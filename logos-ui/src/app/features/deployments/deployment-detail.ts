@@ -15,6 +15,7 @@ import {
   DeploymentStep,
   PLAN_STATUS_LABEL,
   clockTime,
+  earlyDownloadProblem,
   eventTitle,
   fullDate,
   nodeKindLabel,
@@ -49,6 +50,7 @@ export class DeploymentDetail implements OnInit {
   readonly stepTone = stepTone;
   readonly phaseStates = phaseStates;
   readonly stepStatusText = stepStatusText;
+  readonly earlyDownloadProblem = earlyDownloadProblem;
   readonly nodeKindLabel = nodeKindLabel;
   readonly clockTime = clockTime;
   readonly eventTitle = eventTitle;

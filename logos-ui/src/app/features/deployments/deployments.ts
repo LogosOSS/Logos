@@ -19,6 +19,7 @@ import {
   PLAN_STATUS_LABEL,
   PlanStatus,
   STEP_STATUS_LABEL,
+  earlyDownloadProblem,
   fullDate,
   nodeKindLabel,
   phaseStates,
@@ -61,6 +62,7 @@ export class Deployments implements OnInit {
   readonly stepTone = stepTone;
   readonly phaseStates = phaseStates;
   readonly stepStatusText = stepStatusText;
+  readonly earlyDownloadProblem = earlyDownloadProblem;
   readonly nodeKindLabel = nodeKindLabel;
   readonly fullDate = fullDate;
   readonly age = formatRelativeTime;

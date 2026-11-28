@@ -8,6 +8,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
@@ -52,6 +53,7 @@ public class DeploymentReportService {
     private static final int MAX_MESSAGE_CHARS = 4000;
     private static final int MAX_LOG_CHARS = 6000;
     private static final int MAX_MODELS = 20;
+    private static final Set<String> DOWNLOAD_STATES = Set.of("downloading", "downloaded", "failed");
 
     private final DeploymentProperties properties;
     private final DeploymentPlanRepository plans;
@@ -106,6 +108,53 @@ public class DeploymentReportService {
                 new DeployerApi.Order(step.getId().toString(), plan.getTag(), plan.getInitiator(), step.getKind().name())));
         }
         return orders;
+    }
+
+    /**
+     * What the deployer can download early: the tag of the running plan, as long as the deployer still waits in it for
+     * the core. A plan that has been silent for longer than the limit announces nothing, in the same way as an order
+     * that has waited too long is not handed out.
+     */
+    @Transactional(readOnly = true)
+    public Optional<DeployerApi.Prefetch> prefetchFor(Deployer deployer) {
+        Instant cutoff = clock.instant().minus(properties.silenceLimit());
+        return plans.findFirstByStatus(PlanStatus.running)
+            .filter(plan -> !plan.getLastActivityAt().isBefore(cutoff))
+            .filter(plan -> steps.findByPlanIdOrderByPositionAscDeployerNameAsc(plan.getId()).stream()
+                .anyMatch(step -> step.getStatus() == StepStatus.waiting
+                    && deployer.getId().equals(step.getDeployerId())))
+            .map(plan -> new DeployerApi.Prefetch(plan.getId().toString(), plan.getTag()));
+    }
+
+    /**
+     * Note on the step of the deployer how its early download stands, for the page. Only a step that waits for the core
+     * or whose order is open takes it: a step that runs says more with its own reports. It is no report of a
+     * deployment, so the step does not move on, and it is no sign of life: a silent plan still ends.
+     */
+    @Transactional
+    public void noteEarlyDownload(Deployer deployer, DeployerApi.EarlyDownload download) {
+        UUID planId = download == null ? null : uuid(download.id());
+        if (planId == null || download.state() == null || !DOWNLOAD_STATES.contains(download.state())) {
+            return;
+        }
+        // Locked, so that this does not write over a step that a report of the core moves on at the same time.
+        DeploymentPlan plan = plans.findByIdForUpdate(planId).orElse(null);
+        if (plan == null || plan.getStatus() != PlanStatus.running) {
+            return;
+        }
+        Map<String, Object> facts = new LinkedHashMap<>();
+        facts.put("state", download.state());
+        if (download.message() != null && !download.message().isBlank()) {
+            facts.put("message", clip(download.message(), MAX_NOTE_CHARS));
+        }
+        String details = write(Map.of("early_download", facts), null);
+        steps.findByPlanIdOrderByPositionAscDeployerNameAsc(planId).stream()
+            .filter(step -> deployer.getId().equals(step.getDeployerId()))
+            .filter(step -> step.getStatus() == StepStatus.waiting || step.getStatus() == StepStatus.ordered)
+            .forEach(step -> {
+                step.setDetails(details);
+                steps.save(step);
+            });
     }
 
     // ------------------------------------------------------------------ Reports
@@ -229,7 +278,11 @@ public class DeploymentReportService {
         }
         step.setEvents(events(item.events()));
         step.setFailureLogs(clip(item.failureLogs(), MAX_LOG_CHARS));
-        step.setDetails(details(item));
+        // A deployment that is only queued has no facts yet. It may wait for an early download to end, so what the
+        // step knows of that download stays until the deployment goes on.
+        if (!"queued".equals(item.phase())) {
+            step.setDetails(details(item));
+        }
         if (outcome != null) {
             step.setStatus(outcome);
             Instant finished = instant(item.finishedAt());

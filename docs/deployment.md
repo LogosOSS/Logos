@@ -276,7 +276,8 @@ To send a deploy request, run this command:
 docker exec logos-node-manager node-manager deploy --id manual-1 --tag latest --wait
 ```
 
-The node manager reserves the tag `previous`. Do not deploy that tag.
+The node manager reserves the tags `previous` and `prefetched`. Do not deploy
+these tags.
 
 To see the latest deployment, run `docker exec logos-node-manager node-manager status`.
 
@@ -457,6 +458,12 @@ A deployment has two stages:
 2. If the core succeeded, all worker deployers start. Each worker drains its
    node first. If the new container fails, the worker starts the previous
    version again.
+
+During stage 1, each worker already downloads the new image. The page
+**Deployments** shows this download in the part **Pull** of the worker. The
+download does not change the worker that runs. Then stage 2 is shorter. The core
+and the node manager of the worker need a version that can do this. If one of
+them is older, the worker downloads the image in stage 2.
 
 If the core fails, the workers do not start. A core deployment has no automatic
 rollback. The new web service changes the database structure when it starts. The

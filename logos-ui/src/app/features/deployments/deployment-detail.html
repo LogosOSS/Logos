@@ -71,6 +71,15 @@
               <div class="card__status">{{ stepStatusText(step, p.tag) }}</div>
             </div>
             <app-phase-bar [states]="phaseStates(step)" />
+            @if (earlyDownloadProblem(step); as problem) {
+              <div class="lg-alert lg-alert--warning lg-alert--compact">
+                <i class="pi pi-exclamation-triangle lg-alert__icon" aria-hidden="true"></i>
+                <div class="lg-alert__body">
+                  <code class="lg-alert__reason">{{ problem }}</code>
+                  <span class="lg-alert__hint">The node tries the download again when it starts.</span>
+                </div>
+              </div>
+            }
             @if (step.events.length > 0) {
               <ol class="timeline">
                 @for (event of step.events; track $index) {

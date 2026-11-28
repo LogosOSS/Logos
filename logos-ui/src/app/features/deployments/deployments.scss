@@ -68,7 +68,7 @@
   display: grid;
   grid-template-columns: 200px minmax(0, 1fr) 240px;
   align-items: center;
-  gap: 24px;
+  gap: 10px 24px;
   padding: 12px 16px;
   border-radius: 8px;
   border: 1px solid rgb(var(--color-outline-200));
@@ -122,6 +122,11 @@
 }
 .node--rolled-back .node__status {
   color: rgb(var(--status-rolled-back-text));
+}
+
+/* The warning of a node takes a line of its own below the whole row. */
+.node__problem {
+  grid-column: 1 / -1;
 }
 
 .nodes__hint {

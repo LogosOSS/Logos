@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import threading
+from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
@@ -13,11 +14,14 @@ from logos_node_manager.config import Settings
 from logos_node_manager.docker_ops import read_env_value
 from logos_node_manager.logos_link import (
     RETRY_MAX_S,
+    DownloadState,
     LogosClient,
     LogosError,
     LogosLink,
     Order,
+    Prefetch,
     parse_orders,
+    parse_prefetch,
     retry_delay,
     snapshot,
 )
@@ -220,15 +224,36 @@ def client_for(logos: FakeLogos) -> LogosClient:
 def test_a_poll_sends_the_key_in_a_header_and_returns_the_orders(logos):
     logos.answers = [(200, {"orders": [{"id": "plan-1-core", "tag": "v2", "kind": "core"}]})]
 
-    orders, rejections = client_for(logos).poll(25.0)
+    orders, rejections, announced = client_for(logos).poll(25.0)
 
     assert [order.id for order in orders] == ["plan-1-core"]
+    assert announced is None
     request = logos.requests[0]
     assert request["path"] == "/api/deployments/deployer/poll"
     assert request["auth"] == f"Bearer {KEY}"
     assert request["body"]["wait_s"] == 25.0
     assert request["body"]["kind"] == "core"
+    assert "known_prefetch" not in request["body"]
     assert KEY not in json.dumps(request["body"])
+
+
+def test_a_poll_says_which_announcement_it_knows_and_returns_the_one_of_the_answer(logos):
+    logos.answers = [(200, {"orders": [], "prefetch": {"id": "plan-2", "tag": "v2"}})]
+
+    _, _, announced = client_for(logos).poll(25.0, known_prefetch="plan-1")
+
+    assert announced == Prefetch(id="plan-2", tag="v2")
+    assert logos.requests[0]["body"]["known_prefetch"] == "plan-1"
+
+
+@pytest.mark.parametrize("answer", [{}, {"prefetch": None}, {"prefetch": "v2"}, {"prefetch": {"tag": "v2"}}])
+def test_an_answer_without_an_announcement_has_none(answer):
+    assert parse_prefetch(answer) is None
+
+
+@pytest.mark.parametrize("tag", ["", "a b", "-v2", "v2;rm", "previous", "prefetched"])
+def test_an_announcement_with_a_tag_that_cannot_be_used_keeps_only_its_id(tag):
+    assert parse_prefetch({"prefetch": {"id": "plan-1", "tag": tag}}) == Prefetch(id="plan-1", tag="")
 
 
 def test_a_report_returns_the_ids_that_logos_took(logos):
@@ -239,6 +264,20 @@ def test_a_report_returns_the_ids_that_logos_took(logos):
     assert acked == {"a", "b"}
     assert logos.requests[0]["path"] == "/api/deployments/deployer/report"
     assert [item["id"] for item in logos.requests[0]["body"]["deployments"]] == ["a", "b", "c"]
+    assert "early_download" not in logos.requests[0]["body"]
+
+
+def test_a_report_carries_the_state_of_an_early_download(link_settings, store, clock, logos):
+    # The names of the fields are what the webservice reads.
+    client = LogosClient(logos.url, KEY, kind="worker", timeout_margin_s=5.0)
+    link = LogosLink(link_settings, store, threading.Event(), client, clock=clock)
+
+    link.report_download("plan-1", DownloadState.FAILED, "manifest unknown")
+    link.report_once()
+
+    body = logos.requests[0]["body"]
+    assert body["deployments"] == []
+    assert body["early_download"] == {"id": "plan-1", "state": "failed", "message": "manifest unknown"}
 
 
 @pytest.mark.parametrize("status, retryable", [(500, True), (503, True), (429, True), (401, False), (404, False)])
@@ -298,20 +337,21 @@ class FakeClient:
 
     def __init__(self) -> None:
         self.sent: list[list[dict]] = []
+        # The early download state of every report that went out, None if it had none.
+        self.downloads: list[dict | None] = []
         self.error: LogosError | None = None
         self.acks: set[str] | None = None
 
-    def report(self, deployments: list[dict]) -> set[str]:
+    def report(self, deployments: list[dict], *, early_download: dict | None = None) -> set[str]:
         if self.error:
             raise self.error
         self.sent.append(deployments)
+        self.downloads.append(early_download)
         return {item["id"] for item in deployments} if self.acks is None else self.acks
 
 
 @pytest.fixture
 def link_settings(settings) -> Settings:
-    from dataclasses import replace
-
     return replace(settings, kind="worker", report_interval_s=20.0)
 
 
@@ -450,6 +490,37 @@ def test_logos_that_cannot_be_reached_is_asked_again_after_a_growing_pause(link,
     assert len(client.sent) == 1
 
 
+def test_a_download_state_is_sent_until_a_report_reaches_logos(link, client, clock):
+    client.error = LogosError("Logos could not be reached")
+    link.report_download("plan-1", DownloadState.DOWNLOADED)
+    link.report_once()
+
+    client.error = None
+    clock.sleep(6.0)
+    link.report_once()
+    link.report_once()
+
+    # It went out with the first report that got through. Nothing is left to send after it.
+    assert client.downloads == [{"id": "plan-1", "state": "downloaded", "message": ""}]
+
+
+def test_a_download_state_that_arrives_during_a_report_goes_with_the_next_one(link, client):
+    send = client.report
+
+    def report_while_the_download_ends(deployments, *, early_download=None):
+        if not client.sent:
+            link.report_download("plan-1", DownloadState.DOWNLOADED)
+        return send(deployments, early_download=early_download)
+
+    client.report = report_while_the_download_ends
+    link.report_download("plan-1", DownloadState.DOWNLOADING)
+
+    link.report_once()
+    link.report_once()
+
+    assert [download["state"] for download in client.downloads] == ["downloading", "downloaded"]
+
+
 def test_an_old_ending_is_not_reported_any_more(link, client, store):
     record = finished(store)
     record.finished_at = "2020-01-01T00:00:00+00:00"
@@ -497,8 +568,11 @@ class PollClient(FakeClient):
         super().__init__()
         self.stop = stop
         self.script = list(script)
+        # What every poll said that it knows of the announcements.
+        self.known: list[str | None] = []
 
-    def poll(self, wait_s: float):
+    def poll(self, wait_s: float, *, known_prefetch: str | None = None):
+        self.known.append(known_prefetch)
         step = self.script.pop(0)
         if not self.script:
             self.stop.set()
@@ -526,7 +600,7 @@ def test_the_intake_accepts_orders_and_keeps_rejections_for_the_next_report(link
         link_settings,
         store,
         clock,
-        [([order("o1")], [{"id": "o2", "rejected": "bad tag"}])],
+        [([order("o1")], [{"id": "o2", "rejected": "bad tag"}], None)],
     )
 
     link._intake_loop()
@@ -536,8 +610,50 @@ def test_the_intake_accepts_orders_and_keeps_rejections_for_the_next_report(link
     assert link._wake.is_set()
 
 
+def polled(link_settings, store, clock, announcements):
+    """A link after one poll for each of the announcements, with no real pause between the polls."""
+    link, client, _ = intake(link_settings, store, clock, [([], [], announced) for announced in announcements])
+    link._stop.wait = lambda timeout=None: False
+    link._intake_loop()
+    return link, client
+
+
+def test_an_announcement_goes_to_the_daemon_once_and_its_id_back_to_logos(link_settings, store, clock):
+    announced = Prefetch(id="plan-1", tag="v2")
+
+    link, client = polled(link_settings, store, clock, [announced, announced])
+
+    assert client.known == ["", "plan-1"]
+    assert link.take_prefetch() == announced
+    link._announce(announced)  # the next answer says the same
+    assert link.take_prefetch() is None
+    assert store.all() == []  # it is no order
+
+
+def test_an_announcement_that_logos_no_longer_makes_is_dropped(link_settings, store, clock):
+    link, _ = polled(link_settings, store, clock, [Prefetch(id="plan-1", tag="v2"), None])
+
+    assert link.take_prefetch() is None
+
+
+def test_an_announcement_with_an_unusable_tag_is_answered_but_not_downloaded(link_settings, store, clock):
+    announced = Prefetch(id="plan-1", tag="")
+
+    link, client = polled(link_settings, store, clock, [announced, announced])
+
+    # With the id sent back, Logos does not answer at once with the same announcement for as long as it stands.
+    assert client.known == ["", "plan-1"]
+    assert link.take_prefetch() is None
+
+
+def test_a_core_host_does_not_ask_for_announcements(link_settings, store, clock):
+    _, client = polled(replace(link_settings, kind="core"), store, clock, [None])
+
+    assert client.known == [None]
+
+
 def test_the_intake_goes_on_after_an_error_of_logos(link_settings, store, clock):
-    link, client, _ = intake(link_settings, store, clock, [LogosError("down"), LogosError("down"), ([], [])])
+    link, client, _ = intake(link_settings, store, clock, [LogosError("down"), LogosError("down"), ([], [], None)])
     link._stop.wait = lambda timeout=None: False  # no real pause between the tries
 
     link._intake_loop()
@@ -547,7 +663,7 @@ def test_the_intake_goes_on_after_an_error_of_logos(link_settings, store, clock)
 
 
 def test_the_intake_goes_on_after_an_unexpected_error(link_settings, store, clock):
-    link, client, _ = intake(link_settings, store, clock, [RuntimeError("boom"), ([], [])])
+    link, client, _ = intake(link_settings, store, clock, [RuntimeError("boom"), ([], [], None)])
     link._stop.wait = lambda timeout=None: False
 
     link._intake_loop()
@@ -565,7 +681,7 @@ def test_a_problem_with_logos_is_logged_once(link, caplog):
 
 
 def test_a_report_that_fails_unexpectedly_does_not_stop_the_reporter(link_settings, store, clock):
-    link, client, stop = intake(link_settings, store, clock, [([], [])])
+    link, client, stop = intake(link_settings, store, clock, [([], [], None)])
 
     def explode():
         stop.set()
@@ -580,7 +696,7 @@ def test_a_report_that_fails_unexpectedly_does_not_stop_the_reporter(link_settin
 
 
 def test_the_threads_start_and_end_when_the_link_stops(link_settings, store, clock):
-    link, client, stop = intake(link_settings, store, clock, [([], [])])
+    link, client, stop = intake(link_settings, store, clock, [([], [], None)])
 
     link.start()
     link.join(timeout_s=5.0)

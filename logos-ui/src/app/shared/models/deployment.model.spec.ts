@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 
 import {
   DeploymentStep,
+  EarlyDownload,
   clockTime,
+  earlyDownloadProblem,
   eventTitle,
   firstLine,
   fullDate,
@@ -69,6 +71,17 @@ describe('phaseStates', () => {
   it('leaves every segment pending for a node that did not start', () => {
     expect(phaseStates(step({ status: 'waiting', phase: null }))).toEqual(['pending', 'pending', 'pending', 'pending']);
   });
+
+  it('fills the pull segment with the early download of a node that still waits', () => {
+    const pull = (status: DeploymentStep['status'], state: EarlyDownload['state']) =>
+      phaseStates(step({ status, phase: null, details: { early_download: { state } } }))[0];
+
+    expect(pull('waiting', 'downloading')).toBe('active');
+    expect(pull('waiting', 'downloaded')).toBe('done');
+    expect(pull('ordered', 'downloaded')).toBe('done');
+    expect(pull('waiting', 'failed')).toBe('pending');
+    expect(pull('cancelled', 'downloaded')).toBe('pending');
+  });
 });
 
 describe('texts', () => {
@@ -89,6 +102,34 @@ describe('texts', () => {
     expect(stepStatusText(step({ status: 'failed', message: 'swap failed\nmore' }), 'pr-1')).toBe('swap failed');
     expect(stepStatusText(step({ status: 'rolled_back' }), 'pr-1')).toBe('Rolled back');
     expect(stepStatusText(step({ status: 'waiting' }), 'pr-1')).toBe('Waiting for the core');
+  });
+
+  it('says how the early download of a node that has nothing else to tell stands', () => {
+    const text = (status: DeploymentStep['status'], early_download: EarlyDownload) =>
+      stepStatusText(step({ status, details: { early_download } }), 'pr-1');
+
+    expect(text('waiting', { state: 'downloading' })).toBe('Waiting for the core\ndownloading the image');
+    expect(text('ordered', { state: 'downloaded' })).toBe('Waiting for the deployer\nimage downloaded');
+    expect(text('waiting', { state: 'failed', message: 'manifest unknown' })).toBe(
+      'Waiting for the core\nearly download failed',
+    );
+    expect(text('running', { state: 'downloading' })).toBe('Running\ndownloading the image');
+    expect(text('cancelled', { state: 'downloaded' })).toBe('Not started');
+  });
+
+  it('gives the reason of a failed early download only for a node that still waits', () => {
+    const problem = (status: DeploymentStep['status'], early_download: EarlyDownload) =>
+      earlyDownloadProblem(step({ status, details: { early_download } }));
+    const failed: EarlyDownload = { state: 'failed', message: 'manifest unknown\nmore' };
+
+    expect(problem('waiting', failed)).toBe('manifest unknown');
+    expect(problem('ordered', failed)).toBe('manifest unknown');
+    expect(problem('waiting', { state: 'failed' })).toBe('No reason given.');
+    // Once the node runs or the deployment is over, the earlier failure is of no use any more.
+    expect(problem('running', failed)).toBeNull();
+    expect(problem('cancelled', failed)).toBeNull();
+    expect(problem('waiting', { state: 'downloaded' })).toBeNull();
+    expect(earlyDownloadProblem(step({ status: 'waiting' }))).toBeNull();
   });
 });
 

@@ -170,6 +170,10 @@ removes the image it pulled, because no container runs it. The next try pulls it
 The manager removes an image by its ID (`docker rmi`), so an image that a container uses, or that has more than one
 name, stays. A problem during the removal is logged and does not change the result of the deployment.
 
+An early download (see "Orders from Logos") keeps one image under the name `<image>:prefetched`. The deployment that
+pulls this image takes the name away, and the rules above then apply to it. An image that no deployment takes, for
+example because the core failed, stays until the next early download replaces it.
+
 The deploy workflow removes the image of the node manager in the step "Update node manager". When the
 new manager answers `node-manager ping`, the step removes every image of the manager that no container uses
 (`docker image prune -a`, limited to the label `io.logos.component=node-manager`). A pull takes the name from the old
@@ -338,6 +342,20 @@ Without the address and the key, the host takes no orders from Logos.
   directory like any other request, so the queue, the phases and the time limits are the same. An order that is
   repeated gives the same deployment. An order that cannot be run is refused in the next report, and Logos ends the
   step as failed.
+* **Early download.** A worker gets its order only when the core of the deployment succeeded, and its manager can
+  download the new image while it waits. A worker sends `known_prefetch` with each request for orders: the id of the
+  last announcement it got, empty before the first one. While the worker waits for a core, Logos answers with an
+  announcement (`prefetch`: the id of the deployment and the tag), at once if it is new. It is no order. When no
+  deployment is queued, the manager runs `docker compose pull` for the worker service, with the compose file that ran
+  last. A deployment that is ordered during the download starts when the download ends. The name of the tag goes back to
+  the image that it had before, so a `docker compose up` by hand starts what it would have started before. The new image
+  is kept as `<image>:prefetched` (see "Images on the host"). The log of the deployment that takes this image says that
+  it was downloaded early. A manager that is stopped between the pull and this renaming leaves the tag on the new image.
+  A core host does not download early: its order comes first.
+* **State of an early download.** Nothing is recorded on the host. The manager sends `early_download` with its report:
+  the id of the announcement, the state (`downloading`, `downloaded` or `failed`) and, for a failed download, the reason.
+  Only the newest state is sent, until a report reaches Logos. Logos shows it on the step of the worker as long as that
+  step has nothing else to show. A download that fails ends no deployment, because the deployment pulls again.
 * **Reports.** One thread sends `POST /api/deployments/deployer/report`. A report carries the whole state of a
   deployment (phase, outcome, message, events, the end of a failure log), so a lost report is made up by the next one. A
   deployment in progress is reported when it changes and at least every `REPORT_INTERVAL_S` (20 s): Logos reads the
@@ -438,8 +456,9 @@ Commands (run them with `docker exec logos-node-manager node-manager …`):
 The requested tag reaches Compose as the `IMAGE_TAG` process variable. A process variable beats the `.env` file, so a
 later rewrite of that file cannot change what an earlier request deploys.
 
-The tag `previous` cannot be deployed. The manager uses the local name `<image>:previous` for the version that ran
-before, and it moves that name to the running image before the swap. `deploy` refuses the tag with exit code 2.
+The tags `previous` and `prefetched` cannot be deployed. The manager uses the local name `<image>:previous` for the
+version that ran before, and it moves that name to the running image before the swap. It uses `<image>:prefetched` for
+an image that it downloaded early (see "Images on the host"). `deploy` refuses both tags with exit code 2.
 
 ## State
 
@@ -504,8 +523,8 @@ at the start of every deployment, so a change needs no restart: `REGISTRY`, `NOD
   SIGKILL after 10 s. No old command goes on while the manager moves to the next step. What the Docker engine has
   already begun, for example stopping a container, goes on and is not undone. The rollback tries again for this reason.
 * The manager of a worker host never runs a global image prune. When a deployment has ended it removes only the images
-  listed under "Images on the host", by ID. The core deployer prunes the images that no container uses after a success
-  (see "Core host").
+  listed under "Images on the host", by ID. An early download removes only the image of an earlier one that no
+  deployment took. The core deployer prunes the images that no container uses after a success (see "Core host").
 * The container is replaced only after a fresh answer of the orchestrator that the node has drained. The record is saved
   with that answer before the swap begins.
 * A deployment that held the cordon gives it back on every ending, before the record says it is over. The key of the

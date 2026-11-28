@@ -6,6 +6,9 @@ turn. The cordon is held until the deployment ends and then given back, whatever
 ask, or with the drain switched off, the phase passes at once and the container is replaced as before.
 
 Images are removed when the deployment has ended and not earlier: until then a rollback may still need them.
+
+While Logos still replaces the core, the manager of a worker can already download the image of the tag (``prefetch``),
+so that the deployment of the worker has less to wait for.
 """
 
 from __future__ import annotations
@@ -18,7 +21,7 @@ from logos_node_manager.docker_ops import Docker, split_image_ref
 from logos_node_manager.errors import DockerError
 from logos_node_manager.orchestrator import CordonReply, OrchestratorClient, OrchestratorUnavailable
 from logos_node_manager.rollback import restore_previous
-from logos_node_manager.state import PREVIOUS_TAG, Deployment, FailureKind, Outcome, Phase
+from logos_node_manager.state import PREFETCHED_TAG, PREVIOUS_TAG, Deployment, FailureKind, Outcome, Phase
 from logos_node_manager.targets import Budget, short_id
 from logos_node_manager.verify import VerifyResult, verify_container
 
@@ -37,6 +40,68 @@ class WorkerTarget:
     def __init__(self, deployer: "Deployer", docker: Docker) -> None:
         self.d = deployer
         self.docker = docker
+
+    # ------------------------------------------------------------------ Early download
+
+    def prefetch(self, tag: str) -> str | None:
+        """Download the image of ``tag`` before its deployment is ordered, so that the deployment finds it on the host.
+
+        Nothing that runs changes, and no name changes its meaning. A pull moves the name of the tag to the new image,
+        which a ``docker compose up`` by hand would then start. So the name goes back to the image it had before, or
+        goes away if there was none. The new image is kept as ``<image>:prefetched`` until a deployment takes it. There
+        is at most one such image: the next early download replaces it.
+
+        Returns why the image could not be downloaded, or None when it is on the host. Nothing is recorded, and a failed
+        pull ends no deployment: the deployment pulls again and reports what goes wrong.
+        """
+        reference = self.docker.image_ref(tag)
+        before = self.docker.image_id(reference)
+        logger.info("Downloading %s early, before its deployment is ordered", reference)
+        result = self.docker.pull(tag)
+        if not result.ok:
+            logger.warning("%s was not downloaded early: %s", reference, result.tail(4))
+            # The last line says why. The lines before it are the progress of Compose.
+            return result.tail(1)
+        pulled = self.docker.image_id(reference)
+        if pulled is None:
+            problem = f"image {reference} is not on this host after the pull"
+            logger.warning("%s was not downloaded early: %s", reference, problem)
+            return problem
+        if pulled == before:
+            logger.info("Nothing new to keep: %s names the same image as before", reference)
+            return None
+        name, _ = split_image_ref(reference)
+        kept = f"{name}:{PREFETCHED_TAG}"
+        try:
+            if self.docker.image_id(kept) not in (None, before, pulled):
+                # An earlier early download that no deployment took. The image goes with its last name.
+                self.docker.remove_image(kept)
+            self.docker.tag(pulled, kept)
+        finally:
+            # Also if the new name failed: the name of the tag must not stay on an image that was not deployed.
+            if before is None:
+                self.docker.remove_image(reference)
+            else:
+                self.docker.tag(before, reference)
+        logger.info("%s is on this host, kept as %s (%s)", reference, kept, short_id(pulled))
+        return None
+
+    def _take_over_prefetched(self, reference: str, image_id: str) -> bool:
+        """Take the name ``<image>:prefetched`` off the image that a deployment pulled. True if it was downloaded early.
+
+        The image has the name of its tag now. With a second name it would stay on the host when the clean-up removes
+        it. A problem here is only logged: it must not fail the deployment.
+        """
+        name, _ = split_image_ref(reference)
+        kept = f"{name}:{PREFETCHED_TAG}"
+        try:
+            if self.docker.image_id(kept) != image_id:
+                return False
+            self.docker.remove_image(kept)
+        except DockerError:
+            logger.warning("The name %s could not be removed", kept, exc_info=True)
+            return False
+        return True
 
     # ------------------------------------------------------------------ Steps
 
@@ -112,7 +177,10 @@ class WorkerTarget:
             return
         deployment.target_image_ref = reference
         deployment.target_image_id = image_id
-        self.d.advance(deployment, Phase.DRAINING, f"pulled {reference} ({short_id(image_id)})")
+        note = f"pulled {reference} ({short_id(image_id)})"
+        if self._take_over_prefetched(reference, image_id):
+            note += "; it was downloaded early"
+        self.d.advance(deployment, Phase.DRAINING, note)
 
     def drain(self, deployment: Deployment) -> None:
         """Cordon the node at the orchestrator and wait until the requests that run on it are done.
