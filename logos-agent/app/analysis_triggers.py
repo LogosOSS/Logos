@@ -255,11 +255,12 @@ class AnalysisPoller:
                     # the displayed analysis still describes a different one.
                     target = head
                     target_kind = "branch"
-            if target is not None:
-                request = {"sha": target, "scope": scope}
+            if target is not None and cycle is not None:
+                # Lock-time admission verifies the same successful analysis
+                # this pass used for its ancestry or refresh decision.
+                request = {"sha": target, "scope": scope, "cycle": cycle}
                 if target_kind == "branch":
-                    assert cycle is not None
-                    request.update(kind="branch", cycle=cycle)
+                    request["kind"] = "branch"
                 session_id = await self._queue(link, target=request)
                 if session_id is not None:
                     queued.append(session_id)

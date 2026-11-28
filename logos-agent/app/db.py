@@ -726,7 +726,7 @@ async def create_session(
         or not no_push
         or not commit_sha(workflow_analysis_target.get("sha"))
         or workflow_analysis_target.get("kind") not in (None, "branch")
-        or (workflow_analysis_target.get("kind") == "branch" and not workflow_analysis_target.get("cycle"))
+        or not workflow_analysis_target.get("cycle")
         or (automatic_analysis is None and retry_analysis_session_id is None)
     ):
         raise ValueError("a pinned target belongs to a read-only linked analysis")
@@ -766,30 +766,33 @@ async def create_session(
                     raise ValueError("the workflow analysis scope changed")
                 if automatic_analysis:
                     sha = workflow_analysis_target["sha"]
-                    cycle = (
-                        workflow_analysis_target.get("cycle")
-                        if workflow_analysis_target.get("kind") == "branch"
-                        else None
-                    )
+                    observed = workflow_analysis_target["cycle"]
+                    branch_refresh = workflow_analysis_target.get("kind") == "branch"
                     params = {"repo": team_repository_id, "sha": sha, "scope": workflow_analysis_target["scope"]}
-                    if cycle is not None:
-                        # Recheck the age and latest successful SHA under
-                        # the link lock. A scan can complete after the poll
-                        # read its history and before it claims the slot.
-                        eligible = await db.scalar(
-                            text("""
-                                SELECT EXISTS (
-                                    SELECT 1 FROM (
-                                        SELECT id, commit_sha, finished_at FROM ai_workflow_analyses
-                                         WHERE team_repository_id = :repo AND status = 'succeeded'
-                                         ORDER BY finished_at DESC NULLS LAST, id DESC LIMIT 1
-                                    ) latest
-                                    WHERE latest.id::text = :cycle
-                                      AND latest.commit_sha IS NOT NULL AND latest.commit_sha <> :sha
-                                      AND latest.finished_at <= now() - make_interval(days => :days)
-                                )
+                    # The poller resolves GitHub ancestry outside the link
+                    # lock. Reject stale work, including automatic retries,
+                    # if another analysis succeeded before we acquired it.
+                    latest = (
+                        (
+                            await db.execute(
+                                text("""
+                                SELECT id::text AS cycle, commit_sha,
+                                       finished_at <= now() - make_interval(days => :days) AS refresh_due
+                                  FROM ai_workflow_analyses
+                                 WHERE team_repository_id = :repo AND status = 'succeeded'
+                                 ORDER BY finished_at DESC NULLS LAST, id DESC LIMIT 1
                                 """),
-                            {**params, "cycle": cycle, "days": settings.analysis_refresh_days},
+                                {"repo": team_repository_id, "days": settings.analysis_refresh_days},
+                            )
+                        )
+                        .mappings()
+                        .first()
+                    )
+                    if latest is None or latest["cycle"] != observed:
+                        raise ValueError("the latest successful workflow analysis changed")
+                    if branch_refresh:
+                        eligible = (
+                            latest["commit_sha"] is not None and latest["commit_sha"] != sha and latest["refresh_due"]
                         )
                     else:
                         eligible = not await db.scalar(
@@ -813,7 +816,7 @@ async def create_session(
                                     (s.workflow_analysis_target->>'kind' = 'branch'
                                      AND s.workflow_analysis_target->>'cycle' = CAST(:cycle AS text)))
                             """),
-                        {**params, "cycle": cycle},
+                        {**params, "cycle": observed if branch_refresh else None},
                     )
                     if not eligible or attempts >= MAX_TARGET_ATTEMPTS:
                         raise ValueError(

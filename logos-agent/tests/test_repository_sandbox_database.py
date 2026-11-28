@@ -495,7 +495,9 @@ async def test_nightly_entry_point_persists_baseline_and_pinned_per_link_session
     queued = await poller.poll_once()
     assert len(queued) == 1
     session = await db.get_session(queued[0])
-    assert session["workflow_analysis_target"] == {"sha": release, "scope": stored["scope"]}
+    async with database.begin() as conn:
+        cycle = await conn.scalar(text("SELECT id FROM ai_workflow_analyses WHERE commit_sha = :last"), {"last": last})
+    assert session["workflow_analysis_target"] == {"sha": release, "scope": stored["scope"], "cycle": str(cycle)}
     assert session["repo_base_branch"] == "main"
     assert session["no_push"]
     async with database.begin() as conn:
@@ -567,10 +569,10 @@ async def test_due_branch_rollback_queues_historical_sha_without_replaying_its_r
             workflow_analysis_target=target,
         )
 
-    release = {"sha": commit_a, "scope": scope}
     async with database.begin() as conn:
         cycle = await conn.scalar(text("SELECT id FROM ai_workflow_analyses WHERE commit_sha = :b"), {"b": commit_b})
-    fallback = {**release, "kind": "branch", "cycle": str(cycle)}
+    release = {"sha": commit_a, "scope": scope, "cycle": str(cycle)}
+    fallback = {**release, "kind": "branch"}
     with pytest.raises(ValueError, match="already covered"):
         await launch(release)
     with pytest.raises(ValueError, match="not due"):
@@ -663,4 +665,71 @@ async def test_branch_reversion_gets_new_retry_cycle_after_historical_third_atte
     await finish(last_attempt)
     assert await db.attempts_for_trigger(first_a_ref) == await db.attempts_for_trigger(current_ref) == 3
     assert await runner.take_up_again(await db.get_session(last_attempt)) is None
+    assert await poller.poll_once() == []
+
+
+@pytest.mark.parametrize("when", ["release lookup", "automatic retry"])
+async def test_newer_manual_success_invalidates_release_admission_and_automatic_retry(database, monkeypatch, when):
+    from datetime import datetime, timezone
+    from unittest.mock import AsyncMock
+
+    from app import github
+    from app.sessions import SessionManager
+
+    a, c, d = (character * 40 for character in "acd")
+    async with database.begin() as conn:
+        await conn.execute(
+            text("""
+                INSERT INTO ai_workflow_analyses (team_repository_id, team_id, status, commit_sha, finished_at)
+                VALUES (1, 1, 'succeeded', :head, now())
+                """),
+            {"head": a},
+        )
+
+    async def finish(sid, *, sha=None):
+        state = "succeeded" if sha else "failed"
+        async with database.begin() as conn:
+            await conn.execute(
+                text("UPDATE agent_sessions SET status = :state WHERE id = :sid"), {"sid": sid, "state": state}
+            )
+            await conn.execute(
+                text("""
+                    UPDATE ai_workflow_analyses SET status = :state, commit_sha = :sha, finished_at = now()
+                     WHERE agent_session_id = :sid
+                    """),
+                {"sid": sid, "state": state, "sha": sha},
+            )
+
+    async def start_manual():
+        return await db.create_session(**_session(trigger_kind="analysis", no_push=True), automatic_analysis=False)
+
+    async def lookup(*_args):
+        if when == "release lookup":
+            await finish(await start_manual(), sha=d)
+        return c
+
+    releases = AsyncMock(return_value=[])
+    monkeypatch.setattr(github, "stable_releases", releases)
+    monkeypatch.setattr(github, "branch_head", AsyncMock(return_value=d))
+    monkeypatch.setattr(github, "release_commit", lookup)
+    monkeypatch.setattr(github, "commit_is_ancestor", AsyncMock(side_effect=lambda repo, old, new: new == d))
+    poller = analysis_triggers.AnalysisPoller()
+    monkeypatch.setattr(poller, "_nightly_due", lambda _: True)
+    assert await poller.poll_once() == []  # establish the baseline
+    releases.return_value = [github.StableRelease(2, "v2", datetime.now(timezone.utc))]
+
+    if when == "release lookup":
+        assert await poller.poll_once() == []
+    else:
+        (sid,) = await poller.poll_once()
+        # Normal producers cannot overlap a manual analysis with the reserved release.
+        with pytest.raises(ValueError, match="already in flight"):
+            await start_manual()
+        await finish(sid)
+        await finish(await start_manual(), sha=d)
+
+        runner = SessionManager()
+        monkeypatch.setattr(runner, "request_scheduler_pass", lambda: None)
+        monkeypatch.setattr(db, "add_event", AsyncMock())
+        assert await runner.take_up_again(await db.get_session(sid)) is None
     assert await poller.poll_once() == []
