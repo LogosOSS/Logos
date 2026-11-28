@@ -51,7 +51,7 @@ public class PublicStatsCache {
     public Map<String, Object> get(String days) {
         String window = StatsService.normalizePublicStatsDays(days);
         if (ttlNanos <= 0) {
-            return withHourlyLoad(statsService.publicStats(window), tryHourlyLoad());
+            return withLocalArrivals(statsService.publicStats(window), tryLocalArrivals());
         }
         Entry current = entry.get();
         if (current == null) {
@@ -80,29 +80,29 @@ public class PublicStatsCache {
 
     private Entry computeAllWindows() {
         Map<String, Map<String, Object>> windows = new LinkedHashMap<>();
-        // The historical release never follows the rolling page window. Compute
-        // it once per warmup, and use the identical release in all responses.
-        PublicHourlyRequestLoad hourlyLoad = tryHourlyLoad();
+        // The chart has its own fixed-length time window. Compute it once per
+        // warmup, and use the identical hourly series in all responses.
+        PublicLocalRequestArrivals localArrivals = tryLocalArrivals();
         for (String window : StatsService.PUBLIC_STATS_DAY_OPTIONS) {
-            windows.put(window, withHourlyLoad(statsService.publicStats(window), hourlyLoad));
+            windows.put(window, withLocalArrivals(statsService.publicStats(window), localArrivals));
         }
         Entry computed = new Entry(nanoClock.getAsLong(), Collections.unmodifiableMap(windows));
         entry.set(computed);
         return computed;
     }
 
-    private PublicHourlyRequestLoad tryHourlyLoad() {
+    private PublicLocalRequestArrivals tryLocalArrivals() {
         try {
-            return statsService.publicHourlyRequestLoad(Instant.now());
+            return statsService.publicLocalRequestArrivals(Instant.now());
         } catch (RuntimeException ex) {
-            log.warn("Could not compute the public hourly request load", ex);
+            log.warn("Could not compute the public local request arrivals", ex);
             return null;
         }
     }
 
-    private static Map<String, Object> withHourlyLoad(Map<String, Object> stats, PublicHourlyRequestLoad hourlyLoad) {
+    private static Map<String, Object> withLocalArrivals(Map<String, Object> stats, PublicLocalRequestArrivals localArrivals) {
         var enriched = new LinkedHashMap<>(stats);
-        if (hourlyLoad != null) enriched.put("hourly_request_load", hourlyLoad);
+        if (localArrivals != null) enriched.put("local_request_arrivals", localArrivals);
         return Collections.unmodifiableMap(enriched);
     }
 }

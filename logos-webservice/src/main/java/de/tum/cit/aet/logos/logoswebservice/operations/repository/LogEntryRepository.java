@@ -171,41 +171,31 @@ public interface LogEntryRepository extends JpaRepository<LogEntry, Integer> {
         """, nativeQuery = true)
     List<PublicUsageRowProjection> findPublicUsageRows(@Param("since") Timestamp since);
 
-    /** Fixed publication block, with no per-team or per-date rows returned. */
+    /** Fleet-wide local arrivals only; no team, user, worker or model dimensions are returned. */
     @Transactional(readOnly = true, timeout = 10)
     @Query(value = """
-        WITH team_hours AS (
-            SELECT EXTRACT(HOUR FROM le.timestamp_request AT TIME ZONE 'Europe/Berlin')::integer AS hour_of_day,
-                le.team_id, COUNT(*) AS requests
+        WITH arrivals AS (
+            SELECT date_trunc('hour', le.timestamp_request, 'UTC') AS bucket,
+                   CASE
+                       WHEN logos_stats_is_internal_benchmark(le) THEN 'benchmark'
+                       WHEN p.provider_type = 'logosnode' AND k.internal_service = 'agent' THEN 'agent'
+                       WHEN p.provider_type = 'logosnode' THEN 'regular'
+                   END AS source
             FROM log_entry le
-            JOIN teams t ON t.id = le.team_id AND t.show_on_public_stats = TRUE
-            WHERE le.result_status = 'success'
-              AND le.timestamp_request >= :start AND le.timestamp_request < :end
-              AND NOT logos_stats_is_internal_benchmark(le)
-              AND NOT EXISTS (
-                  SELECT 1 FROM api_keys k WHERE k.id = le.api_key_id AND k.internal_service = 'agent'
-              )
-            GROUP BY 1, 2
-        ), team_blocks AS (
-            SELECT hour_of_day / 4 * 4 AS start_hour, team_id, SUM(requests)::bigint AS requests
-            FROM team_hours
-            GROUP BY 1, 2
+            LEFT JOIN providers p ON p.id = le.provider_id
+            LEFT JOIN api_keys k ON k.id = le.api_key_id
+            WHERE le.timestamp_request >= :start AND le.timestamp_request < :end
+              AND le.request_id IS NOT NULL
         )
-        SELECT hour_of_day AS hour, 1 AS span, SUM(requests)::bigint AS requests,
-               COUNT(*) AS teams, MAX(requests) AS largestTeamRequests
-        FROM team_hours
-        GROUP BY hour_of_day
-        UNION ALL
-        SELECT start_hour AS hour, 4 AS span, SUM(requests)::bigint AS requests,
-               COUNT(*) AS teams, MAX(requests) AS largestTeamRequests
-        FROM team_blocks
-        GROUP BY start_hour
-        UNION ALL
-        SELECT -1 AS hour, 0 AS span, COALESCE(SUM(requests), 0)::bigint AS requests,
-               COUNT(DISTINCT team_id) AS teams, 0::bigint AS largestTeamRequests
-        FROM team_hours
+        SELECT bucket, COUNT(*) FILTER (WHERE source = 'regular') AS regular,
+               COUNT(*) FILTER (WHERE source = 'agent') AS agent,
+               COUNT(*) FILTER (WHERE source = 'benchmark') AS benchmark
+        FROM arrivals
+        WHERE source IS NOT NULL
+        GROUP BY bucket
+        ORDER BY bucket
         """, nativeQuery = true)
-    List<PublicHourlyRequestsProjection> findPublicHourlyRequests(
+    List<PublicLocalRequestArrivalsProjection> findPublicLocalRequestArrivals(
         @Param("start") Timestamp start, @Param("end") Timestamp end);
 
     /**

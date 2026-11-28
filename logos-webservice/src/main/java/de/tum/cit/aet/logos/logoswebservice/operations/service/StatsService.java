@@ -93,10 +93,10 @@ public class StatsService {
         return normalized;
     }
 
-    PublicHourlyRequestLoad publicHourlyRequestLoad(Instant now) {
-        var block = PublicHourlyRequestLoad.block(now);
-        return PublicHourlyRequestLoad.summarize(block, logEntryRepository.findPublicHourlyRequests(
-            Timestamp.from(block.startTime()), Timestamp.from(block.endTime())));
+    PublicLocalRequestArrivals publicLocalRequestArrivals(Instant now) {
+        var window = PublicLocalRequestArrivals.window(now);
+        return PublicLocalRequestArrivals.summarize(window, logEntryRepository.findPublicLocalRequestArrivals(
+            Timestamp.from(window.from()), Timestamp.from(window.until())));
     }
 
     /**

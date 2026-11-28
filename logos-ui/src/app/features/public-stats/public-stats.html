@@ -76,12 +76,12 @@
 
       <div class="trends-grid">
         <section class="chart-panel" aria-labelledby="hourly-public-title">
-          <h2 class="chart-title" id="hourly-public-title">Typical hourly request load</h2>
+          <h2 class="chart-title" id="hourly-public-title">Local requests per hour</h2>
           <p class="chart-hint">
-            Successful local and cloud requests from published teams. Excludes Logos Agent and internal benchmarks.
-            The four-week average is at least one week old. It does not show GPU utilization.
+            Requests routed to local Logos workers, counted by arrival time across all teams.
+            Cloud requests are not included. Data is delayed by at least 24 hours.
           </p>
-          <app-public-stats-hourly [load]="stats()!.hourly_request_load ?? null" />
+          <app-public-stats-hourly [load]="stats()!.local_request_arrivals ?? null" />
         </section>
 
         <section class="chart-panel" aria-labelledby="growth-title">
@@ -239,7 +239,7 @@
       </div>
 
       <p class="page-footnote">
-        Only successful responses on published teams are counted. Students are members without an admin role. The
+        Except for the local requests chart, usage totals count successful responses on published teams only. Students are members without an admin role. The
         per-student average uses student traffic only (application and service keys are in the totals above, not in that
         average). Numbers cover {{ windowCaption() }}.
       </p>
