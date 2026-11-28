@@ -221,7 +221,9 @@ to `<fixture-runner-artifact-root>/<seeded-session-id>/messages.json` for the ru
 For `logos-admin-agent-inference.png`, apply `seed/agent-inference.sql` on the
 same disposable database after the standard seed, and start the runner with
 `LOGOS_AGENT_REMOTE_ALLOWED_ORIGINS=https://inference-example.invalid`. The
-fixture uses a non-resolving origin and never sends inference.
+fixture selects Cloud and pins the example queued sessions to it. Its origin does
+not resolve, and the fixture never sends inference. Capture this view separately
+from the local runner views.
 
 The ordinary `docker-compose.dev.yaml` + `ng serve` on `:4200` also works; point
 `psql` at that stack's DB instead of `15432`.
@@ -383,7 +385,7 @@ flows use a **concept** name (no role prefix); role-only list pages keep the
 | `logos-admin-security-evidence.png` | `tobias.wasner` | `/agents/security` — Evidence & history expanded; `seed/security-incidents.sql` after the role seed | `roles/logos-admin.md#security-incidents` |
 | `logos-admin-security-confirm.png` | `tobias.wasner` | `/agents/security` — Confirm resolved form; `seed/security-incidents.sql` after the role seed | `roles/logos-admin.md#security-incidents` |
 | `logos-admin-agents.png` | `tobias.wasner` | `/agents` — current RAM, observed peak, and container limit (needs the agent runner API on `/api/agent`) | `roles/logos-admin.md#agent-sessions` |
-| `logos-admin-agent-inference.png` | `tobias.wasner` | `/agents` — **Model inference**, allowed cloud gateway and model selected (separate synthetic seed) | `roles/logos-admin.md#choose-a-model-for-new-sessions` |
+| `logos-admin-agent-inference.png` | `tobias.wasner` | `/agents` — **Cloud admission** and **Model inference** with the example cloud gateway active (separate synthetic seed) | `roles/logos-admin.md#choose-a-model-for-new-sessions` |
 | `logos-admin-agents-messages.png` | `tobias.wasner` | Expanded **Agent messages** with parent and child output, a list and code | `roles/logos-admin.md#agent-sessions` |
 | `logos-admin-agents-new-session.png` | `tobias.wasner` | `/agents` — **New session**, **Repository** `docs-example/sample-app (develop)` selected (needs the agent runner API on `/api/agent`) | `roles/logos-admin.md#start-a-session` |
 | `logos-admin-my-workspace.png` | `tobias.wasner` | `/my-workspace` | `roles/logos-admin.md` |

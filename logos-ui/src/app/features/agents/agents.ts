@@ -320,6 +320,10 @@ export class Agents implements OnInit {
   );
   finishedSessions = computed(() => this.sessions().filter((s) => !isActive(s.status)));
 
+  readonly showLocalCapacity = computed(() =>
+    this.inference()?.mode !== 'cloud' || this.queuedSessions().some(session => !this.isCloudSession(session)),
+  );
+
   readonly showCloudAdmission = computed(() =>
     this.inference()?.mode === 'cloud' || this.queuedSessions().some(session => this.isCloudSession(session)),
   );
@@ -1171,7 +1175,7 @@ export class Agents implements OnInit {
         if (capacity?.remote_may_start === false) return 'queued · waiting for cloud admission';
         if (capacity?.remote_may_start == null) return 'queued · cloud admission unavailable';
       } else if (capacity && !capacity.may_start) {
-        return 'queued · waiting for capacity';
+        return 'queued · waiting for local capacity';
       }
     }
     if (session.status === 'finalizing') {

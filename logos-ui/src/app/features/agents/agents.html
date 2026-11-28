@@ -104,7 +104,7 @@
       }
 
       @if (capacity(); as cap) {
-        @if (inference()?.mode !== 'cloud') {
+        @if (showLocalCapacity()) {
           <div class="tile" [class.tile--warn]="!cap.may_start">
             <span class="tile__label">Platform capacity</span>
             <span class="tile__value tile__value--text">

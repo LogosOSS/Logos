@@ -675,11 +675,11 @@ const SHOTS = [
     needs: AGENT_API,
     go: async (p) => {
       await p.goto(BASE + "/agents");
+      await p.getByText("Cloud admission", { exact: true }).waitFor();
       const inference = p.getByRole("group", { name: "Model inference" });
-      await inference.locator("select#agent-inference-location").selectOption("cloud");
-      const approved = inference.locator("select#agent-inference-model option").filter({ hasText: "Docs Logos Gateway" });
-      await inference.locator("select#agent-inference-model").selectOption(await approved.getAttribute("value"));
-      await inference.getByRole("button", { name: "Save inference settings" }).waitFor();
+      await inference.locator("select#agent-inference-location").waitFor();
+      await inference.locator("select#agent-inference-model option:checked")
+        .filter({ hasText: "Docs Logos Gateway" }).waitFor({ state: "attached" });
     },
   },
   {

@@ -15,4 +15,24 @@ INSERT INTO model_provider (model_id, provider_id)
 SELECT m.id, p.id FROM models m CROSS JOIN providers p
 WHERE m.name = 'agent-sample' AND p.base_url = 'https://inference-example.invalid'
 ON CONFLICT DO NOTHING;
+-- Show the active Cloud state, not an unsaved selection.
+INSERT INTO agent_inference_settings (id, mode, model, provider_id, model_id, updated_by)
+SELECT 1, 'cloud', m.name, p.id, m.id, 'docs-role-screenshots'
+FROM model_provider mp
+JOIN models m ON m.id = mp.model_id
+JOIN providers p ON p.id = mp.provider_id
+WHERE m.name = 'agent-sample' AND p.base_url = 'https://inference-example.invalid'
+ON CONFLICT (id) DO UPDATE
+SET mode = EXCLUDED.mode, model = EXCLUDED.model,
+    provider_id = EXCLUDED.provider_id, model_id = EXCLUDED.model_id,
+    updated_by = EXCLUDED.updated_by;
+
+UPDATE agent_sessions s
+SET inference_provider_id = config.provider_id,
+    inference_model_id = config.model_id,
+    model = config.model
+FROM agent_inference_settings config
+WHERE config.id = 1 AND config.updated_by = 'docs-role-screenshots'
+  AND s.status = 'queued' AND s.created_by = 'docs-role-screenshots';
+
 COMMIT;

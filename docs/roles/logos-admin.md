@@ -875,7 +875,7 @@ The page has these parts, from top to bottom:
   shows the memory that the sessions reserve and the memory budget of the
   host. **Platform capacity** shows local GPU load and if a local session can start.
   **Cloud admission** shows if a cloud session can start, and the reason.
-  The cloud decision does not use local GPU load or slots.
+  The cloud decision does not use local GPU load or slots. Both tiles appear when the queues contain both types of session.
 - **Runner controls.** In **Mode**, select **Run**, **Stop new sessions** or
   **Pause everything**. **Stop new sessions** lets the running sessions
   finish. **Pause everything** pauses the running sessions and gives the

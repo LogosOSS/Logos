@@ -801,7 +801,11 @@ describe('Agents', () => {
       expect(tiles().textContent).not.toContain('Local GPU is full.');
       expect(tiles().querySelector('.slots')).toBeNull();
       expect(component.statusLabel(cloud)).toBe('queued');
-      expect(component.statusLabel(local)).toContain('waiting for capacity');
+      expect(component.statusLabel(local)).toContain('waiting for local capacity');
+      component.sessions.set([cloud, local]);
+      fixture.detectChanges();
+      expect(tiles().textContent).toContain('Platform capacity');
+      expect(tiles().textContent).toContain('Cloud admission');
     });
 
     it('labels each pinned queue independently of the current default', async () => {
