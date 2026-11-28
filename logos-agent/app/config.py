@@ -21,6 +21,12 @@ def _int(name: str, default: int) -> int:
         return default
 
 
+def _analysis_refresh_days() -> int:
+    default = 30
+    days = _int("LOGOS_AGENT_ANALYSIS_REFRESH_DAYS", default)
+    return days if 1 <= days <= 36500 else default
+
+
 def _float(name: str, default: float) -> float:
     raw = os.getenv(name, "")
     try:
@@ -301,6 +307,7 @@ class Settings:
     # turns it off. A repository whose branch head is still the commit its
     # latest analysis described is not analysed again.
     analysis_nightly_hour_utc: int = _int("LOGOS_AGENT_ANALYSIS_NIGHTLY_HOUR_UTC", 0)
+    analysis_refresh_days: int = field(default_factory=_analysis_refresh_days)
 
     # --- storage ----------------------------------------------------------
     verification_scratch_volume: str = os.getenv("LOGOS_AGENT_VERIFICATION_SCRATCH_VOLUME", "")

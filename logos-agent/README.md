@@ -391,7 +391,8 @@ unused and can be removed.
 | `LOGOS_AGENT_GITHUB_LOGIN` | `LogosOSSAgent` | The account every token must belong to |
 | `LOGOS_AGENT_DEFAULT_MODEL` | — | Model when a session does not name one. Optional: without it, the alias `local-most-powerful` is the default when the agent key reaches it locally, and otherwise the only local model, if there is exactly one |
 | `LOGOS_AGENT_TRIGGERS_ENABLED` | `true` | Kill switch for reacting to the repository |
-| `LOGOS_AGENT_ANALYSIS_NIGHTLY_HOUR_UTC` | `0` | UTC hour of the nightly re-analysis of linked team repositories whose branch head moved; `-1` turns it off |
+| `LOGOS_AGENT_ANALYSIS_NIGHTLY_HOUR_UTC` | `0` | UTC hour to check linked repositories for new stable GitHub releases or changed branches due for refresh; `-1` turns it off |
+| `LOGOS_AGENT_ANALYSIS_REFRESH_DAYS` | `30` | Days since the last successful analysis before a changed linked branch is eligible without a release. Use a positive integer up to 36500; invalid values use the default. Skipped and failed analyses do not reset the clock. |
 | `LOGOS_AGENT_MAX_PARALLEL_SESSIONS` | `10` | Hard ceiling on concurrent (running + paused) sessions |
 | `LOGOS_AGENT_MAX_QUEUE_WORKSPACES` | `0` (= 5× parallel) | Cap on live workspaces holding waiting triggered work |
 | `LOGOS_AGENT_START_BELOW_LOAD` | `0.60` | Start only below this load |

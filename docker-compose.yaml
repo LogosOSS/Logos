@@ -723,6 +723,7 @@ services:
       LOGOS_AGENT_SECURITY_ENABLED: "${LOGOS_AGENT_SECURITY_ENABLED:-true}"
       LOGOS_AGENT_SECURITY_FEEDS_ENABLED: "${LOGOS_AGENT_SECURITY_FEEDS_ENABLED:-true}"
       LOGOS_AGENT_TRIGGERS_ENABLED: "${LOGOS_AGENT_TRIGGERS_ENABLED:-true}"
+      LOGOS_AGENT_ANALYSIS_REFRESH_DAYS: "${LOGOS_AGENT_ANALYSIS_REFRESH_DAYS:-30}"
       LOGOS_AGENT_DEV_BASE_URL: "${LOGOS_AGENT_DEV_BASE_URL:-https://logos-dev.aet.cit.tum.de}"
       # The volume that backs the runner's per-session state (the pause mark).
       # It must name the *actual* Docker volume behind the mount below. A

@@ -105,7 +105,7 @@ providers serve. The **Models** page shows the models that you can use now.
 This tab shows the GitHub repositories that contain the applications of the
 team. Owners link a repository URL, a branch and optional path filters. For
 private repositories, owners can paste a read-only deploy key. Only one workflow analysis per repository can be in progress at a time.
-**Automatic workflow analysis** is on by default. It includes the repository in the first analysis, nightly checks for new commits, and bulk analyses.
+**Automatic workflow analysis** is on by default. It includes the repository in the first analysis, nightly refresh checks, and bulk analyses. The nightly check analyses a new stable GitHub release on the linked branch. Without a new release, it checks a changed linked branch after 30 days since the last successful analysis by default.
 Clear the checkbox to cancel queued automatic analyses. Analyses that already started can finish.
 Use **Queue agent analysis** to request one analysis at any time. The coding agent has a separate setting.
 

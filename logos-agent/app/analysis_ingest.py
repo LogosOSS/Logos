@@ -20,6 +20,7 @@ from typing import Any
 from sqlalchemy import text
 
 from . import db
+from .analysis_cadence import commit_sha, link_scope
 from .artifacts import read_artifact
 from .config import settings
 
@@ -70,7 +71,7 @@ def read_analysis_artifact(path: Path) -> bytes:
     return read_artifact(path.parent, path.name, limit=settings.artifact_max_bytes)
 
 
-async def ingest_session(session: dict[str, Any]) -> None:
+async def ingest_session(session: dict[str, Any], *, trusted_sha: str | None = None) -> None:
     """Load analysis.json for ``session`` and upsert results, or mark failed."""
     session_id = int(session["id"])
     path = artifact_analysis_path(session_id)
@@ -103,6 +104,18 @@ async def ingest_session(session: dict[str, Any]) -> None:
         logger.warning("analysis session %s has no team_repository_id; skipping ingest", session_id)
         await mark_analysis_failed(session_id, "session has no team_repository_id")
         return
+    target = session.get("workflow_analysis_target")
+    if target:
+        expected = commit_sha(target.get("sha"))
+        if (
+            not expected
+            or trusted_sha != expected
+            or payload.get("commit_sha") != expected
+            or payload.get("unchanged") is True
+        ):
+            await mark_analysis_failed(session_id, "analysis result did not prove the pinned checkout")
+            return
+        payload["commit_sha"] = trusted_sha
     if payload.get("unchanged") is True:
         await mark_analysis_unchanged(
             session_id=session_id,
@@ -116,6 +129,7 @@ async def ingest_session(session: dict[str, Any]) -> None:
             team_repository_id=int(team_repository_id),
             payload=payload,
             session_repo_slug=session.get("repo_slug"),
+            **({"expected_scope": target["scope"]} if target else {}),
         )
     except ObsoleteLinkError as exc:
         logger.info("analysis session %s obsolete after link edit: %s", session_id, exc)
@@ -198,6 +212,7 @@ async def upsert_analysis(
     team_repository_id: int,
     payload: dict[str, Any],
     session_repo_slug: str | None = None,
+    expected_scope: str | None = None,
 ) -> int:
     """Write workflows + recommendations for one agent analysis. Returns analysis id."""
     commit_sha = _str_or_none(payload.get("commit_sha"))
@@ -215,7 +230,7 @@ async def upsert_analysis(
             (
                 await conn.execute(
                     text("""
-                    SELECT team_id, repo_slug
+                    SELECT team_id, repo_slug, branch, paths
                       FROM team_repositories
                      WHERE id = :id
                      FOR UPDATE
@@ -228,6 +243,8 @@ async def upsert_analysis(
         )
         if link is None:
             raise ValueError(f"team_repository {team_repository_id} does not exist")
+        if expected_scope and link_scope(link) != expected_scope:
+            raise ObsoleteLinkError("the linked branch or analysis paths changed")
         team_id = int(link["team_id"])
         current_slug = str(link["repo_slug"] or "").lower()
         expected = str(session_repo_slug or "").strip().lower()

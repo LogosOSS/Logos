@@ -913,7 +913,9 @@ The message view keeps up to 64 recent messages and marks shortened text.
 ![Expanded agent session with parent and child messages and a code sample](/img/roles/logos-admin-agents-messages.png)
 
 Repository analyses of the linked repositories of the teams also run here.
-Each night, they run again for repositories that have new commits. **Analyze
+Each night, the runner checks for new stable GitHub releases on the linked branch.
+Without a new release, it analyses a changed linked branch after 30 days since
+the last successful analysis by default. **Analyze
 enabled repositories** in **Automatic work** immediately queues an analysis for
 every repository with **Automatic workflow analysis** enabled, even if there are no new commits. Use it, for
 example, after an improvement of the analysis. It does not change repositories

@@ -3,8 +3,8 @@
 Linked application repos (``team_repositories``) need AI-workflow diagrams and
 SLO recommendations. Owners can trigger that from the UI; this poller also
 queues spare-capacity analysis when a link has no succeeded analysis yet, and
-once a night (``LOGOS_AGENT_ANALYSIS_NIGHTLY_HOUR_UTC``) for every analysed
-link whose branch head moved past the analysed commit.
+once a night for newly published stable releases or sufficiently old analyses
+whose linked branch has moved.
 
 Sessions are ``no_push``, ``trigger_kind=analysis``, low priority, and write
 ``/artifacts/analysis.json`` for :mod:`analysis_ingest`.
@@ -14,12 +14,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import Counter
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable
 
 from sqlalchemy import text
 
 from . import controls, db, github, model_policy
+from .analysis_cadence import MAX_TARGET_ATTEMPTS, commit_sha, link_scope
 from .asyncio_tasks import cancel_and_wait
 from .config import settings
 from .schemas import ACTIVE_STATUSES, SessionStatus
@@ -86,16 +88,6 @@ Clone URL: {repo_url}
 Focus paths (empty means whole tree): {paths}
 """
 
-# Appended for a nightly run whose branch head the runner could not look up
-# (e.g. a private repository): the session itself stops at once when nothing
-# changed, instead of analysing the same commit again.
-UNCHANGED_CHECK = """
-The previous analysis described commit {previous_commit}. Before anything else
-run `git rev-parse HEAD`. If it prints that commit, the repository has not
-changed: write `{{"unchanged": true, "commit_sha": "{previous_commit}"}}` to
-`/artifacts/analysis.json` and stop immediately, without analysing anything.
-"""
-
 
 class AnalysisPoller:
     """Periodically queues analysis sessions for team repository links."""
@@ -106,8 +98,8 @@ class AnalysisPoller:
         self._last_error: str = ""
         self._last_pass: datetime | None = None
         self._queued_total = 0
-        # The UTC date whose nightly re-analysis already ran. Lost on restart,
-        # which is harmless: a second pass that night finds every head unchanged.
+        # The schedule is in memory; the release baseline and attempt
+        # history in PostgreSQL also deduplicate a pass after restart.
         self._nightly_done_for: date | None = None
         self._skipped_unchanged_total = 0
         self.on_queued: Callable[[], Awaitable[None]] | None = None
@@ -183,28 +175,145 @@ class AnalysisPoller:
         return 0 <= hour <= 23 and now.hour == hour and self._nightly_done_for != now.date()
 
     async def _nightly_pass(self) -> list[int]:
-        """Re-analyse every analysed repository whose branch moved on.
-
-        A repository whose head is still the commit of its latest succeeded
-        analysis is skipped outright. When the head cannot be looked up, the
-        session is queued with the previous commit and stops by itself if it
-        finds the same one.
-        """
+        """Refresh proven targets without treating an unreadable branch as changed."""
+        now = datetime.now(timezone.utc)
         queued: list[int] = []
         skipped = 0
+        release_lists: dict[str, list[github.StableRelease] | None] = {}
+        branch_heads: dict[tuple[str, str], str | None] = {}
+        tag_commits: dict[tuple[str, str], str | None] = {}
+        comparisons: dict[tuple[str, str, str], bool | None] = {}
+
+        async def ancestor(slug: str, older: str, newer: str) -> bool | None:
+            key = (slug, older, newer)
+            if key not in comparisons:
+                comparisons[key] = await github.commit_is_ancestor(*key)
+            return comparisons[key]
+
         for link in await self._links_for_nightly():
-            previous = str(link.get("last_commit") or "").strip() or None
-            head = await github.branch_head(str(link["repo_slug"]), str(link.get("branch") or "main"))
-            if head is not None and previous is not None and head == previous:
-                skipped += 1
-                logger.info("nightly analysis of %s skipped: still at %s", link["repo_slug"], head[:12])
-                continue
-            session_id = await self._queue(link, previous_commit=previous if head is None else None)
-            if session_id is not None:
-                queued.append(session_id)
+            slug = str(link["repo_slug"])
+            scope = link_scope(link)
+            key = (slug, str(link.get("branch") or "main"))
+            if key not in branch_heads:
+                branch_heads[key] = await github.branch_head(*key)
+            head = branch_heads[key]
+            previous = commit_sha(link.get("last_commit"))
+            covered = set(link.get("successful_commits") or [])
+            last_success_id = link.get("last_success_id")
+            cycle = str(last_success_id) if last_success_id is not None else None
+            attempts = [item for item in (link.get("attempted_targets") or []) if item.get("scope") == scope]
+            release_attempts = Counter(item["sha"] for item in attempts)
+            branch_attempts = Counter(
+                item["sha"] for item in attempts if item.get("kind") == "branch" and item.get("cycle") == cycle
+            )
+
+            if slug not in release_lists:
+                release_lists[slug] = await github.stable_releases(slug)
+            releases = release_lists[slug]
+            baseline = link.get("workflow_release_baseline") or {}
+            target = None
+            if releases is not None:
+                if baseline.get("scope") != scope:
+                    # The first complete observation is a rollout baseline,
+                    # not new work. Keep stable identities rather than a date
+                    # so an older prerelease promoted later is still visible.
+                    await self._seed_release_baseline(link, scope, [release.id for release in releases])
+                elif head:
+                    known = set(baseline["release_ids"])
+                    observed = baseline.get("observed") or {}
+                    for release in releases:
+                        if release.id in known:
+                            continue
+                        sha = commit_sha(observed.get(str(release.id)))
+                        if not sha:
+                            tag = (slug, release.tag)
+                            if tag not in tag_commits:
+                                tag_commits[tag] = await github.release_commit(*tag)
+                            if tag_sha := tag_commits[tag]:
+                                sha = await self._record_release_target(link, scope, release.id, tag_sha)
+                        if not sha or sha in covered or release_attempts[sha] >= MAX_TARGET_ATTEMPTS or sha == previous:
+                            continue
+                        if await ancestor(slug, sha, head) is not True:
+                            continue
+                        # Don't replace newer results with a late-published
+                        # older release. Unknown ancestry is not permission.
+                        if previous and await ancestor(slug, sha, previous) is not False:
+                            continue
+                        target = sha
+                        break
+
+            last_success_at = link.get("last_success_at")
+            due = last_success_at is not None and now - last_success_at >= timedelta(
+                days=settings.analysis_refresh_days
+            )
+            target_kind = "release"
+            if target is None and due and head:
+                if head == previous:
+                    skipped += 1
+                elif previous and cycle and branch_attempts[head] < MAX_TARGET_ATTEMPTS:
+                    # A rollback can return to a historically scanned SHA while
+                    # the displayed analysis still describes a different one.
+                    target = head
+                    target_kind = "branch"
+            if target is not None and cycle is not None:
+                # Lock-time admission verifies the same successful analysis
+                # this pass used for its ancestry or refresh decision.
+                request = {"sha": target, "scope": scope, "cycle": cycle}
+                if target_kind == "branch":
+                    request["kind"] = "branch"
+                session_id = await self._queue(link, target=request)
+                if session_id is not None:
+                    queued.append(session_id)
         self._skipped_unchanged_total += skipped
         logger.info("nightly analysis pass: %s queued, %s unchanged", len(queued), skipped)
         return queued
+
+    async def _seed_release_baseline(self, link: dict[str, Any], scope: str, release_ids: list[int]) -> None:
+        async with db.sessionmaker()() as conn:
+            row = (
+                (
+                    await conn.execute(
+                        text(
+                            "SELECT repo_slug, branch, paths, automatic_workflow_analysis FROM team_repositories "
+                            "WHERE id = :id FOR UPDATE"
+                        ),
+                        {"id": link["id"]},
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if row is None or not row["automatic_workflow_analysis"] or link_scope(row) != scope:
+                return
+            await conn.execute(
+                text("""
+                    UPDATE team_repositories SET workflow_release_baseline =
+                        jsonb_build_object('scope', CAST(:scope AS text), 'release_ids', CAST(:ids AS bigint[]))
+                     WHERE id = :id AND workflow_release_baseline->>'scope' IS DISTINCT FROM :scope
+                    """),
+                {"id": link["id"], "scope": scope, "ids": release_ids},
+            )
+            await conn.commit()
+
+    async def _record_release_target(self, link: dict[str, Any], scope: str, release_id: int, sha: str) -> str | None:
+        """Freeze the first resolution of a release identity independently of scan success."""
+        async with db.sessionmaker()() as conn:
+            stored = await conn.scalar(
+                text("""
+                    UPDATE team_repositories
+                       SET workflow_release_baseline = jsonb_set(
+                           workflow_release_baseline, '{observed}',
+                           COALESCE(workflow_release_baseline->'observed', '{}'::jsonb) ||
+                           jsonb_build_object(CAST(:release AS text), COALESCE(
+                               workflow_release_baseline->'observed'->>CAST(:release AS text), CAST(:sha AS text))))
+                     WHERE id = :id AND automatic_workflow_analysis
+                       AND workflow_release_baseline->>'scope' = :scope
+                 RETURNING workflow_release_baseline->'observed'->>CAST(:release AS text)
+                    """),
+                {"id": link["id"], "scope": scope, "release": str(release_id), "sha": sha},
+            )
+            await conn.commit()
+        return commit_sha(stored)
 
     async def _links_for_nightly(self) -> list[dict[str, Any]]:
         """Repositories with a succeeded analysis and nothing in flight, with that analysis' commit."""
@@ -214,18 +323,24 @@ class AnalysisPoller:
                     await conn.execute(
                         text("""
                         SELECT tr.id, tr.team_id, tr.repo_url, tr.repo_slug, tr.branch, tr.paths,
-                               (SELECT a.commit_sha FROM ai_workflow_analyses a
-                                 WHERE a.team_repository_id = tr.id
-                                   AND a.status IN ('succeeded', 'skipped') AND a.commit_sha IS NOT NULL
-                                 ORDER BY a.finished_at DESC NULLS LAST, a.id DESC
-                                 LIMIT 1) AS last_commit
+                               tr.workflow_release_baseline, latest.id AS last_success_id,
+                               latest.commit_sha AS last_commit,
+                               latest.finished_at AS last_success_at,
+                               ARRAY(SELECT a.commit_sha FROM ai_workflow_analyses a
+                                      WHERE a.team_repository_id = tr.id AND a.status = 'succeeded'
+                                        AND a.commit_sha IS NOT NULL) AS successful_commits,
+                               ARRAY(SELECT s.workflow_analysis_target
+                                      FROM agent_sessions s JOIN ai_workflow_analyses a ON a.agent_session_id = s.id
+                                     WHERE a.team_repository_id = tr.id AND a.automatically_queued
+                                       AND s.workflow_analysis_target IS NOT NULL) AS attempted_targets
                           FROM team_repositories tr
+                          JOIN LATERAL (
+                              SELECT a.id, a.commit_sha, a.finished_at
+                                FROM ai_workflow_analyses a
+                               WHERE a.team_repository_id = tr.id AND a.status = 'succeeded'
+                               ORDER BY a.finished_at DESC NULLS LAST, a.id DESC LIMIT 1
+                          ) latest ON true
                          WHERE tr.automatic_workflow_analysis
-                           AND EXISTS (
-                                 SELECT 1 FROM ai_workflow_analyses a
-                                  WHERE a.team_repository_id = tr.id
-                                    AND a.status = 'succeeded'
-                               )
                            AND NOT EXISTS (
                                  SELECT 1 FROM ai_workflow_analyses a
                                   WHERE a.team_repository_id = tr.id
@@ -350,7 +465,7 @@ class AnalysisPoller:
             )
         return [dict(r) for r in rows]
 
-    async def _queue(self, link: dict[str, Any], *, previous_commit: str | None = None) -> int | None:
+    async def _queue(self, link: dict[str, Any], *, target: dict[str, str] | None = None) -> int | None:
         link_id = int(link["id"])
         team_id = int(link["team_id"])
         repo_url = str(link["repo_url"])
@@ -359,6 +474,11 @@ class AnalysisPoller:
         paths = link.get("paths")
         paths_label = ", ".join(paths) if isinstance(paths, list) and paths else "(entire repository)"
         trigger_ref = f"team-repository:{link_id}"
+        if target:
+            trigger_ref += f":{target['scope']}:{target['sha']}"
+            if target.get("kind") == "branch":
+                # The general retry runner also groups attempts by trigger_ref.
+                trigger_ref += f":branch-cycle:{target['cycle']}"
 
         workspace_id = await self._ensure_workspace(team_id, link_id, branch)
         if workspace_id is None:
@@ -369,8 +489,8 @@ class AnalysisPoller:
             repo_url=repo_url,
             paths=paths_label,
         )
-        if previous_commit:
-            task += UNCHANGED_CHECK.format(previous_commit=previous_commit)
+        if target:
+            task += f"\nAnalyse the prepared checkout at commit {target['sha']}. Do not switch revisions.\n"
         try:
             session_id = await db.create_session(
                 workspace_id=workspace_id,
@@ -388,6 +508,8 @@ class AnalysisPoller:
                 repo_url=repo_url,
                 repo_slug=repo_slug,
                 team_repository_id=link_id,
+                repo_base_branch=branch if target else None,
+                workflow_analysis_target=target,
                 automatic_analysis=True,
             )
         except ValueError as exc:

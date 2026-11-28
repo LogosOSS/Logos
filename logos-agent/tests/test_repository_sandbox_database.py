@@ -39,7 +39,7 @@ async def database(monkeypatch):
             await conn.execute(text("CREATE TABLE teams (id SERIAL PRIMARY KEY, name text)"))
             await conn.execute(text("""CREATE TABLE team_repositories (
                 id SERIAL PRIMARY KEY, team_id integer, repo_url text, repo_slug text, branch text, paths jsonb,
-                automatic_workflow_analysis boolean NOT NULL DEFAULT TRUE,
+                automatic_workflow_analysis boolean NOT NULL DEFAULT TRUE, workflow_release_baseline jsonb,
                 agent_enabled boolean NOT NULL DEFAULT TRUE, agent_instructions text, verification_command text,
                 agent_egress_hosts jsonb NOT NULL DEFAULT '[]'::jsonb,
                 agent_egress_unrestricted boolean NOT NULL DEFAULT FALSE,
@@ -57,7 +57,7 @@ async def database(monkeypatch):
                 trigger_kind text, trigger_ref text, reply_target text, reaction_target text,
                 priority integer, priority_reason text, environment_notes text,
                 repo_url text, repo_slug text, team_repository_id integer, verification_command text,
-                repo_base_branch text, push_repo_slug text, egress_token_hash text,
+                repo_base_branch text, push_repo_slug text, egress_token_hash text, workflow_analysis_target jsonb,
                 memory_mb integer, memory_override_mb integer, memory_peak_bytes bigint, subagent_count integer,
                 progress_percent integer, progress_active_s bigint, progress_reported_at timestamptz,
                 active_seconds double precision NOT NULL DEFAULT 0, active_since timestamptz,
@@ -458,3 +458,278 @@ async def test_activity_clock_freezes_and_metadata_survives_reread_and_out_of_or
     row = (await db.list_sessions())[0]
     assert (row["subagent_count"], row["progress_percent"], row["progress_active_s"]) == (2, 40, 1200)
     assert row["active_since"] is None
+
+
+async def test_nightly_entry_point_persists_baseline_and_pinned_per_link_session(database, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from app import github
+
+    last, branch, release = "a" * 40, "b" * 40, "c" * 40
+    async with database.begin() as conn:
+        await conn.execute(
+            text("""
+            INSERT INTO ai_workflow_analyses (team_repository_id, team_id, status, commit_sha, finished_at)
+            VALUES (1, 1, 'succeeded', :last, now()), (1, 1, 'skipped', :branch, now())
+            """),
+            {"last": last, "branch": branch},
+        )
+
+    baseline = {"id": 1, "tag_name": "v1", "draft": False, "prerelease": False, "published_at": "2025-01-01T00:00:00Z"}
+    candidate = {"id": 2, "tag_name": "v2", "draft": False, "prerelease": True, "published_at": "2025-02-01T00:00:00Z"}
+    listing = AsyncMock(return_value=([candidate, baseline], False))
+    monkeypatch.setattr(github, "_get_all_bounded", listing)
+    monkeypatch.setattr(github, "branch_head", AsyncMock(return_value=branch))
+    monkeypatch.setattr(github, "release_commit", AsyncMock(return_value=release))
+    monkeypatch.setattr(github, "commit_is_ancestor", AsyncMock(side_effect=lambda repo, old, new: new == branch))
+    poller = analysis_triggers.AnalysisPoller()
+    monkeypatch.setattr(poller, "_nightly_due", lambda _: True)
+
+    assert await poller.poll_once() == []
+    async with database.begin() as conn:
+        stored = await conn.scalar(text("SELECT workflow_release_baseline FROM team_repositories WHERE id=1"))
+    assert stored["release_ids"] == [1]
+
+    # Promotion makes the same publication stable; its date did not change.
+    candidate["prerelease"] = False
+    queued = await poller.poll_once()
+    assert len(queued) == 1
+    session = await db.get_session(queued[0])
+    async with database.begin() as conn:
+        cycle = await conn.scalar(text("SELECT id FROM ai_workflow_analyses WHERE commit_sha = :last"), {"last": last})
+    assert session["workflow_analysis_target"] == {"sha": release, "scope": stored["scope"], "cycle": str(cycle)}
+    assert session["repo_base_branch"] == "main"
+    assert session["no_push"]
+    async with database.begin() as conn:
+        observed = await conn.scalar(
+            text("SELECT workflow_release_baseline->'observed' FROM team_repositories WHERE id=1")
+        )
+    assert observed == {"2": release}
+    assert await poller._record_release_target({"id": 1}, stored["scope"], 2, branch) == release
+    assert await poller.poll_once() == []
+
+
+async def test_nightly_fallback_ages_from_success_not_skips_and_bounds_failed_attempts(database, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from app import github
+
+    last, branch = "a" * 40, "b" * 40
+    async with database.begin() as conn:
+        await conn.execute(
+            text("""
+                INSERT INTO ai_workflow_analyses (team_repository_id, team_id, status, commit_sha, finished_at)
+                VALUES (1, 1, 'succeeded', :last, now() - interval '31 days'), (1, 1, 'skipped', :branch, now())
+                """),
+            {"last": last, "branch": branch},
+        )
+
+    monkeypatch.setattr(github, "stable_releases", AsyncMock(return_value=None))
+    monkeypatch.setattr(github, "branch_head", AsyncMock(return_value=branch))
+    poller = analysis_triggers.AnalysisPoller()
+    monkeypatch.setattr(poller, "_nightly_due", lambda _: True)
+    attempted = []
+    for _ in range(3):
+        (sid,) = await poller.poll_once()
+        attempted.append(sid)
+        session = await db.get_session(sid)
+        assert session["workflow_analysis_target"]["sha"] == branch
+        async with database.begin() as conn:
+            await conn.execute(text("UPDATE agent_sessions SET status = 'failed' WHERE id = :sid"), {"sid": sid})
+            await conn.execute(
+                text("UPDATE ai_workflow_analyses SET status = 'failed' WHERE agent_session_id = :sid"), {"sid": sid}
+            )
+    assert len(set(attempted)) == 3
+    assert await poller.poll_once() == []
+
+
+async def test_due_branch_rollback_queues_historical_sha_without_replaying_its_release(database, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from app import github
+    from app.analysis_cadence import link_scope
+
+    commit_a, commit_b = "a" * 40, "b" * 40
+    link = {"repo_slug": "o/a", "branch": "main", "paths": None}
+    scope = link_scope(link)
+    async with database.begin() as conn:
+        await conn.execute(
+            text("""
+                INSERT INTO ai_workflow_analyses (team_repository_id, team_id, status, commit_sha, finished_at)
+                VALUES (1, 1, 'succeeded', :a, now() - interval '40 days'),
+                       (1, 1, 'succeeded', :b, now() - interval '29 days')
+                """),
+            {"a": commit_a, "b": commit_b},
+        )
+
+    def launch(target):
+        return db.create_session(
+            **_session(trigger_kind="analysis", no_push=True),
+            automatic_analysis=True,
+            workflow_analysis_target=target,
+        )
+
+    async with database.begin() as conn:
+        cycle = await conn.scalar(text("SELECT id FROM ai_workflow_analyses WHERE commit_sha = :b"), {"b": commit_b})
+    release = {"sha": commit_a, "scope": scope, "cycle": str(cycle)}
+    fallback = {**release, "kind": "branch"}
+    with pytest.raises(ValueError, match="already covered"):
+        await launch(release)
+    with pytest.raises(ValueError, match="not due"):
+        await launch(fallback)
+
+    # B is still the latest successful analysis; it has now aged past the
+    # fallback interval, and the linked branch was rolled back to A.
+    async with database.begin() as conn:
+        await conn.execute(
+            text("UPDATE ai_workflow_analyses SET finished_at = now() - interval '31 days' WHERE commit_sha = :b"),
+            {"b": commit_b},
+        )
+
+    monkeypatch.setattr(github, "stable_releases", AsyncMock(return_value=None))
+    monkeypatch.setattr(github, "branch_head", AsyncMock(return_value=commit_a))
+    poller = analysis_triggers.AnalysisPoller()
+    monkeypatch.setattr(poller, "_nightly_due", lambda _: True)
+
+    (sid,) = await poller.poll_once()
+    assert (await db.get_session(sid))["workflow_analysis_target"] == fallback
+    assert await poller.poll_once() == []
+
+
+async def test_branch_reversion_gets_new_retry_cycle_after_historical_third_attempt_success(database, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from app import github
+    from app.sessions import SessionManager
+
+    a, b, c = (character * 40 for character in "abc")
+    async with database.begin() as conn:
+        await conn.execute(
+            text("""
+                INSERT INTO ai_workflow_analyses (team_repository_id, team_id, status, commit_sha, finished_at)
+                VALUES (1, 1, 'succeeded', :c, now() - interval '92 days')
+                """),
+            {"c": c},
+        )
+
+    async def finish(sid, *, sha=None, age=0):
+        state = "succeeded" if sha else "failed"
+        async with database.begin() as conn:
+            await conn.execute(
+                text("UPDATE agent_sessions SET status = :state WHERE id = :sid"), {"sid": sid, "state": state}
+            )
+            await conn.execute(
+                text("""
+                    UPDATE ai_workflow_analyses SET status = :state, commit_sha = :sha,
+                           finished_at = now() - make_interval(days => :age)
+                     WHERE agent_session_id = :sid
+                    """),
+                {"sid": sid, "state": state, "sha": sha, "age": age},
+            )
+
+    head = AsyncMock(return_value=a)
+    monkeypatch.setattr(github, "stable_releases", AsyncMock(return_value=None))
+    monkeypatch.setattr(github, "branch_head", head)
+    poller = analysis_triggers.AnalysisPoller()
+    monkeypatch.setattr(poller, "_nightly_due", lambda _: True)
+
+    first_a_ref = None
+    for attempt in range(3):
+        (sid,) = await poller.poll_once()
+        first_a_ref = (await db.get_session(sid))["trigger_ref"]
+        await finish(sid, sha=a if attempt == 2 else None, age=62)
+
+    head.return_value = b
+    (sid,) = await poller.poll_once()
+    await finish(sid, sha=b, age=31)
+
+    head.return_value = a
+    results = await asyncio.gather(poller.poll_once(), poller.poll_once())
+    (sid,) = [item for batch in results for item in batch]
+    current = await db.get_session(sid)
+    assert current["workflow_analysis_target"]["sha"] == a
+    current_ref = current["trigger_ref"]
+    assert current_ref != first_a_ref
+    await finish(sid)
+
+    runner = SessionManager()
+    monkeypatch.setattr(runner, "request_scheduler_pass", lambda: None)
+    monkeypatch.setattr(db, "add_event", AsyncMock())
+    retried = await runner.take_up_again(await db.get_session(sid))
+    assert retried is not None
+    assert (await db.get_session(retried))["trigger_ref"] == current_ref
+    await finish(retried)
+
+    (last_attempt,) = await poller.poll_once()
+    assert (await db.get_session(last_attempt))["trigger_ref"] == current_ref
+    await finish(last_attempt)
+    assert await db.attempts_for_trigger(first_a_ref) == await db.attempts_for_trigger(current_ref) == 3
+    assert await runner.take_up_again(await db.get_session(last_attempt)) is None
+    assert await poller.poll_once() == []
+
+
+@pytest.mark.parametrize("when", ["release lookup", "automatic retry"])
+async def test_newer_manual_success_invalidates_release_admission_and_automatic_retry(database, monkeypatch, when):
+    from datetime import datetime, timezone
+    from unittest.mock import AsyncMock
+
+    from app import github
+    from app.sessions import SessionManager
+
+    a, c, d = (character * 40 for character in "acd")
+    async with database.begin() as conn:
+        await conn.execute(
+            text("""
+                INSERT INTO ai_workflow_analyses (team_repository_id, team_id, status, commit_sha, finished_at)
+                VALUES (1, 1, 'succeeded', :head, now())
+                """),
+            {"head": a},
+        )
+
+    async def finish(sid, *, sha=None):
+        state = "succeeded" if sha else "failed"
+        async with database.begin() as conn:
+            await conn.execute(
+                text("UPDATE agent_sessions SET status = :state WHERE id = :sid"), {"sid": sid, "state": state}
+            )
+            await conn.execute(
+                text("""
+                    UPDATE ai_workflow_analyses SET status = :state, commit_sha = :sha, finished_at = now()
+                     WHERE agent_session_id = :sid
+                    """),
+                {"sid": sid, "state": state, "sha": sha},
+            )
+
+    async def start_manual():
+        return await db.create_session(**_session(trigger_kind="analysis", no_push=True), automatic_analysis=False)
+
+    async def lookup(*_args):
+        if when == "release lookup":
+            await finish(await start_manual(), sha=d)
+        return c
+
+    releases = AsyncMock(return_value=[])
+    monkeypatch.setattr(github, "stable_releases", releases)
+    monkeypatch.setattr(github, "branch_head", AsyncMock(return_value=d))
+    monkeypatch.setattr(github, "release_commit", lookup)
+    monkeypatch.setattr(github, "commit_is_ancestor", AsyncMock(side_effect=lambda repo, old, new: new == d))
+    poller = analysis_triggers.AnalysisPoller()
+    monkeypatch.setattr(poller, "_nightly_due", lambda _: True)
+    assert await poller.poll_once() == []  # establish the baseline
+    releases.return_value = [github.StableRelease(2, "v2", datetime.now(timezone.utc))]
+
+    if when == "release lookup":
+        assert await poller.poll_once() == []
+    else:
+        (sid,) = await poller.poll_once()
+        # Normal producers cannot overlap a manual analysis with the reserved release.
+        with pytest.raises(ValueError, match="already in flight"):
+            await start_manual()
+        await finish(sid)
+        await finish(await start_manual(), sha=d)
+
+        runner = SessionManager()
+        monkeypatch.setattr(runner, "request_scheduler_pass", lambda: None)
+        monkeypatch.setattr(db, "add_event", AsyncMock())
+        assert await runner.take_up_again(await db.get_session(sid)) is None
+    assert await poller.poll_once() == []

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import quote
@@ -16,6 +17,7 @@ from urllib.parse import quote
 import httpx
 
 from . import attachments, disclosure, repository_context
+from .analysis_cadence import commit_sha
 from .config import settings
 
 logger = logging.getLogger(__name__)
@@ -219,25 +221,90 @@ async def _get(path: str, params: dict[str, Any] | None = None, *, timeout_s: fl
 
 
 async def branch_head(repo_slug: str, branch: str, *, timeout_s: float = 15.0) -> str | None:
-    """The commit a branch points at, or None when GitHub will not say.
-
-    None covers a private repository the runner cannot read, a missing branch
-    and any API trouble: the caller then lets the session find out itself.
-    Uses the runner token when there is one (rate limit), anonymous otherwise.
-    """
-    headers = {"Accept": "application/vnd.github.sha", "X-GitHub-Api-Version": "2022-11-28"}
+    """Read the exact linked branch, not a tag of the same name."""
+    headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
     if settings.github_token:
         headers["Authorization"] = f"Bearer {settings.github_token}"
     try:
         async with httpx.AsyncClient(timeout=timeout_s) as client:
-            response = await client.get(f"{_API}/repos/{repo_slug}/commits/{quote(branch, safe='')}", headers=headers)
-    except httpx.HTTPError as exc:
-        logger.info("branch head lookup for %s@%s failed: %s", repo_slug, branch, exc)
+            response = await client.get(
+                f"{_API}/repos/{repo_slug}/git/ref/heads/{quote(branch, safe='')}", headers=headers
+            )
+        if response.status_code == 200:
+            info = response.json()
+            obj = info.get("object") or {}
+            if info.get("ref") == f"refs/heads/{branch}" and obj.get("type") == "commit":
+                return commit_sha(obj.get("sha"))
+    except (httpx.HTTPError, ValueError, AttributeError) as exc:
+        logger.info("branch head lookup for %s@%s failed: %s", repo_slug, branch, type(exc).__name__)
+    return None
+
+
+@dataclass(frozen=True)
+class StableRelease:
+    id: int
+    tag: str
+    published_at: datetime
+
+
+async def stable_releases(repo_slug: str) -> list[StableRelease] | None:
+    """All known published stable release identities, or None on incomplete discovery."""
+    try:
+        releases, truncated = await _get_all_bounded(f"/repos/{repo_slug}/releases")
+        if truncated:
+            return None
+        stable = []
+        for release in releases:
+            if release.get("draft") is not False or release.get("prerelease") is not False:
+                continue
+            if not release.get("published_at"):
+                continue
+            if not isinstance(release.get("tag_name"), str) or not release["tag_name"]:
+                return None
+            stable.append(
+                StableRelease(
+                    int(release["id"]), str(release["tag_name"]), datetime.fromisoformat(release["published_at"])
+                )
+            )
+        if any(not release.tag or release.published_at.tzinfo is None for release in stable):
+            return None
+        return sorted(stable, key=lambda release: (release.published_at, release.id), reverse=True)
+    except (GitHubError, httpx.HTTPError, TypeError, ValueError, AttributeError, KeyError) as exc:
+        logger.info("release discovery unavailable for %s: %s", repo_slug, type(exc).__name__)
         return None
-    sha = response.text.strip()
-    if response.status_code != 200 or len(sha) != 40:
-        return None
-    return sha
+
+
+async def release_commit(repo_slug: str, tag: str) -> str | None:
+    """Resolve an exact tag and peel annotated tags, never a similarly named branch."""
+    try:
+        current = (await _get(f"/repos/{repo_slug}/git/ref/tags/{quote(tag, safe='')}")).get("object") or {}
+        for _ in range(8):
+            sha = commit_sha(current.get("sha"))
+            if not sha:
+                return None
+            if current.get("type") == "commit":
+                return sha
+            if current.get("type") != "tag":
+                return None
+            current = (await _get(f"/repos/{repo_slug}/git/tags/{sha}")).get("object") or {}
+    except (GitHubError, httpx.HTTPError, ValueError, AttributeError) as exc:
+        logger.info("release tag resolution unavailable for %s: %s", repo_slug, type(exc).__name__)
+    return None
+
+
+async def commit_is_ancestor(repo_slug: str, older: str, newer: str) -> bool | None:
+    """A known false is distinct from an unavailable compare result."""
+    if older == newer:
+        return True
+    try:
+        status = (await _get(f"/repos/{repo_slug}/compare/{older}...{newer}", {"per_page": 1})).get("status")
+        if status in ("ahead", "identical"):
+            return True
+        if status in ("behind", "diverged"):
+            return False
+    except (GitHubError, httpx.HTTPError, ValueError, AttributeError) as exc:
+        logger.info("commit comparison unavailable for %s: %s", repo_slug, type(exc).__name__)
+    return None
 
 
 # One page is 100 items — GitHub's maximum — and at most this many pages are
