@@ -539,3 +539,54 @@ async def test_nightly_fallback_ages_from_success_not_skips_and_bounds_failed_at
             )
     assert len(set(attempted)) == 3
     assert await poller.poll_once() == []
+
+
+async def test_due_branch_rollback_queues_historical_sha_without_replaying_its_release(database, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from app import github
+    from app.analysis_cadence import link_scope
+
+    commit_a, commit_b = "a" * 40, "b" * 40
+    link = {"repo_slug": "o/a", "branch": "main", "paths": None}
+    scope = link_scope(link)
+    async with database.begin() as conn:
+        await conn.execute(
+            text("""
+                INSERT INTO ai_workflow_analyses (team_repository_id, team_id, status, commit_sha, finished_at)
+                VALUES (1, 1, 'succeeded', :a, now() - interval '40 days'),
+                       (1, 1, 'succeeded', :b, now() - interval '29 days')
+                """),
+            {"a": commit_a, "b": commit_b},
+        )
+
+    def launch(target):
+        return db.create_session(
+            **_session(trigger_kind="analysis", no_push=True),
+            automatic_analysis=True,
+            workflow_analysis_target=target,
+        )
+
+    release = {"sha": commit_a, "scope": scope}
+    fallback = {**release, "kind": "branch"}
+    with pytest.raises(ValueError, match="already covered"):
+        await launch(release)
+    with pytest.raises(ValueError, match="not due"):
+        await launch(fallback)
+
+    # B is still the latest successful analysis; it has now aged past the
+    # fallback interval, and the linked branch was rolled back to A.
+    async with database.begin() as conn:
+        await conn.execute(
+            text("UPDATE ai_workflow_analyses SET finished_at = now() - interval '31 days' WHERE commit_sha = :b"),
+            {"b": commit_b},
+        )
+
+    monkeypatch.setattr(github, "stable_releases", AsyncMock(return_value=None))
+    monkeypatch.setattr(github, "branch_head", AsyncMock(return_value=commit_a))
+    poller = analysis_triggers.AnalysisPoller()
+    monkeypatch.setattr(poller, "_nightly_due", lambda _: True)
+
+    (sid,) = await poller.poll_once()
+    assert (await db.get_session(sid))["workflow_analysis_target"] == fallback
+    assert await poller.poll_once() == []

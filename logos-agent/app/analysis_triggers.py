@@ -243,13 +243,20 @@ class AnalysisPoller:
             due = last_success_at is not None and now - last_success_at >= timedelta(
                 days=settings.analysis_refresh_days
             )
+            target_kind = "release"
             if target is None and due and head:
-                if head == previous or head in covered:
+                if head == previous:
                     skipped += 1
                 elif previous and head not in blocked:
+                    # A rollback can return to a historically scanned SHA while
+                    # the displayed analysis still describes a different one.
                     target = head
+                    target_kind = "branch"
             if target is not None:
-                session_id = await self._queue(link, target={"sha": target, "scope": scope})
+                request = {"sha": target, "scope": scope}
+                if target_kind == "branch":
+                    request["kind"] = "branch"
+                session_id = await self._queue(link, target=request)
                 if session_id is not None:
                     queued.append(session_id)
         self._skipped_unchanged_total += skipped

@@ -376,5 +376,22 @@ async def test_a_stopped_runner_still_queues_nightly_analysis(monkeypatch):
     sessions = await poller.poll_once()
 
     assert sessions == [99]
-    assert queued == [(link, {"sha": MOVED, "scope": link_scope(link)})]
+    assert queued == [(link, {"sha": MOVED, "scope": link_scope(link), "kind": "branch"})]
     assert poller._nightly_done_for == night.date()
+
+
+async def test_due_fallback_refreshes_a_rolled_back_branch_but_release_does_not_replay_it(monkeypatch):
+    link = _link(1, MOVED)
+    link["successful_commits"] = [HEAD, MOVED]
+    link["last_success_at"] = datetime.now(timezone.utc) - timedelta(days=29)
+    poller, queued = _poller(monkeypatch, [link], {link["repo_slug"]: HEAD})
+    github.stable_releases.return_value = [github.StableRelease(3, "v3", datetime.now(timezone.utc))]
+    monkeypatch.setattr(github, "release_commit", AsyncMock(return_value=HEAD))
+
+    # A newly published tag must not replay an already successful release target.
+    assert await poller._nightly_pass() == []
+
+    # After the interval it is a changed branch, relative to the latest successful B.
+    link["last_success_at"] -= timedelta(days=2)
+    assert await poller._nightly_pass() == [1001]
+    assert queued == [(1, HEAD)]

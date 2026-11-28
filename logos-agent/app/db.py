@@ -725,6 +725,7 @@ async def create_session(
         trigger_kind != "analysis"
         or not no_push
         or not commit_sha(workflow_analysis_target.get("sha"))
+        or workflow_analysis_target.get("kind") not in (None, "branch")
         or (automatic_analysis is None and retry_analysis_session_id is None)
     ):
         raise ValueError("a pinned target belongs to a read-only linked analysis")
@@ -763,25 +764,50 @@ async def create_session(
                 if workflow_analysis_target.get("scope") != link_scope(link):
                     raise ValueError("the workflow analysis scope changed")
                 if automatic_analysis:
-                    already_done = await db.scalar(
-                        text("""
-                            SELECT EXISTS (SELECT 1 FROM ai_workflow_analyses
-                                           WHERE team_repository_id = :repo AND status = 'succeeded'
-                                             AND commit_sha = :sha)
-                            """),
-                        {"repo": team_repository_id, "sha": workflow_analysis_target["sha"]},
-                    )
+                    sha = workflow_analysis_target["sha"]
+                    params = {"repo": team_repository_id, "sha": sha, "scope": workflow_analysis_target["scope"]}
+                    if workflow_analysis_target.get("kind") == "branch":
+                        # Recheck the age and latest successful SHA under
+                        # the link lock. A scan can complete after the poll
+                        # read its history and before it claims the slot.
+                        eligible = await db.scalar(
+                            text("""
+                                SELECT EXISTS (
+                                    SELECT 1 FROM (
+                                        SELECT commit_sha, finished_at FROM ai_workflow_analyses
+                                         WHERE team_repository_id = :repo AND status = 'succeeded'
+                                         ORDER BY finished_at DESC NULLS LAST, id DESC LIMIT 1
+                                    ) latest
+                                    WHERE latest.commit_sha IS NOT NULL AND latest.commit_sha <> :sha
+                                      AND latest.finished_at <= now() - make_interval(days => :days)
+                                )
+                                """),
+                            {**params, "days": settings.analysis_refresh_days},
+                        )
+                    else:
+                        eligible = not await db.scalar(
+                            text("""
+                                SELECT EXISTS (SELECT 1 FROM ai_workflow_analyses
+                                               WHERE team_repository_id = :repo AND status = 'succeeded'
+                                                 AND commit_sha = :sha)
+                                """),
+                            params,
+                        )
+                    # Count attempts by scope and SHA, not by trigger reason.
                     attempts = await db.scalar(
                         text("""
                             SELECT COUNT(*) FROM ai_workflow_analyses a
                               JOIN agent_sessions s ON s.id = a.agent_session_id
                              WHERE a.team_repository_id = :repo AND a.automatically_queued
-                               AND s.workflow_analysis_target = CAST(:target AS jsonb)
+                               AND s.workflow_analysis_target->>'sha' = :sha
+                               AND s.workflow_analysis_target->>'scope' = :scope
                             """),
-                        {"repo": team_repository_id, "target": json.dumps(workflow_analysis_target)},
+                        params,
                     )
-                    if already_done or attempts >= MAX_TARGET_ATTEMPTS:
-                        raise ValueError("this workflow analysis target is already covered or out of attempts")
+                    if not eligible or attempts >= MAX_TARGET_ATTEMPTS:
+                        raise ValueError(
+                            "this workflow analysis target is already covered, not due, or out of attempts"
+                        )
             if retry_analysis_session_id is not None:
                 await db.execute(
                     text("""
