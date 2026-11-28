@@ -2236,8 +2236,9 @@ class SessionManager:
                 # transient failure to update the workspace row after recording it.
                 await db.set_workspace_base_branch(int(workspace_id), branch)
                 workspace = {**workspace, "base_branch": branch}
-        base_branch = str(workspace["base_branch"])
         is_analysis = str(session.get("trigger_kind") or "") == "analysis"
+        target = session.get("workflow_analysis_target") if is_analysis else None
+        base_branch = str((session.get("repo_base_branch") if target else None) or workspace["base_branch"])
         push_env = await self._push_environment(session)
         checkout_fork = None
         if (
@@ -2279,6 +2280,8 @@ class SessionManager:
             # the token turns out to be somebody else's.
             "LOGOS_AGENT_GITHUB_LOGIN": settings.github_login,
         }
+        if target:
+            env["LOGOS_SESSION_ANALYSIS_TARGET_SHA"] = target["sha"]
         if checkout_fork:
             env["LOGOS_CHECKOUT_FORK_URL"] = f"https://github.com/{checkout_fork}.git"
         # Application analysis must not inherit the shared bot token — even
@@ -2335,6 +2338,8 @@ class SessionManager:
         if code != 0:
             said = self._last_helper_output.pop(session["id"], "")
             raise RuntimeError(f"checkout preparation failed (exit {code}){f': {said}' if said else ''}")
+        if target and self._read_result(int(session["id"])).get("checkout_sha") != target["sha"]:
+            raise RuntimeError("checkout preparation did not prove the pinned analysis commit")
         self._capture_checkout_baseline(int(session["id"]))
         if str(session.get("trigger_kind") or "") == "review-request":
             # Read now, while only the trusted helper has written the result
@@ -2534,7 +2539,15 @@ class SessionManager:
             if str(session.get("trigger_kind") or "") == "analysis":
                 from . import analysis_ingest
 
-                await analysis_ingest.ingest_session(session)
+                if session.get("workflow_analysis_target"):
+                    try:
+                        prepared = json.loads((state_dir(session_id) / _CHECKOUT_BASELINE_FILE).read_text())
+                        proof = prepared["checkout_sha"]
+                    except (OSError, ValueError, KeyError, TypeError):
+                        proof = None
+                    await analysis_ingest.ingest_session(session, trusted_sha=proof)
+                else:
+                    await analysis_ingest.ingest_session(session)
             return True
         if not session.get("branch_name"):
             logger.warning("no branch recorded for session %s; cannot finalize", session_id)
@@ -3123,6 +3136,7 @@ class SessionManager:
                 team_repository_id=session.get("team_repository_id"),
                 verification_command=session.get("verification_command"),
                 repo_base_branch=session.get("repo_base_branch"),
+                workflow_analysis_target=session.get("workflow_analysis_target"),
                 retry_analysis_session_id=session.get("id") if session.get("trigger_kind") == "analysis" else None,
                 point_workspace_at=resumption_base(session),
             )

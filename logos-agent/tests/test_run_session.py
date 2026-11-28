@@ -2215,3 +2215,27 @@ def test_message_snapshot_limits_each_message_and_total_history(tmp_path, monkey
     snapshot = json.loads((tmp_path / "messages.json").read_text())
     assert len(snapshot["messages"]) == 4 and snapshot["omitted"] == 71
     assert all(row["truncated"] and len(row["text"]) == 16384 for row in snapshot["messages"])
+
+
+def test_workflow_analysis_prepares_the_published_commit_after_branch_moves(tmp_path, monkeypatch):
+    remote = _remote_with_a_deep_divergence(tmp_path, depth=60)
+    pinned = _git("rev-parse", "main~55", cwd=remote).stdout.strip()
+    _git("tag", "v1.0.0", pinned, cwd=remote)
+    _patch_workspace(monkeypatch, tmp_path / "analysis-workspace")
+    monkeypatch.setenv("LOGOS_REPO_URL", remote.as_uri())
+    monkeypatch.setenv("LOGOS_SESSION_BASE_BRANCH", "main")
+    monkeypatch.setenv("LOGOS_SESSION_BRANCH", "agent/workflow")
+    monkeypatch.setenv("LOGOS_SESSION_ANALYSIS_TARGET_SHA", pinned)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    report = run_session.Result()
+
+    run_session.run_prepare(report)
+
+    assert report.data["checkout_sha"] == pinned
+    assert report.data["checkout_sha"] != _git("rev-parse", "main", cwd=remote).stdout.strip()
+    assert _git("rev-parse", "HEAD", cwd=run_session.CHECKOUT).stdout.strip() == pinned
+    assert not report.data["checkout_branch_sha"]
+
+    monkeypatch.setenv("LOGOS_SESSION_ANALYSIS_TARGET_SHA", "0" * 40)
+    with pytest.raises((RuntimeError, subprocess.CalledProcessError)):
+        run_session.run_prepare(run_session.Result())

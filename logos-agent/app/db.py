@@ -16,6 +16,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
 from . import pulse
+from .analysis_cadence import MAX_TARGET_ATTEMPTS, commit_sha, link_scope
 from .config import settings
 from .schemas import ACTIVE_STATUSES, TERMINAL_STATUSES, EventKind, SessionStatus
 
@@ -708,6 +709,7 @@ async def create_session(
     point_workspace_at: str | None = None,
     automatic_analysis: bool | None = None,
     retry_analysis_session_id: int | None = None,
+    workflow_analysis_target: dict[str, str] | None = None,
 ) -> int:
     """Queue a session. Returns its id.
 
@@ -719,6 +721,13 @@ async def create_session(
     also covers the insert, so concurrent requests cannot both find the
     workspace idle — whichever path inserts the session.
     """
+    if workflow_analysis_target is not None and (
+        trigger_kind != "analysis"
+        or not no_push
+        or not commit_sha(workflow_analysis_target.get("sha"))
+        or (automatic_analysis is None and retry_analysis_session_id is None)
+    ):
+        raise ValueError("a pinned target belongs to a read-only linked analysis")
     async with sessionmaker()() as db:
         if automatic_analysis is not None or retry_analysis_session_id is not None:
             # Every producer takes the link before the workspace or in-flight slot.
@@ -726,7 +735,8 @@ async def create_session(
                 (
                     await db.execute(
                         text(
-                            "SELECT team_id, automatic_workflow_analysis FROM team_repositories "
+                            "SELECT team_id, automatic_workflow_analysis, repo_slug, branch, paths "
+                            "FROM team_repositories "
                             "WHERE id = :id FOR UPDATE"
                         ),
                         {"id": team_repository_id},
@@ -749,6 +759,29 @@ async def create_session(
                     raise ValueError("the parent analysis session does not belong to this repository")
             if automatic_analysis and not link["automatic_workflow_analysis"]:
                 raise ValueError("automatic workflow analysis is disabled")
+            if workflow_analysis_target is not None:
+                if workflow_analysis_target.get("scope") != link_scope(link):
+                    raise ValueError("the workflow analysis scope changed")
+                if automatic_analysis:
+                    already_done = await db.scalar(
+                        text("""
+                            SELECT EXISTS (SELECT 1 FROM ai_workflow_analyses
+                                           WHERE team_repository_id = :repo AND status = 'succeeded'
+                                             AND commit_sha = :sha)
+                            """),
+                        {"repo": team_repository_id, "sha": workflow_analysis_target["sha"]},
+                    )
+                    attempts = await db.scalar(
+                        text("""
+                            SELECT COUNT(*) FROM ai_workflow_analyses a
+                              JOIN agent_sessions s ON s.id = a.agent_session_id
+                             WHERE a.team_repository_id = :repo AND a.automatically_queued
+                               AND s.workflow_analysis_target = CAST(:target AS jsonb)
+                            """),
+                        {"repo": team_repository_id, "target": json.dumps(workflow_analysis_target)},
+                    )
+                    if already_done or attempts >= MAX_TARGET_ATTEMPTS:
+                        raise ValueError("this workflow analysis target is already covered or out of attempts")
             if retry_analysis_session_id is not None:
                 await db.execute(
                     text("""
@@ -813,7 +846,7 @@ async def create_session(
                          no_push, trigger_kind, trigger_ref, branch_name,
                          reply_target, reaction_target, priority, priority_reason,
                          repo_url, repo_slug, team_repository_id, verification_command,
-                         repo_base_branch, memory_override_mb)
+                         repo_base_branch, memory_override_mb, workflow_analysis_target)
                     VALUES
                         (:workspace_id, :task, :model, 'queued', :created_by,
                          :open_pr, :deploy, CAST(:paths AS jsonb),
@@ -822,7 +855,7 @@ async def create_session(
                          :reaction_target,
                          :priority, :priority_reason,
                          :repo_url, :repo_slug, :team_repository_id, :verification_command,
-                         :repo_base_branch, :memory_override_mb)
+                         :repo_base_branch, :memory_override_mb, CAST(:workflow_analysis_target AS jsonb))
                     RETURNING id
                     """),
                 {
@@ -856,6 +889,9 @@ async def create_session(
                     "verification_command": verification_command,
                     "repo_base_branch": repo_base_branch,
                     "memory_override_mb": memory_override_mb,
+                    "workflow_analysis_target": (
+                        json.dumps(workflow_analysis_target) if workflow_analysis_target else None
+                    ),
                 },
             )
         ).scalar_one()
@@ -1107,6 +1143,7 @@ _SESSION_SELECT = """
            s.reply_target, s.reaction_target,
            s.priority, s.priority_reason, s.environment_notes,
            s.repo_url, s.repo_slug, s.team_repository_id, s.verification_command, s.repo_base_branch,
+           s.workflow_analysis_target,
            s.push_repo_slug, s.memory_mb, s.memory_override_mb, s.memory_peak_bytes,
            s.subagent_count, s.progress_percent,
            s.progress_active_s, s.progress_reported_at, s.active_seconds, s.active_since,
@@ -1680,7 +1717,7 @@ async def sessions_owing_a_replacement(*, max_attempts: int, since: datetime) ->
                            s.trigger_kind, s.trigger_ref, s.reply_target, s.reaction_target,
                            s.priority, s.priority_reason, s.open_pull_request, s.error,
                            s.finished_at, s.repo_url, s.repo_slug, s.team_repository_id,
-                           s.verification_command, s.repo_base_branch, s.no_push
+                           s.verification_command, s.repo_base_branch, s.no_push, s.workflow_analysis_target
                       FROM agent_sessions s
                      WHERE s.status = 'failed'
                        AND COALESCE(s.trigger_ref, '') <> ''

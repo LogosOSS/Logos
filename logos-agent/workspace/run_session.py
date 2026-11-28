@@ -516,6 +516,9 @@ def prepare_checkout(repo_url: str, base_branch: str, branch: str, token: str) -
     # There is no remote-tracking branch for such a ref, which is the point:
     # the checkout is the code under discussion and there is nothing here to
     # push back to.
+    pinned = os.environ.get("LOGOS_SESSION_ANALYSIS_TARGET_SHA", "")
+    if pinned and not re.fullmatch(r"[0-9a-f]{40}", pinned):
+        raise RuntimeError("invalid pinned workflow analysis SHA")
     reading = base_branch.startswith("refs/")
     base_remote = _base_remote(base_branch, branch)
     forked_base = base_remote != "origin"
@@ -525,7 +528,7 @@ def prepare_checkout(repo_url: str, base_branch: str, branch: str, token: str) -
         CHECKOUT.parent.mkdir(parents=True, exist_ok=True)
         _clear_checkout()
         clone = ["git", "clone", "--depth", "50"]
-        if not reading and not forked_base:
+        if not reading and not forked_base and not pinned:
             # A ref is not a branch name; the clone takes the default head
             # and the fetch below moves it to what was asked for.
             clone += ["--branch", base_branch]
@@ -534,13 +537,25 @@ def prepare_checkout(repo_url: str, base_branch: str, branch: str, token: str) -
     else:
         log("reusing existing checkout; rebuilding trusted git metadata")
         _rebuild_git_metadata(repo_url)
-    if reading or not cloned or forked_base:
+    if not pinned and (reading or not cloned or forked_base):
         run(["git", "fetch", "--depth", "50", base_remote, base_branch], cwd=CHECKOUT)
         # Discard whatever a previous session left behind: a session starts
         # from the base it was given, never from another session's leftovers.
         exact = reading or forked_base
         run(["git", "reset", "--hard", "FETCH_HEAD" if exact else f"origin/{base_branch}"], cwd=CHECKOUT)
         run(["git", "clean", "-fdx"], cwd=CHECKOUT, check=False)
+
+    if pinned:
+        # Fetch the commit object itself even if the linked branch or the tag
+        # moved after scheduling. No fallback to the branch tip.
+        run(["git", "fetch", "--depth", "1", "--no-tags", "origin", pinned], cwd=CHECKOUT)
+        if require_checkout_ref("FETCH_HEAD") != pinned:
+            raise RuntimeError("fetched a different commit than the pinned analysis SHA")
+        run(["git", "reset", "--hard", pinned], cwd=CHECKOUT)
+        run(["git", "clean", "-fdx"], cwd=CHECKOUT)
+        _configure_git_identity()
+        run(["git", "checkout", "-B", branch], cwd=CHECKOUT)
+        return
 
     # The task a reviewing agent is given tells it to run
     # `git diff origin/<default>...HEAD` — and that ref is not in every
@@ -1632,6 +1647,12 @@ def run_prepare(result: Result) -> None:
     token = os.environ.get("GITHUB_TOKEN", "")
     prepare_checkout(repo_url, base_branch, branch, token)
     result.data["checkout_sha"] = _ref_sha("HEAD")
+    pinned = os.environ.get("LOGOS_SESSION_ANALYSIS_TARGET_SHA", "")
+    if pinned:
+        if result.data["checkout_sha"] != pinned:
+            raise RuntimeError("prepared checkout does not match the pinned analysis SHA")
+        result.data.update(checkout_branch_sha="", checkout_comparison_sha=pinned, checkout_pr_base_branch=base_branch)
+        return
     result.data["checkout_branch_sha"] = _remote_branch_sha(branch)
     if result.data["checkout_branch_sha"] and result.data["checkout_branch_sha"] != result.data["checkout_sha"]:
         raise RuntimeError("the existing session branch differs from the prepared checkout; prepare its current tip")

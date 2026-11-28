@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.20.xsd">
+    <changeSet id="111-workflow-analysis-cadence" author="logos">
+        <addColumn tableName="team_repositories">
+            <column name="workflow_release_baseline" type="JSONB"/>
+        </addColumn>
+        <addColumn tableName="agent_sessions">
+            <column name="workflow_analysis_target" type="JSONB"/>
+        </addColumn>
+        <rollback>
+            <dropColumn tableName="agent_sessions" columnName="workflow_analysis_target"/>
+            <dropColumn tableName="team_repositories" columnName="workflow_release_baseline"/>
+        </rollback>
+    </changeSet>
+</databaseChangeLog>

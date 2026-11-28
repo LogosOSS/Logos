@@ -642,6 +642,7 @@ async def retry_session(session_id: int, principal: Principal = Depends(require_
             team_repository_id=row.get("team_repository_id"),
             verification_command=row.get("verification_command"),
             repo_base_branch=row.get("repo_base_branch"),
+            workflow_analysis_target=row.get("workflow_analysis_target"),
             automatic_analysis=False if row.get("trigger_kind") == "analysis" else None,
             retry_analysis_session_id=session_id if row.get("trigger_kind") == "analysis" else None,
             point_workspace_at=resumption_base(row),

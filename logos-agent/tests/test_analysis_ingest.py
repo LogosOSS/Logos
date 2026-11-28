@@ -617,3 +617,52 @@ def test_matching_ten_thousand_rows_in_one_group_is_cheap():
     rows = [{"file_path": "a.py", "workflow_name": "chat", "start_line": i} for i in range(10_000)]
     previous = [{"id": i, **r} for i, r in enumerate(rows)]
     assert analysis_ingest.match_recommendations(previous, rows) == {}
+
+
+@pytest.mark.parametrize("proof,mislabeled,unchanged", [("b", False, False), ("a", True, False), ("a", False, True)])
+async def test_pinned_ingest_rejects_inconsistent_or_skipped_artifacts(
+    tmp_path, monkeypatch, proof, mislabeled, unchanged
+):
+    from app.analysis_cadence import link_scope
+
+    _patch_artifact_root(monkeypatch, tmp_path)
+    folder = tmp_path / "5"
+    folder.mkdir()
+    target = {"sha": "a" * 40, "scope": link_scope({"repo_slug": "acme/repo"})}
+    (folder / "analysis.json").write_text(
+        json.dumps({"commit_sha": ("b" * 40) if mislabeled else target["sha"], "unchanged": unchanged})
+    )
+    conn = _Conn()
+    monkeypatch.setattr(db, "sessionmaker", lambda: (lambda: conn))
+
+    await analysis_ingest.ingest_session(
+        {"id": 5, "team_repository_id": 11, "workflow_analysis_target": target}, trusted_sha=proof * 40
+    )
+
+    assert any("status = 'failed'" in sql for sql, _ in conn.statements)
+    assert not any("INSERT INTO ai_workflows" in sql for sql, _ in conn.statements)
+
+
+async def test_pinned_ingest_stores_proven_commit_and_rejects_changed_scope(tmp_path, monkeypatch):
+    from app.analysis_cadence import link_scope
+
+    _patch_artifact_root(monkeypatch, tmp_path)
+    folder = tmp_path / "5"
+    folder.mkdir()
+    target = {"sha": "a" * 40, "scope": link_scope({"repo_slug": "acme/repo"})}
+    (folder / "analysis.json").write_text(json.dumps({"commit_sha": target["sha"]}))
+
+    conn = _Conn()
+    monkeypatch.setattr(db, "sessionmaker", lambda: (lambda: conn))
+    session = {"id": 5, "team_repository_id": 11, "workflow_analysis_target": target}
+    await analysis_ingest.ingest_session(session, trusted_sha=target["sha"])
+    assert any(
+        "INSERT INTO ai_workflow_analyses" in sql and params.get("commit_sha") == target["sha"]
+        for sql, params in conn.statements
+    )
+
+    conn.statements.clear()
+    target["scope"] = link_scope({"repo_slug": "acme/repo", "paths": ["changed"]})
+    await analysis_ingest.ingest_session(session, trusted_sha=target["sha"])
+    assert any("status = 'failed'" in sql for sql, _ in conn.statements)
+    assert not any("INSERT INTO ai_workflow_analyses" in sql for sql, _ in conn.statements)

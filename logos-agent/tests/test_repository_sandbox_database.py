@@ -39,7 +39,7 @@ async def database(monkeypatch):
             await conn.execute(text("CREATE TABLE teams (id SERIAL PRIMARY KEY, name text)"))
             await conn.execute(text("""CREATE TABLE team_repositories (
                 id SERIAL PRIMARY KEY, team_id integer, repo_url text, repo_slug text, branch text, paths jsonb,
-                automatic_workflow_analysis boolean NOT NULL DEFAULT TRUE,
+                automatic_workflow_analysis boolean NOT NULL DEFAULT TRUE, workflow_release_baseline jsonb,
                 agent_enabled boolean NOT NULL DEFAULT TRUE, agent_instructions text, verification_command text,
                 agent_egress_hosts jsonb NOT NULL DEFAULT '[]'::jsonb,
                 agent_egress_unrestricted boolean NOT NULL DEFAULT FALSE,
@@ -57,7 +57,7 @@ async def database(monkeypatch):
                 trigger_kind text, trigger_ref text, reply_target text, reaction_target text,
                 priority integer, priority_reason text, environment_notes text,
                 repo_url text, repo_slug text, team_repository_id integer, verification_command text,
-                repo_base_branch text, push_repo_slug text, egress_token_hash text,
+                repo_base_branch text, push_repo_slug text, egress_token_hash text, workflow_analysis_target jsonb,
                 memory_mb integer, memory_override_mb integer, memory_peak_bytes bigint, subagent_count integer,
                 progress_percent integer, progress_active_s bigint, progress_reported_at timestamptz,
                 active_seconds double precision NOT NULL DEFAULT 0, active_since timestamptz,
@@ -458,3 +458,84 @@ async def test_activity_clock_freezes_and_metadata_survives_reread_and_out_of_or
     row = (await db.list_sessions())[0]
     assert (row["subagent_count"], row["progress_percent"], row["progress_active_s"]) == (2, 40, 1200)
     assert row["active_since"] is None
+
+
+async def test_nightly_entry_point_persists_baseline_and_pinned_per_link_session(database, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from app import github
+
+    last, branch, release = "a" * 40, "b" * 40, "c" * 40
+    async with database.begin() as conn:
+        await conn.execute(
+            text("""
+            INSERT INTO ai_workflow_analyses (team_repository_id, team_id, status, commit_sha, finished_at)
+            VALUES (1, 1, 'succeeded', :last, now()), (1, 1, 'skipped', :branch, now())
+            """),
+            {"last": last, "branch": branch},
+        )
+
+    baseline = {"id": 1, "tag_name": "v1", "draft": False, "prerelease": False, "published_at": "2025-01-01T00:00:00Z"}
+    candidate = {"id": 2, "tag_name": "v2", "draft": False, "prerelease": True, "published_at": "2025-02-01T00:00:00Z"}
+    listing = AsyncMock(return_value=([candidate, baseline], False))
+    monkeypatch.setattr(github, "_get_all_bounded", listing)
+    monkeypatch.setattr(github, "branch_head", AsyncMock(return_value=branch))
+    monkeypatch.setattr(github, "release_commit", AsyncMock(return_value=release))
+    monkeypatch.setattr(github, "commit_is_ancestor", AsyncMock(side_effect=lambda repo, old, new: new == branch))
+    poller = analysis_triggers.AnalysisPoller()
+    monkeypatch.setattr(poller, "_nightly_due", lambda _: True)
+
+    assert await poller.poll_once() == []
+    async with database.begin() as conn:
+        stored = await conn.scalar(text("SELECT workflow_release_baseline FROM team_repositories WHERE id=1"))
+    assert stored["release_ids"] == [1]
+
+    # Promotion makes the same publication stable; its date did not change.
+    candidate["prerelease"] = False
+    queued = await poller.poll_once()
+    assert len(queued) == 1
+    session = await db.get_session(queued[0])
+    assert session["workflow_analysis_target"] == {"sha": release, "scope": stored["scope"]}
+    assert session["repo_base_branch"] == "main"
+    assert session["no_push"]
+    async with database.begin() as conn:
+        observed = await conn.scalar(
+            text("SELECT workflow_release_baseline->'observed' FROM team_repositories WHERE id=1")
+        )
+    assert observed == {"2": release}
+    assert await poller._record_release_target({"id": 1}, stored["scope"], 2, branch) == release
+    assert await poller.poll_once() == []
+
+
+async def test_nightly_fallback_ages_from_success_not_skips_and_bounds_failed_attempts(database, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from app import github
+
+    last, branch = "a" * 40, "b" * 40
+    async with database.begin() as conn:
+        await conn.execute(
+            text("""
+                INSERT INTO ai_workflow_analyses (team_repository_id, team_id, status, commit_sha, finished_at)
+                VALUES (1, 1, 'succeeded', :last, now() - interval '31 days'), (1, 1, 'skipped', :branch, now())
+                """),
+            {"last": last, "branch": branch},
+        )
+
+    monkeypatch.setattr(github, "stable_releases", AsyncMock(return_value=None))
+    monkeypatch.setattr(github, "branch_head", AsyncMock(return_value=branch))
+    poller = analysis_triggers.AnalysisPoller()
+    monkeypatch.setattr(poller, "_nightly_due", lambda _: True)
+    attempted = []
+    for _ in range(3):
+        (sid,) = await poller.poll_once()
+        attempted.append(sid)
+        session = await db.get_session(sid)
+        assert session["workflow_analysis_target"]["sha"] == branch
+        async with database.begin() as conn:
+            await conn.execute(text("UPDATE agent_sessions SET status = 'failed' WHERE id = :sid"), {"sid": sid})
+            await conn.execute(
+                text("UPDATE ai_workflow_analyses SET status = 'failed' WHERE agent_session_id = :sid"), {"sid": sid}
+            )
+    assert len(set(attempted)) == 3
+    assert await poller.poll_once() == []
