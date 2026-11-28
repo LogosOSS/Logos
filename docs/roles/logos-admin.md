@@ -887,6 +887,9 @@ The page has these parts, from top to bottom:
 - **Session lists.** **Active**, **Queue** and **Finished** show the
   sessions. Select a session to show its details and messages. Use the
   arrows of a queued session to change its position in the queue.
+  **Queued** is the time before the session started. **Paused** adds up recorded pauses after starting,
+  updates during a pause, and stays visible when the session resumes or finishes. **Run** excludes recorded
+  pause time. Older sessions may lack some pause records.
   **RAM now** shows the latest total for the session containers, including helpers and file cache.
   The runner samples about every 2 seconds. A short peak between samples can be higher.
   **Observed peak** keeps the highest sample after the session ends or the runner restarts.

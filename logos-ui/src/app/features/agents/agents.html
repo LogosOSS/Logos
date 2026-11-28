@@ -571,8 +571,13 @@
               <span class="session__timing" title="Time waiting before the session started">
                 Queued {{ queueDuration(session) }}
               </span>
+              @if (pausedDuration(session); as pausedTime) {
+                <span class="session__timing" title="Total recorded time paused after starting">
+                  Paused {{ pausedTime }}
+                </span>
+              }
               @if (session.started_at) {
-                <span class="session__timing" title="Time from start to finish"
+                <span class="session__timing" title="Time from start to finish, excluding recorded pauses"
                   >Run {{ duration(session) }}</span
                 >
               }

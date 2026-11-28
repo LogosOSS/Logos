@@ -5,9 +5,12 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
-from app import capacity
+from app import capacity, controls, model_policy, sessions
+from app.schemas import SessionStatus
 
 LANE = frozenset({("1", "1")})
 
@@ -340,3 +343,100 @@ def test_modern_worker_without_any_model_observation_fails_closed():
     reading = parse(payload)
     assert reading.dynamic and not reading.ok
     assert capacity.pause_decision(reading)[0]
+
+
+async def test_capacity_read_timeout_pauses_and_recovers_the_same_session(monkeypatch):
+    healthy = state(available=4)
+    embedder = deepcopy(model(healthy))
+    embedder.update(model_name="embedder", queue_depth=6)
+    provider(healthy)["models"]["2"] = embedder
+    later = deepcopy(healthy)
+    provider(healthy)["runtime"]["observed_at"] = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+
+    clock = SimpleNamespace(now=0, payload=None)
+
+    class Client:
+        def __init__(self, *, timeout):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            pass
+
+        async def get(self, url, **_kwargs):
+            if clock.payload is None:
+                raise capacity.httpx.ReadTimeout("scheduler state timed out")
+            return capacity.httpx.Response(200, json=clock.payload)
+
+    monkeypatch.setattr(capacity.httpx, "AsyncClient", Client)
+    monkeypatch.setattr(capacity, "settings", replace(capacity.settings, internal_secret="test-secret"))
+    monkeypatch.setattr(sessions, "time", SimpleNamespace(monotonic=lambda: clock.now))
+    monkeypatch.setattr(sessions, "settings", replace(sessions.settings, capacity_resume_quiet_s=10))
+    policy = model_policy.ModelPolicy(
+        local_models=frozenset({"local-model", "embedder"}),
+        offered=("local-model", "embedder"),
+        local_deployments=LANE | {("1", "2")},
+        deployments_by_model={"local-model": LANE, "embedder": frozenset({("1", "2")})},
+        ok=True,
+        unknown=False,
+        detail="two local models",
+    )
+    monkeypatch.setattr(model_policy, "refresh", AsyncMock(return_value=policy))
+    monkeypatch.setattr(controls, "current", AsyncMock(return_value=controls.Controls(mode="running")))
+
+    session = {"id": 1, "model": "local-model", "container_id": "same-container"}
+    session_status = SessionStatus.RUNNING
+
+    async def rows(status):
+        return [session] if session_status is status else []
+
+    async def transition(sid, status, *, capacity_reason):
+        nonlocal session_status
+        assert sid == session["id"]
+        if status is SessionStatus.PAUSED:
+            assert capacity_reason == "capacity unknown (orchestrator unreachable)"
+        session_status = status
+        return True
+
+    monkeypatch.setattr(sessions.db, "sessions_in_status", rows)
+    monkeypatch.setattr(sessions.db, "transition_session", transition)
+    operations = {
+        name: AsyncMock(return_value=value)
+        for name, value in {
+            "pause_container": True,
+            "unpause_container": True,
+            "container_state": ("paused", None),
+            "container_ip": None,
+            "disconnect_network": True,
+            "connect_network": True,
+            "stop_container": None,
+            "remove_container": None,
+        }.items()
+    }
+    for name, operation in operations.items():
+        monkeypatch.setattr(sessions.docker_engine, name, operation)
+    manager = sessions.SessionManager()
+    settle = AsyncMock()
+    monkeypatch.setattr(manager, "_settle", settle)
+
+    await manager._capacity_watch_pass()
+    assert session_status is SessionStatus.PAUSED
+    operations["pause_container"].assert_awaited_once_with("same-container")
+
+    clock.payload = healthy
+    for second in range(0, 10, 2):
+        clock.now = second
+        await manager._capacity_watch_pass()
+        await manager.scheduler_pass()
+    assert session_status is SessionStatus.PAUSED
+
+    clock.now, clock.payload = 10, later
+    await manager._capacity_watch_pass()
+    await manager.scheduler_pass()
+    assert session_status is SessionStatus.RUNNING
+    operations["unpause_container"].assert_awaited_once_with("same-container")
+    operations["stop_container"].assert_not_awaited()
+    operations["remove_container"].assert_not_awaited()
+    settle.assert_not_awaited()

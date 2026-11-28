@@ -566,7 +566,7 @@ async def create_session(body: SessionCreate, principal: Principal = Depends(req
 
 @app.get("/sessions/{session_id}", response_model=SessionSummary, tags=["sessions"])
 async def get_session(session_id: int, _: Principal = Depends(require_agent_operator)) -> SessionSummary:
-    row = await db.get_session(session_id)
+    row = await db.get_session(session_id, include_pauses=True)
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
     return SessionSummary(**_summary_fields(row))

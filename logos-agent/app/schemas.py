@@ -17,7 +17,7 @@ class SessionStatus(StrEnum):
     QUEUED = "queued"  # accepted, waiting for capacity
     STARTING = "starting"  # container being created
     RUNNING = "running"  # agent working
-    PAUSED = "paused"  # container stopped to give capacity back
+    PAUSED = "paused"  # container frozen to give capacity back
     FINALIZING = "finalizing"  # agent exited, the trusted finalizer is pushing
     SUCCEEDED = "succeeded"
     FAILED = "failed"
@@ -192,6 +192,8 @@ class SessionSummary(BaseModel):
     progress_reported_at: datetime | None = None
     active_seconds: float = 0
     active_since: datetime | None = None
+    paused_seconds: float = 0  # Completed, recorded pauses only.
+    paused_since: datetime | None = None
     screenshot_count: int = 0
     # Set when the runner queued this session itself in response to the
     # repository: what kind of event it was ('issue', 'review') and which one

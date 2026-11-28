@@ -463,6 +463,46 @@ describe('Agents', () => {
       expect(fixture.nativeElement.querySelector('.status--running')).toBeTruthy();
     });
 
+    it('ticks only current pause time, keeps prior pauses and excludes both from Run', async () => {
+      const row = makeSession({
+        status: 'paused',
+        paused_seconds: 50,
+        paused_since: '2026-09-02T10:02:00Z',
+      });
+      agentService.sessions = [row];
+      await component.refresh();
+      fixture.detectChanges();
+      expect(timings()).toEqual(['Queued 1m 0s', 'Paused 59s', 'Run 10s']);
+      agentService.sessionCalls = 0;
+
+      await vi.advanceTimersByTimeAsync(1000);
+      fixture.detectChanges();
+      expect(timings()).toEqual(['Queued 1m 0s', 'Paused 1m 0s', 'Run 10s']);
+      expect(agentService.sessionCalls).toBe(0);
+
+      const resumed = { ...row, status: 'running' as const, paused_seconds: 60, paused_since: null };
+      agentService.sessions = [resumed];
+      await component.refresh();
+      await vi.advanceTimersByTimeAsync(1000);
+      fixture.detectChanges();
+      expect(timings()).toEqual(['Queued 1m 0s', 'Paused 1m 0s', 'Run 11s']);
+
+      agentService.sessions = [
+        { ...resumed, status: 'cancelled', finished_at: '2026-09-02T10:02:11Z' },
+      ];
+      await component.refresh();
+      await vi.advanceTimersByTimeAsync(1000);
+      fixture.detectChanges();
+      expect(timings()).toEqual(['Queued 1m 0s', 'Paused 1m 0s', 'Run 11s', 'Finished 1s ago']);
+    });
+
+    it('does not infer an old pause from a missing timestamp or from queued time', async () => {
+      agentService.sessions = [makeSession({ status: 'paused' })];
+      await component.refresh();
+      fixture.detectChanges();
+      expect(timings()).toEqual(['Queued 1m 0s', 'Paused —', 'Run —']);
+    });
+
     it.each(['succeeded', 'failed', 'cancelled'] as const)(
       'updates the finish age of a %s session while queue and runtime stay fixed',
       async (status) => {

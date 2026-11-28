@@ -10,6 +10,7 @@ import uuid
 
 import pytest
 from app import analysis_triggers, db
+from app.schemas import SessionStatus
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -69,7 +70,10 @@ async def database(monkeypatch):
             await conn.execute(text("""CREATE UNIQUE INDEX one_pending_analysis
                 ON ai_workflow_analyses(team_repository_id)
                 WHERE status IN ('queued','running')"""))
-            await conn.execute(text("CREATE TABLE agent_events (id SERIAL PRIMARY KEY, session_id integer, kind text)"))
+            await conn.execute(text("""CREATE TABLE agent_events (
+                id SERIAL PRIMARY KEY, session_id integer, kind text,
+                ts timestamptz DEFAULT now(), payload jsonb NOT NULL DEFAULT '{}'::jsonb)"""))
+            await conn.execute(text("CREATE INDEX agent_events_by_session ON agent_events (session_id, id)"))
             await conn.execute(text("""INSERT INTO team_repositories (team_id, repo_url, repo_slug, branch,
                 agent_egress_hosts, agent_may_comment)
                 VALUES (1, 'https://github.com/o/a', 'o/a', 'main', '["github.com"]', TRUE)"""))
@@ -458,3 +462,49 @@ async def test_activity_clock_freezes_and_metadata_survives_reread_and_out_of_or
     row = (await db.list_sessions())[0]
     assert (row["subagent_count"], row["progress_percent"], row["progress_active_s"]) == (2, 40, 1200)
     assert row["active_since"] is None
+
+
+async def test_paused_time_counts_only_recorded_intervals_and_closes_on_cancel(database):
+    async with database.begin() as conn:
+        sid = (await conn.execute(text("""
+                INSERT INTO agent_sessions (workspace_id, task, status, started_at)
+                VALUES (1, 'synthetic pause timing', 'running', '2026-11-01T08:00:00Z')
+                RETURNING id
+                """))).scalar_one()
+        await conn.execute(
+            text("""
+                INSERT INTO agent_events (session_id, ts, kind, payload) VALUES
+                (:id, '2026-11-01T08:01:00Z', 'log', '{}'),
+                (:id, '2026-11-01T08:02:00Z', 'capacity', '{"decision":"pause"}'),
+                (:id, '2026-11-01T09:02:00Z', 'capacity', '{"decision":"resume"}'),
+                (:id, '2026-11-01T12:20:00Z', 'log', '{}'),
+                (:id, '2026-11-01T12:21:00Z', 'capacity', '{"decision":"pause"}'),
+                (:id, '2026-11-01T12:26:00Z', 'capacity', '{"decision":"resume"}')
+                """),
+            {"id": sid},
+        )
+
+    listed = (await db.list_sessions(limit=1))[0]
+    assert listed["paused_seconds"] == 3900
+    assert listed["paused_since"] is None
+
+    assert await db.transition_session(sid, SessionStatus.PAUSED, capacity_reason="yield to user requests")
+    detail = await db.get_session(sid, include_pauses=True)
+    assert detail["paused_since"] is not None
+    assert detail["paused_seconds"] == 3900
+    events = await db.list_events(sid)
+    assert events[-1]["payload"] == {"decision": "pause", "reason": "yield to user requests"}
+
+    assert not await db.transition_session(sid, SessionStatus.PAUSED)
+    assert await db.transition_session(sid, SessionStatus.RUNNING, capacity_reason="lane clear")
+    resumed = (await db.list_sessions(limit=1))[0]
+    assert resumed["paused_since"] is None
+    assert resumed["paused_seconds"] >= 3900
+
+    assert await db.transition_session(sid, SessionStatus.PAUSED)
+    assert await db.transition_session(sid, SessionStatus.CANCELLED)
+    ended = await db.get_session(sid, include_pauses=True)
+    assert ended["paused_since"] is None
+    assert ended["paused_seconds"] >= resumed["paused_seconds"]
+    events = await db.list_events(sid)
+    assert [e["payload"].get("decision") for e in events[-4:]] == ["pause", "resume", "pause", "pause_end"]
