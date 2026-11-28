@@ -9,7 +9,6 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-
 from app import capacity, controls, model_policy, sessions
 from app.schemas import SessionStatus
 
