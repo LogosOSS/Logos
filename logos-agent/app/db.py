@@ -726,6 +726,7 @@ async def create_session(
         or not no_push
         or not commit_sha(workflow_analysis_target.get("sha"))
         or workflow_analysis_target.get("kind") not in (None, "branch")
+        or (workflow_analysis_target.get("kind") == "branch" and not workflow_analysis_target.get("cycle"))
         or (automatic_analysis is None and retry_analysis_session_id is None)
     ):
         raise ValueError("a pinned target belongs to a read-only linked analysis")
@@ -765,8 +766,13 @@ async def create_session(
                     raise ValueError("the workflow analysis scope changed")
                 if automatic_analysis:
                     sha = workflow_analysis_target["sha"]
+                    cycle = (
+                        workflow_analysis_target.get("cycle")
+                        if workflow_analysis_target.get("kind") == "branch"
+                        else None
+                    )
                     params = {"repo": team_repository_id, "sha": sha, "scope": workflow_analysis_target["scope"]}
-                    if workflow_analysis_target.get("kind") == "branch":
+                    if cycle is not None:
                         # Recheck the age and latest successful SHA under
                         # the link lock. A scan can complete after the poll
                         # read its history and before it claims the slot.
@@ -774,15 +780,16 @@ async def create_session(
                             text("""
                                 SELECT EXISTS (
                                     SELECT 1 FROM (
-                                        SELECT commit_sha, finished_at FROM ai_workflow_analyses
+                                        SELECT id, commit_sha, finished_at FROM ai_workflow_analyses
                                          WHERE team_repository_id = :repo AND status = 'succeeded'
                                          ORDER BY finished_at DESC NULLS LAST, id DESC LIMIT 1
                                     ) latest
-                                    WHERE latest.commit_sha IS NOT NULL AND latest.commit_sha <> :sha
+                                    WHERE latest.id::text = :cycle
+                                      AND latest.commit_sha IS NOT NULL AND latest.commit_sha <> :sha
                                       AND latest.finished_at <= now() - make_interval(days => :days)
                                 )
                                 """),
-                            {**params, "days": settings.analysis_refresh_days},
+                            {**params, "cycle": cycle, "days": settings.analysis_refresh_days},
                         )
                     else:
                         eligible = not await db.scalar(
@@ -793,7 +800,8 @@ async def create_session(
                                 """),
                             params,
                         )
-                    # Count attempts by scope and SHA, not by trigger reason.
+                    # Release protection remains historical. Branch work
+                    # has its own budget after each later successful scan.
                     attempts = await db.scalar(
                         text("""
                             SELECT COUNT(*) FROM ai_workflow_analyses a
@@ -801,8 +809,11 @@ async def create_session(
                              WHERE a.team_repository_id = :repo AND a.automatically_queued
                                AND s.workflow_analysis_target->>'sha' = :sha
                                AND s.workflow_analysis_target->>'scope' = :scope
+                               AND (CAST(:cycle AS text) IS NULL OR
+                                    (s.workflow_analysis_target->>'kind' = 'branch'
+                                     AND s.workflow_analysis_target->>'cycle' = CAST(:cycle AS text)))
                             """),
-                        params,
+                        {**params, "cycle": cycle},
                     )
                     if not eligible or attempts >= MAX_TARGET_ATTEMPTS:
                         raise ValueError(

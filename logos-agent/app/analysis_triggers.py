@@ -199,10 +199,13 @@ class AnalysisPoller:
             head = branch_heads[key]
             previous = commit_sha(link.get("last_commit"))
             covered = set(link.get("successful_commits") or [])
-            attempted = Counter(
-                item["sha"] for item in (link.get("attempted_targets") or []) if item.get("scope") == scope
+            last_success_id = link.get("last_success_id")
+            cycle = str(last_success_id) if last_success_id is not None else None
+            attempts = [item for item in (link.get("attempted_targets") or []) if item.get("scope") == scope]
+            release_attempts = Counter(item["sha"] for item in attempts)
+            branch_attempts = Counter(
+                item["sha"] for item in attempts if item.get("kind") == "branch" and item.get("cycle") == cycle
             )
-            blocked = {sha for sha, count in attempted.items() if count >= MAX_TARGET_ATTEMPTS}
 
             if slug not in release_lists:
                 release_lists[slug] = await github.stable_releases(slug)
@@ -228,7 +231,7 @@ class AnalysisPoller:
                                 tag_commits[tag] = await github.release_commit(*tag)
                             if tag_sha := tag_commits[tag]:
                                 sha = await self._record_release_target(link, scope, release.id, tag_sha)
-                        if not sha or sha in covered or sha in blocked or sha == previous:
+                        if not sha or sha in covered or release_attempts[sha] >= MAX_TARGET_ATTEMPTS or sha == previous:
                             continue
                         if await ancestor(slug, sha, head) is not True:
                             continue
@@ -247,7 +250,7 @@ class AnalysisPoller:
             if target is None and due and head:
                 if head == previous:
                     skipped += 1
-                elif previous and head not in blocked:
+                elif previous and cycle and branch_attempts[head] < MAX_TARGET_ATTEMPTS:
                     # A rollback can return to a historically scanned SHA while
                     # the displayed analysis still describes a different one.
                     target = head
@@ -255,7 +258,8 @@ class AnalysisPoller:
             if target is not None:
                 request = {"sha": target, "scope": scope}
                 if target_kind == "branch":
-                    request["kind"] = "branch"
+                    assert cycle is not None
+                    request.update(kind="branch", cycle=cycle)
                 session_id = await self._queue(link, target=request)
                 if session_id is not None:
                     queued.append(session_id)
@@ -318,7 +322,8 @@ class AnalysisPoller:
                     await conn.execute(
                         text("""
                         SELECT tr.id, tr.team_id, tr.repo_url, tr.repo_slug, tr.branch, tr.paths,
-                               tr.workflow_release_baseline, latest.commit_sha AS last_commit,
+                               tr.workflow_release_baseline, latest.id AS last_success_id,
+                               latest.commit_sha AS last_commit,
                                latest.finished_at AS last_success_at,
                                ARRAY(SELECT a.commit_sha FROM ai_workflow_analyses a
                                       WHERE a.team_repository_id = tr.id AND a.status = 'succeeded'
@@ -329,7 +334,7 @@ class AnalysisPoller:
                                        AND s.workflow_analysis_target IS NOT NULL) AS attempted_targets
                           FROM team_repositories tr
                           JOIN LATERAL (
-                              SELECT a.commit_sha, a.finished_at
+                              SELECT a.id, a.commit_sha, a.finished_at
                                 FROM ai_workflow_analyses a
                                WHERE a.team_repository_id = tr.id AND a.status = 'succeeded'
                                ORDER BY a.finished_at DESC NULLS LAST, a.id DESC LIMIT 1
@@ -470,6 +475,9 @@ class AnalysisPoller:
         trigger_ref = f"team-repository:{link_id}"
         if target:
             trigger_ref += f":{target['scope']}:{target['sha']}"
+            if target.get("kind") == "branch":
+                # The general retry runner also groups attempts by trigger_ref.
+                trigger_ref += f":branch-cycle:{target['cycle']}"
 
         workspace_id = await self._ensure_workspace(team_id, link_id, branch)
         if workspace_id is None:

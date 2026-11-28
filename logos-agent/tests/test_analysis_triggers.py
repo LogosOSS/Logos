@@ -25,6 +25,7 @@ def _link(link_id: int, last_commit: str | None) -> dict:
         "branch": "main",
         "paths": None,
         "last_commit": last_commit,
+        "last_success_id": 99 if last_commit else None,
         "last_success_at": datetime.now(timezone.utc) - timedelta(days=31),
     }
     link["workflow_release_baseline"] = {"scope": link_scope(link), "release_ids": []}
@@ -376,7 +377,7 @@ async def test_a_stopped_runner_still_queues_nightly_analysis(monkeypatch):
     sessions = await poller.poll_once()
 
     assert sessions == [99]
-    assert queued == [(link, {"sha": MOVED, "scope": link_scope(link), "kind": "branch"})]
+    assert queued == [(link, {"sha": MOVED, "scope": link_scope(link), "kind": "branch", "cycle": "99"})]
     assert poller._nightly_done_for == night.date()
 
 
