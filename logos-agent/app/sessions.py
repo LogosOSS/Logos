@@ -1173,7 +1173,7 @@ class SessionManager:
         task.add_done_callback(self._requested_passes.discard)
 
     async def scheduler_pass(self) -> None:
-        if settings.remote_allowed_origins:
+        if await db.has_waiting_remote_sessions():
             await self._honor_cancel_requests()
             if await self._advance_remote_sessions():
                 return
@@ -1387,11 +1387,7 @@ class SessionManager:
             # launch checks permission afterwards, never capacity.
             # The queue prefers claimable manual work. If none is waiting,
             # automated work can use the same capacity instead of reserving it.
-            candidate = (
-                await db.next_queued_session(remote=False)
-                if settings.remote_allowed_origins
-                else await db.next_queued_session()
-            )
+            candidate = await db.next_queued_session()
             if candidate is None or inference_settings.is_remote(candidate):
                 return
             wanted = admission_policy.resolve(candidate.get("model"))

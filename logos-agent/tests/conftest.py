@@ -57,6 +57,11 @@ def no_saved_inference_choice(monkeypatch):
 
     monkeypatch.setattr(db, "agent_inference_selection", selection)
 
+    async def catalog():
+        return []
+
+    monkeypatch.setattr(db, "agent_cloud_deployments", catalog)
+
 
 @pytest.fixture(autouse=True)
 def local_model_policy(monkeypatch):
@@ -143,10 +148,14 @@ def nothing_queued_by_default(monkeypatch):
     admission provide their own answer, together with the claim it precedes.
     """
 
-    async def none(*, include_triggered: bool = True):
+    async def none(*, include_triggered: bool = True, remote: bool = False):
         return None
 
+    async def no_remote():
+        return False
+
     monkeypatch.setattr(db, "next_queued_session", none)
+    monkeypatch.setattr(db, "has_waiting_remote_sessions", no_remote)
 
 
 @pytest.fixture(autouse=True)

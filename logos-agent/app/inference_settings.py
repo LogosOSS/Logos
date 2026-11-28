@@ -16,11 +16,11 @@ REMOTE_GATEWAY = "http://logos-agent-remote-gateway"
 _DNS_LABEL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
 
 
-def _https_origin(value: str) -> tuple[str, int] | None:
+def _valid_logos_base(value: str | None) -> bool:
     # Reject malformed network coordinates rather than interpreting them as a
     # different origin to the one the provider's relay will dial.
     if not value or value != value.strip() or any(ord(ch) < 33 or ch in "\\?#" for ch in value):
-        return None
+        return False
     try:
         url = urlsplit(value)
         if (
@@ -32,17 +32,23 @@ def _https_origin(value: str) -> tuple[str, int] | None:
             or url.netloc.endswith(":")
             or url.query
             or url.fragment
-            or url.path not in ("", "/")
+            or url.path not in ("", "/", "/v1", "/v1/")
         ):
-            return None
+            return False
         host = url.hostname
+        if "%" in host or (":" in host and not re.fullmatch(r"\[[0-9A-Fa-f:.]+\](?::[0-9]+)?", url.netloc)):
+            return False
         if ":" in host or host.replace(".", "").isdigit():
             ip_address(host)
-        elif not all(_DNS_LABEL.fullmatch(label) for label in host.rstrip(".").split(".")):
-            return None
-        return host, url.port or 443
+        else:
+            labels = host.rstrip(".").split(".")
+            if (len(labels) > 1 and not labels[-1][:1].isalpha()) or not all(
+                _DNS_LABEL.fullmatch(label) for label in labels
+            ):
+                return False
+        return True
     except ValueError:
-        return None
+        return False
 
 
 def remote_network() -> str:
@@ -62,37 +68,42 @@ def session_network(session: dict[str, Any]) -> str:
     return remote_network() if is_remote(session) else settings.session_network
 
 
-def _approved_origins() -> set[tuple[str, int]]:
-    origins = [_https_origin(value) for value in settings.remote_allowed_origins]
-    if not origins or None in origins:
-        return set()
+def remote_transport_configured() -> bool:
     try:
         remote_network()
     except ValueError:
-        return set()
-    return {origin for origin in origins if origin is not None}
+        return False
+    return True
 
 
-def remote_transport_configured() -> bool:
-    return bool(_approved_origins())
-
-
-async def cloud_options() -> list[dict[str, Any]]:
-    allowed = _approved_origins()
-    if not allowed:
+async def _cloud_catalog() -> list[dict[str, Any]]:
+    # The provider registry is managed separately by Logos admins. A choice
+    # never accepts a URL from an Agent UI client or workspace.
+    if not remote_transport_configured():
         return []
-    rows = await db.agent_cloud_deployments()
-    return [
-        {key: row[key] for key in ("provider_id", "provider_name", "model_id", "model")}
-        for row in rows
-        if _https_origin(row["base_url"]) in allowed
-    ]
+    return [row for row in await db.agent_cloud_deployments() if _valid_logos_base(row["base_url"])]
 
 
-async def _approved_deployment(provider_id: int, model_id: int, model: str | None) -> bool:
-    return any(
-        row["provider_id"] == provider_id and row["model_id"] == model_id and row["model"] == model
-        for row in await cloud_options()
+def _matches_pin(row: dict[str, Any], provider_id: int, model_id: int, model: str | None, base_url: str) -> bool:
+    return (
+        row["provider_id"] == provider_id
+        and row["model_id"] == model_id
+        and row["model"] == model
+        and row["base_url"] == base_url
+    )
+
+
+def _cloud_selection_valid(selected: dict[str, Any], catalog: list[dict[str, Any]]) -> bool:
+    if selected.get("mode") != "cloud":
+        return True
+    provider_id = selected.get("provider_id")
+    model_id = selected.get("model_id")
+    base_url = selected.get("provider_base_url")
+    return (
+        provider_id is not None
+        and model_id is not None
+        and base_url is not None
+        and any(_matches_pin(row, provider_id, model_id, selected.get("model"), base_url) for row in catalog)
     )
 
 
@@ -104,15 +115,8 @@ async def automation_selection() -> dict[str, Any] | None:
     if mode == "local":
         policy = model_policy.current()
         return selected if policy.ok and (model is None or policy.allows(model)) else None
-    if mode == "cloud":
-        provider_id = selected.get("provider_id")
-        model_id = selected.get("model_id")
-        if (
-            provider_id is not None
-            and model_id is not None
-            and await _approved_deployment(provider_id, model_id, model)
-        ):
-            return selected
+    if mode == "cloud" and _cloud_selection_valid(selected, await _cloud_catalog()):
+        return selected
     return None
 
 
@@ -135,7 +139,8 @@ async def permits_pin(session: dict[str, Any]) -> bool:
     """Recheck the pin's deployment and its live repository privacy policy."""
     provider_id = session.get("inference_provider_id")
     model_id = session.get("inference_model_id")
-    if provider_id is None or model_id is None:
+    base_url = session.get("inference_base_url")
+    if provider_id is None or model_id is None or base_url is None:
         return False
     if not await db.agent_cloud_allowed_for_repository(
         provider_id,
@@ -145,7 +150,9 @@ async def permits_pin(session: dict[str, Any]) -> bool:
         session_id=session.get("id"),
     ):
         return False
-    return await _approved_deployment(provider_id, model_id, session.get("model"))
+    return any(
+        _matches_pin(row, provider_id, model_id, session.get("model"), base_url) for row in await _cloud_catalog()
+    )
 
 
 async def issue_remote_grant(session_id: int) -> str | None:
@@ -158,27 +165,33 @@ async def issue_remote_grant(session_id: int) -> str | None:
 async def view() -> dict[str, Any]:
     selected = await db.agent_inference_selection()
     policy = await model_policy.refresh()
+    catalog = await _cloud_catalog()
     return {
         "mode": selected.get("mode", "local"),
         "model": selected.get("model"),
         "provider_id": selected.get("provider_id"),
         "model_id": selected.get("model_id"),
         "local_models": list(policy.offered),
-        "cloud_options": await cloud_options(),
+        "cloud_options": [
+            {key: row[key] for key in ("provider_id", "provider_name", "model_id", "model")} for row in catalog
+        ],
+        "cloud_selection_valid": _cloud_selection_valid(selected, catalog),
     }
 
 
 async def save(
     mode: str, model: str | None, provider_id: int | None, model_id: int | None, author: str
 ) -> dict[str, Any]:
+    base_url = None
     if mode == "cloud":
-        options = await cloud_options()
+        options = await _cloud_catalog()
         allowed = next(
             (row for row in options if row["provider_id"] == provider_id and row["model_id"] == model_id), None
         )
         if allowed is None or (model is not None and model != allowed["model"]):
             raise ValueError("Select an approved, authenticated cloud model deployment")
         model = allowed["model"]
+        base_url = allowed["base_url"]
     else:
         if provider_id is not None or model_id is not None:
             raise ValueError("Remote deployment IDs do not apply to a local model")
@@ -187,5 +200,5 @@ async def save(
             if not policy.allows(model):
                 raise ValueError(policy.refusal(model))
             model = policy.canonical(model)
-    await db.save_agent_inference_selection(mode, model, provider_id, model_id, author)
+    await db.save_agent_inference_selection(mode, model, provider_id, model_id, author, provider_base_url=base_url)
     return await view()

@@ -180,6 +180,7 @@ class CloudInferenceOption(BaseModel):
 class InferenceSettings(InferenceSettingsUpdate):
     local_models: list[str]
     cloud_options: list[CloudInferenceOption]
+    cloud_selection_valid: bool = True
 
 
 class SessionSummary(BaseModel):

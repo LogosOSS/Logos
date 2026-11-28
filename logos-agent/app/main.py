@@ -256,12 +256,8 @@ async def get_capacity(_: Principal = Depends(require_agent_operator)) -> Capaci
     paused = counts.get(SessionStatus.PAUSED.value, 0)
     control = await controls.current()
     queued = counts.get(SessionStatus.QUEUED.value, 0)
-    if queued and settings.remote_allowed_origins:
-        next_session = await db.next_queued_session(remote=False)
-        next_remote = await db.next_queued_session(remote=True)
-    else:
-        next_session = await db.next_queued_session() if queued else None
-        next_remote = None
+    next_session = await db.next_queued_session() if queued else None
+    next_remote = await db.next_queued_session(remote=True) if queued else None
     memory_override = (next_session or {}).get("memory_override_mb")
     max_parallel = control.parallel_for(memory_override)
     may_start, reason = capacity.start_decision(reading, running=running, paused=paused, max_parallel=max_parallel)
@@ -578,6 +574,7 @@ async def create_session(body: SessionCreate, principal: Principal = Depends(req
         {
             "inference_provider_id": selected.get("provider_id"),
             "inference_model_id": selected.get("model_id"),
+            "inference_base_url": selected.get("provider_base_url"),
             "model": selected.get("model"),
             **target,
         }
@@ -605,6 +602,7 @@ async def create_session(body: SessionCreate, principal: Principal = Depends(req
             # An idle workspace that last worked on another repository moves
             # to this one's branch; a busy one is refused (db.WorkspaceBusy).
             point_workspace_at=target.get("repo_base_branch") or "main",
+            expected_inference=selected,
             **target,
         )
     except ValueError as exc:

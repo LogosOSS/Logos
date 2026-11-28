@@ -148,7 +148,6 @@ class Settings:
     # peer is the credential-injecting model gateway on the same network.
     session_network: str = os.getenv("LOGOS_AGENT_SESSION_NETWORK", "logos-agent-net")
     remote_inference_network: str = os.getenv("LOGOS_AGENT_REMOTE_NETWORK", "logos-agent-remote-net")
-    remote_allowed_origins: tuple[str, ...] = _csv("LOGOS_AGENT_REMOTE_ALLOWED_ORIGINS", ())
     # The network the trusted helper containers run on — checkout
     # preparation, post-agent commit/push, screenshots. Unlike the session
     # network it may reach the outside (GitHub, the dev environment); the

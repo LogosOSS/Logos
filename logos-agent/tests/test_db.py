@@ -123,6 +123,7 @@ class _Connection:
                     model=params.get("model"),
                     inference_provider_id=params.get("provider_pin"),
                     inference_model_id=params.get("model_pin"),
+                    inference_base_url=params.get("base_url_pin"),
                 )
             self.model.inserted.set()
             return _Result(session_id)
@@ -217,16 +218,25 @@ async def test_a_create_that_wins_the_race_keeps_its_session_from_the_delete(mon
 async def test_new_sessions_pin_remote_selection_and_retries_keep_the_original_pin(monkeypatch):
     model = _Model()
     _patch_db(monkeypatch, model)
-    model.inference_selection = {"mode": "cloud", "model": "test-cloud", "provider_id": 9, "model_id": 41}
+    model.inference_selection = {
+        "mode": "cloud",
+        "model": "test-cloud",
+        "provider_id": 9,
+        "model_id": 41,
+        "provider_base_url": "https://a.example",
+    }
     original = await db.create_session(**_create_kwargs())
     model.inference_selection = {"mode": "local", "model": "test-local", "provider_id": None, "model_id": None}
     await db.create_session(**_create_kwargs())
     await db.create_session(**_create_kwargs(), retry_inference_session_id=original)
 
-    assert [(row["model"], row["inference_provider_id"], row["inference_model_id"]) for row in model.sessions] == [
-        ("test-cloud", 9, 41),
-        ("test-local", None, None),
-        ("test-cloud", 9, 41),
+    assert [
+        (row["model"], row["inference_provider_id"], row["inference_model_id"], row["inference_base_url"])
+        for row in model.sessions
+    ] == [
+        ("test-cloud", 9, 41, "https://a.example"),
+        ("test-local", None, None, None),
+        ("test-cloud", 9, 41, "https://a.example"),
     ]
 
 

@@ -10,43 +10,49 @@ from app import controls, db, docker_engine, inference_settings, main, sessions
 from app.auth import Principal
 from app.schemas import SessionStatus
 
-PIN = {"inference_provider_id": 2, "inference_model_id": 8, "model": "cloud-model"}
+BASE_URL = "https://registered.example/"
+PIN = {
+    "inference_provider_id": 2,
+    "inference_model_id": 8,
+    "model": "cloud-model",
+    "inference_base_url": BASE_URL,
+}
+DEPLOYMENT = {
+    "provider_id": 2,
+    "provider_name": "Example",
+    "model_id": 8,
+    "model": "cloud-model",
+    "base_url": BASE_URL,
+}
 
 
-@pytest.fixture
-def remote_settings(monkeypatch):
-    settings = replace(inference_settings.settings, remote_allowed_origins=("https://approved.example",))
-    monkeypatch.setattr(inference_settings, "settings", settings)
-    monkeypatch.setattr(sessions, "settings", settings)
-
-
-async def test_remote_catalog_filters_origins_and_does_not_expose_endpoints(monkeypatch, remote_settings):
+async def test_remote_catalog_filters_registered_bases_and_does_not_expose_endpoints(monkeypatch):
     rows = [
-        {**PIN, "provider_id": 2, "provider_name": "Example", "model_id": 8, "base_url": "https://approved.example/"},
-        {**PIN, "provider_id": 3, "base_url": "https://approved.example.evil/"},
-        {**PIN, "provider_id": 4, "base_url": "https://approved.example:444/"},
-        {**PIN, "provider_id": 5, "base_url": "http://approved.example/"},
-        {**PIN, "provider_id": 6, "base_url": "https://user@approved.example/"},
-        {**PIN, "provider_id": 7, "base_url": "https://approved.example:0/"},
-        {**PIN, "provider_id": 8, "base_url": "https://approved.example/v1"},
-        {**PIN, "provider_id": 9, "base_url": "https://approved.example:65536/"},
+        DEPLOYMENT,
+        {**DEPLOYMENT, "provider_id": 3, "base_url": "https://another-registered.example/"},
+        {**DEPLOYMENT, "provider_id": 4, "base_url": "https://registered.example:444/v1/"},
+        {**DEPLOYMENT, "provider_id": 5, "base_url": "http://registered.example/"},
+        {**DEPLOYMENT, "provider_id": 6, "base_url": "https://user@registered.example/"},
+        {**DEPLOYMENT, "provider_id": 7, "base_url": "https://registered.example:0/"},
+        {**DEPLOYMENT, "provider_id": 8, "base_url": "https://registered.example/v1"},
+        {**DEPLOYMENT, "provider_id": 9, "base_url": "https://registered.example:65536/"},
     ]
     monkeypatch.setattr(db, "agent_cloud_deployments", AsyncMock(return_value=rows))
-    assert await inference_settings.cloud_options() == [
-        {"provider_id": 2, "provider_name": "Example", "model_id": 8, "model": "cloud-model"}
-    ]
+    options = (await inference_settings.view())["cloud_options"]
+    assert [row["provider_id"] for row in options] == [2, 3, 4, 8]
+    assert all("base_url" not in row for row in options)
     assert await inference_settings.permits_pin(PIN)
     assert not await inference_settings.permits_pin({**PIN, "model": "other"})
     assert not await inference_settings.permits_pin({**PIN, "inference_provider_id": None})
+    assert not await inference_settings.permits_pin({**PIN, "inference_base_url": None})
+    assert not await inference_settings.permits_pin({**PIN, "inference_base_url": "https://retarget.example"})
 
 
 async def test_pinned_remote_uses_the_live_repository_privacy_policy_before_discovery(monkeypatch):
     current_policy = AsyncMock(side_effect=[True, False])
-    deployments = AsyncMock(
-        return_value=[{"provider_id": 2, "provider_name": "Example", "model_id": 8, "model": "cloud-model"}]
-    )
+    deployments = AsyncMock(return_value=[DEPLOYMENT])
     monkeypatch.setattr(db, "agent_cloud_allowed_for_repository", current_policy)
-    monkeypatch.setattr(inference_settings, "cloud_options", deployments)
+    monkeypatch.setattr(db, "agent_cloud_deployments", deployments)
     linked = {**PIN, "team_repository_id": 12, "repo_slug": "o/repo"}
 
     assert await inference_settings.permits_pin(linked)
@@ -61,7 +67,15 @@ async def test_pinned_remote_uses_the_live_repository_privacy_policy_before_disc
 async def test_manual_request_is_refused_before_queuing_under_disallowed_team_privacy(monkeypatch):
     workspace = AsyncMock(return_value={"id": 1})
     linked = AsyncMock(return_value={"id": 12, "repo_url": "https://github.com/o/repo", "repo_slug": "o/repo"})
-    selection = AsyncMock(return_value={"mode": "cloud", "provider_id": 2, "model_id": 8, "model": "cloud-model"})
+    selection = AsyncMock(
+        return_value={
+            "mode": "cloud",
+            "provider_id": 2,
+            "model_id": 8,
+            "model": "cloud-model",
+            "provider_base_url": BASE_URL,
+        }
+    )
     denied = AsyncMock(return_value=False)
     create = AsyncMock()
     monkeypatch.setattr(db, "get_workspace", workspace)
@@ -100,28 +114,29 @@ async def test_remote_resume_does_not_reattach_when_privacy_access_has_been_remo
 
 
 @pytest.mark.parametrize(
-    "bad_origin",
+    "bad_base",
     [
         "not-a-url",
+        None,
         "https://bad.example/path",
         "https://bad_host.example",
         "https://bad.example?",
+        "https://bad.example#",
         "https://bad.example:0",
+        "https://bad.example:",
+        "https://bad.123",
+        "https://[::1]garbage",
+        "https://[fe80::1%zone]",
+        "https://bad.example\\client",
     ],
 )
-async def test_any_malformed_configured_origin_disables_all_remote_options(monkeypatch, remote_settings, bad_origin):
-    monkeypatch.setattr(
-        inference_settings,
-        "settings",
-        replace(inference_settings.settings, remote_allowed_origins=("https://approved.example", bad_origin)),
-    )
-    deployments = AsyncMock()
-    monkeypatch.setattr(db, "agent_cloud_deployments", deployments)
-    assert await inference_settings.cloud_options() == []
-    deployments.assert_not_awaited()
+async def test_malformed_provider_base_does_not_hide_other_registry_options(monkeypatch, bad_base):
+    bad = {**DEPLOYMENT, "provider_id": 3, "base_url": bad_base}
+    monkeypatch.setattr(db, "agent_cloud_deployments", AsyncMock(return_value=[bad, DEPLOYMENT]))
+    assert [row["provider_id"] for row in (await inference_settings.view())["cloud_options"]] == [2]
 
 
-async def test_wrong_network_cannot_enable_remote_models(monkeypatch, remote_settings):
+async def test_wrong_network_cannot_enable_remote_models(monkeypatch):
     monkeypatch.setattr(
         inference_settings,
         "settings",
@@ -131,7 +146,7 @@ async def test_wrong_network_cannot_enable_remote_models(monkeypatch, remote_set
     )
     deployments = AsyncMock()
     monkeypatch.setattr(db, "agent_cloud_deployments", deployments)
-    assert await inference_settings.cloud_options() == []
+    assert (await inference_settings.view())["cloud_options"] == []
     deployments.assert_not_awaited()
 
 
@@ -152,9 +167,9 @@ async def test_non_admin_cannot_update_inference_settings(monkeypatch):
 
 async def test_admin_saves_an_exact_allowed_model_and_no_endpoint(monkeypatch):
     monkeypatch.setattr(
-        inference_settings,
-        "cloud_options",
-        AsyncMock(return_value=[{"provider_id": 2, "provider_name": "Example", "model_id": 8, "model": "cloud-model"}]),
+        db,
+        "agent_cloud_deployments",
+        AsyncMock(return_value=[DEPLOYMENT]),
     )
     save = AsyncMock()
     monkeypatch.setattr(db, "save_agent_inference_selection", save)
@@ -171,10 +186,10 @@ async def test_admin_saves_an_exact_allowed_model_and_no_endpoint(monkeypatch):
         main.app.dependency_overrides.pop(main.require_agent_operator)
     assert denied.status_code == 400
     assert accepted.status_code == 200
-    save.assert_awaited_once_with("cloud", "cloud-model", 2, 8, "operator")
+    save.assert_awaited_once_with("cloud", "cloud-model", 2, 8, "operator", provider_base_url=BASE_URL)
 
 
-async def test_remote_grant_is_random_and_only_digest_is_stored(monkeypatch, remote_settings):
+async def test_remote_grant_is_random_and_only_digest_is_stored(monkeypatch):
     store = AsyncMock(return_value=True)
     monkeypatch.setattr(db, "set_agent_inference_grant", store)
     first = await inference_settings.issue_remote_grant(10)
@@ -193,7 +208,7 @@ async def test_remote_grant_is_random_and_only_digest_is_stored(monkeypatch, rem
         sessions.SessionManager()._session_env({**PIN, "id": 10, "task": "code"}, "branch")
 
 
-async def test_remote_claim_does_not_query_local_gpu_capacity(monkeypatch, remote_settings):
+async def test_remote_claim_does_not_query_local_gpu_capacity(monkeypatch):
     manager = sessions.SessionManager()
     local_pass = AsyncMock(side_effect=AssertionError("remote admission must not depend on local GPUs"))
     monkeypatch.setattr(manager, "_schedule_local_capacity", local_pass)
@@ -203,6 +218,7 @@ async def test_remote_claim_does_not_query_local_gpu_capacity(monkeypatch, remot
     monkeypatch.setattr(db, "sessions_in_status", AsyncMock(return_value=[]))
     queue = AsyncMock(return_value={**PIN, "id": 10})
     monkeypatch.setattr(db, "next_queued_session", queue)
+    monkeypatch.setattr(db, "has_waiting_remote_sessions", AsyncMock(return_value=True))
     claim = AsyncMock(return_value={**PIN, "id": 10})
     monkeypatch.setattr(db, "claim_session", claim)
     monkeypatch.setattr(db, "add_event", AsyncMock())
@@ -215,7 +231,7 @@ async def test_remote_claim_does_not_query_local_gpu_capacity(monkeypatch, remot
     local_pass.assert_not_awaited()
 
 
-async def test_remote_resume_clears_the_binding_before_thawing(monkeypatch, remote_settings):
+async def test_remote_resume_clears_the_binding_before_thawing(monkeypatch):
     manager = sessions.SessionManager()
     session = {**PIN, "id": 10, "container_id": "remote-container"}
     monkeypatch.setattr(manager, "_container_now", AsyncMock(return_value=("paused", None)))
@@ -242,12 +258,10 @@ async def test_remote_resume_clears_the_binding_before_thawing(monkeypatch, remo
 
 
 @pytest.mark.parametrize("blocked_by", [None, "paused", "parallel", "memory", "unconfigured"])
-async def test_capacity_endpoint_reports_remote_admission_independently_of_local_gpus(
-    monkeypatch, remote_settings, blocked_by
-):
+async def test_capacity_endpoint_reports_remote_admission_independently_of_local_gpus(monkeypatch, blocked_by):
     config = inference_settings.settings
     if blocked_by == "unconfigured":
-        config = replace(config, remote_allowed_origins=())
+        config = replace(config, remote_inference_network=config.session_network)
     monkeypatch.setattr(inference_settings, "settings", config)
     monkeypatch.setattr(main, "settings", config)
     monkeypatch.setattr(db, "agent_key_id", AsyncMock(return_value=None))
