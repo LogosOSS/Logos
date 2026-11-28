@@ -125,6 +125,7 @@ async def test_remote_resume_does_not_reattach_when_privacy_access_has_been_remo
         "https://bad.example:0",
         "https://bad.example:",
         "https://bad.123",
+        "https://bad.example..",
         "https://[::1]garbage",
         "https://[fe80::1%zone]",
         "https://bad.example\\client",

@@ -41,7 +41,7 @@ def _valid_logos_base(value: str | None) -> bool:
         if ":" in host or host.replace(".", "").isdigit():
             ip_address(host)
         else:
-            labels = host.rstrip(".").split(".")
+            labels = host.removesuffix(".").split(".")
             if (len(labels) > 1 and not labels[-1][:1].isalpha()) or not all(
                 _DNS_LABEL.fullmatch(label) for label in labels
             ):
