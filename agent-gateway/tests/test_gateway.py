@@ -57,16 +57,18 @@ def gateway(tmp_path, request):
             default_type application/json;
             add_header X-Logos-Agent-Relay-Secret "not visible to callers";
             add_header X-Logos-Agent-Inference "not visible to callers";
+            add_header X-Test-Received-Agent-Secret "$http_x_logos_agent_relay_secret";
             add_header Authorization "not visible to callers";
             return 200 '{"path":"$uri","authorization":"$http_authorization",
-                         "secret":"$http_x_logos_agent_relay_secret", "tag":"$http_x_logos_client_tag",
+                         "tag":"$http_x_logos_client_tag",
                          "mode":"$http_x_logos_agent_inference",
                          "alternative":"$http_logos_key", "anthropic":"$http_x_api_key",
                          "anthropic_version":"$http_anthropic_version","anthropic_beta":"$http_anthropic_beta"}';
         }
     }""")
     # Use the published image's root context and allowlist, not an unfiltered hand-made context.
-    docker("build", "-q", "-t", identity, "-f", str(root / "agent-gateway/Dockerfile"), str(root))
+    image_dir = "rate-limit-gateway" if mode == "public" else "agent-gateway"
+    docker("build", "-q", "-t", identity, "-f", str(root / image_dir / "Dockerfile"), str(root))
     docker("network", "create", identity)
     try:
         docker(
@@ -101,6 +103,8 @@ def gateway(tmp_path, request):
             "LOGOS_INTERNAL_SECRET=" + secret,
             "-e",
             "LOGOS_AGENT_MODEL_GATEWAY_MODE=" + mode,
+            "-e",
+            "LOGOS_GATEWAY_UPSTREAM=logos-webservice:8081",
             identity,
         )
         port = docker("port", proxy, "80/tcp").split(":")[-1]
@@ -144,8 +148,9 @@ def test_gateway_injects_credentials_hides_issuer_and_denies_revoked_identity(ga
         assert response.headers.get("Authorization") is None
         assert response.headers.get("X-Logos-Agent-Relay-Secret") is None
         assert response.headers.get("X-Logos-Agent-Inference") is None
+        assert response.headers["X-Test-Received-Agent-Secret"] == SECRET
     assert body["authorization"] == "Bearer test-short-lived-token"
-    assert body["path"] == "/v1/messages" and body["mode"] == "local" and body["secret"] == SECRET
+    assert body["path"] == "/v1/messages" and body["mode"] == "local"
     assert authorizations(upstream) == ["Bearer " + SECRET]
     assert body["alternative"] == body["anthropic"] == ""
     assert body["tag"].startswith("agent:")
@@ -164,6 +169,7 @@ def test_gateway_sends_a_secret_with_configuration_syntax_unchanged(gateway):
     base, upstream = gateway
     with urlopen(Request(base + "/v1/messages", data=b"{}"), timeout=5) as response:
         assert json.load(response)["authorization"] == "Bearer test-short-lived-token"
+        assert response.headers["X-Test-Received-Agent-Secret"] == HOSTILE_SECRET
     assert authorizations(upstream) == ["Bearer " + HOSTILE_SECRET]
 
 
@@ -203,8 +209,8 @@ def test_remote_gateway_only_exposes_messages_and_replaces_control_headers(gatew
         body = json.load(response)
         assert response.headers.get("Authorization") is None
         assert response.headers.get("X-Logos-Agent-Relay-Secret") is None
+        assert response.headers["X-Test-Received-Agent-Secret"] == SECRET
     assert body["authorization"] == "Bearer opaque-session-grant"
-    assert body["secret"] == SECRET
     assert body["tag"].startswith("agent:") and body["tag"] != "spoofed"
     assert body["alternative"] == body["anthropic"] == ""
     assert body["anthropic_version"] == "2023-06-01"
@@ -223,6 +229,23 @@ def test_remote_gateway_only_exposes_messages_and_replaces_control_headers(gatew
     with pytest.raises(HTTPError) as exc:
         urlopen(base + "/v1/messages", timeout=5)
     assert exc.value.code == 403
+    assert authorizations(upstream) == []
+
+
+@pytest.mark.parametrize("gateway", [(SECRET, "public")], indirect=True)
+def test_public_ingress_cannot_stamp_agent_mode_or_secret(gateway):
+    base, upstream = gateway
+    request_headers = {
+        "Authorization": "Bearer ordinary-api-key",
+        "X-Logos-Agent-Inference": "cloud",
+        "X-Logos-Agent-Relay-Secret": "client-supplied-secret",
+        "Content-Type": "application/json",
+    }
+    with urlopen(Request(base + "/v1/messages", data=b"{}", headers=request_headers), timeout=5) as response:
+        body = json.load(response)
+        assert response.headers.get("X-Test-Received-Agent-Secret") is None
+    assert body["authorization"] == "Bearer ordinary-api-key"
+    assert body["mode"] == ""
     assert authorizations(upstream) == []
 
 

@@ -32,6 +32,7 @@ class AgentLocalInferenceControllerTest {
     private static final String TOKEN = "Bearer ac1.test-only-token";
     private static final String TAG = "agent:172.19.0.2";
     private final GatewayAuthService publicAuth = mock(GatewayAuthService.class);
+    private final AgentInferenceRelay cloudRelay = mock(AgentInferenceRelay.class);
     private final GatewayInFlightLimit capacity = new GatewayInFlightLimit(1);
     private final AtomicReference<Headers> forwarded = new AtomicReference<>();
     private final AtomicReference<String> forwardedPath = new AtomicReference<>();
@@ -57,7 +58,7 @@ class AgentLocalInferenceControllerTest {
         var external = new InferenceGatewayController(true, publicAuth, mock(GatewayCloudAccounting.class),
             mock(GatewayCloudForwarder.class), mock(GatewayCloudRateLimiter.class), proxy, new ObjectMapper(),
             capacity, mock(ProviderSpendCapService.class));
-        var cloud = new AgentInferenceRelayController(mock(AgentInferenceRelay.class), capacity, SECRET);
+        var cloud = new AgentInferenceRelayController(cloudRelay, capacity, SECRET);
         mvc = MockMvcBuilders.standaloneSetup(new AgentLocalInferenceController(proxy, capacity, SECRET), cloud, external)
             .addInterceptors(new GatewayRelayCleanup())
             .build();
@@ -110,6 +111,24 @@ class AgentLocalInferenceControllerTest {
             .andExpect(status().isUnauthorized());
         assertThat(forwarded.get()).isNull();
         verifyNoInteractions(publicAuth);
+    }
+
+    @Test
+    void aCredentialForOneModeCannotBeUsedForTheOther() throws Exception {
+        mvc.perform(post("/v1/messages").contentType("application/json").content("{}")
+            .header(AgentGatewayHeaders.MODE, "cloud")
+            .header(AgentGatewayHeaders.SECRET, SECRET)
+            .header(AgentGatewayHeaders.CLIENT_TAG, TAG)
+            .header("Authorization", TOKEN))
+            .andExpect(status().isUnauthorized());
+        mvc.perform(post("/v1/messages").contentType("application/json").content("{}")
+            .header(AgentGatewayHeaders.MODE, "local")
+            .header(AgentGatewayHeaders.SECRET, SECRET)
+            .header(AgentGatewayHeaders.CLIENT_TAG, TAG)
+            .header("Authorization", "Bearer " + "x".repeat(43)))
+            .andExpect(status().isUnauthorized());
+        assertThat(forwarded.get()).isNull();
+        verifyNoInteractions(publicAuth, cloudRelay);
     }
 
     @Test
