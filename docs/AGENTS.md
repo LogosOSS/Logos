@@ -381,7 +381,7 @@ flows use a **concept** name (no role prefix); role-only list pages keep the
 | `logos-admin-agents-messages.png` | `tobias.wasner` | Expanded **Agent messages** with parent and child output, a list and code | `roles/logos-admin.md#agent-sessions` |
 | `logos-admin-agents-new-session.png` | `tobias.wasner` | `/agents` — **New session**, **Repository** `docs-example/sample-app (develop)` selected (needs the agent runner API on `/api/agent`) | `roles/logos-admin.md#start-a-session` |
 | `logos-admin-my-workspace.png` | `tobias.wasner` | `/my-workspace` | `roles/logos-admin.md` |
-| `public-stats-hourly-load.png` | no sign-in | `/usage` — **Typical hourly request load**, with `seed/public-hourly-request-load.sql` applied | `roles/app-admin.md#settings` |
+| `public-stats-hourly-load.png` | no sign-in | `/usage` — **Local requests per hour**, with `seed/public-hourly-request-load.sql` applied | `roles/app-admin.md#settings` |
 | `app-admin-models.png` | `alexandra.szuminska` | `/models` | `roles/app-admin.md` |
 | `app-admin-user-management.png` | `alexandra.szuminska` | `/user-management` | `roles/app-admin.md` |
 | `app-admin-team-management.png` | `alexandra.szuminska` | `/team-management` | `roles/app-admin.md` |

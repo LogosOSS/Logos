@@ -52,14 +52,14 @@ class PublicStatsCacheTest {
 
     @Test
     void publicHourlyChartIsComputedOnceAndIdenticalAcrossAllRollingWindows() {
-        var release = new PublicHourlyRequestLoad("Europe/Berlin", java.time.LocalDate.of(2026, 1, 5),
-            java.time.LocalDate.of(2026, 2, 2), 5, List.of());
-        when(statsService.publicHourlyRequestLoad(any())).thenReturn(release);
+        var series = new PublicLocalRequestArrivals(java.time.Instant.parse("2026-01-05T00:00:00Z"),
+            java.time.Instant.parse("2026-01-12T00:00:00Z"), List.of());
+        when(statsService.publicLocalRequestArrivals(any())).thenReturn(series);
         var cache = new PublicStatsCache(statsService, Duration.ofMinutes(30), now::get);
         for (String window : windows) {
-            assertThat(cache.get(window)).containsEntry("hourly_request_load", release);
+            assertThat(cache.get(window)).containsEntry("local_request_arrivals", series);
         }
-        verify(statsService, times(1)).publicHourlyRequestLoad(any());
+        verify(statsService, times(1)).publicLocalRequestArrivals(any());
     }
 
     @Test

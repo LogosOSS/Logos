@@ -27,7 +27,7 @@ import de.tum.cit.aet.logos.logoswebservice.TestJwt;
  * timeout that share the key, team and provider of successful rows — the
  * asserted totals are what you get when only the successes count. Team
  * 2002 stays off the public page so its traffic must not leak into any
- * aggregate.
+ * team-level aggregate. The local-arrivals series is the documented fleet-wide exception.
  */
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -55,53 +55,58 @@ class PublicStatsControllerTest {
     @MockitoBean JwtDecoder jwtDecoder;
 
     @Test
-    void publicHourlyBandsExcludeHiddenTeamsAndInternalTrafficAndNeverFollowTheWindow() throws Exception {
+    void publicLocalArrivalsCountAllTeamsAndOutcomesWithoutCloudOrUnclassifiedTraffic() throws Exception {
         try {
             jdbc.update("""
                 INSERT INTO teams (id, name, show_on_public_stats) VALUES
-                    (2201, 'Public team A', true), (2202, 'Public team B', true),
-                    (2203, 'Public team C', true), (2204, 'Hidden team', false)
+                    (2201, 'Published', true), (2202, 'Not published', false)
                 """);
             jdbc.update("""
-                WITH monday AS (
-                    SELECT DATE '1970-01-05' + 28 * FLOOR(
-                        (date_trunc('week', now() AT TIME ZONE 'Europe/Berlin')::date - 7 - DATE '1970-01-05') / 28.0
-                    )::int AS block_end
-                ), samples(team_id, hour, requests, result_status, internal) AS (
-                    VALUES (2201, 7, 200, 'success', false), (2202, 7, 200, 'success', false),
-                           (2203, 7, 200, 'success', false), (2204, 7, 1000, 'success', false),
-                           (2201, 7, 1000, 'error', false), (CAST(NULL AS integer), 7, 1000, 'success', false),
-                           (2201, 7, 1000, 'success', true), (2201, 8, 15, 'success', false),
-                           (2202, 8, 15, 'success', false), (2203, 8, 15, 'success', false),
-                           (2201, 9, 1000, 'success', false)
+                INSERT INTO providers (id, name, base_url, provider_type, auth_name, auth_format)
+                VALUES (6201, 'Fixture Local worker', 'http://unused.invalid', 'logosnode', 'Authorization', 'Bearer {}')
+                """);
+            jdbc.update("""
+                WITH samples(team_id, provider_id, status, agent, benchmark, hours_ago) AS (
+                    VALUES (2201, 6201, 'success', false, false, 26),
+                           (2202, 6201, 'error', false, false, 26),
+                           (2202, 6201, NULL, false, false, 26),
+                           (2202, 6201, 'success', true, false, 26),
+                           (NULL, NULL, 'error', false, true, 26),
+                           (2201, 6001, 'success', false, false, 26),
+                           (2201, 6001, 'success', true, false, 26),
+                           (2201, NULL, 'error', false, false, 26),
+                           (2202, 6201, 'success', false, false, 27),
+                           (2201, 6201, 'success', false, false, 24),
+                           (2201, 6201, 'success', false, false, 193)
                 )
-                INSERT INTO log_entry (request_id, team_id, api_key_id, timestamp_request, result_status, environment)
-                SELECT 'public-hourly-test-' || nextval('log_entry_id_seq'), s.team_id,
-                    CASE WHEN s.internal THEN (SELECT id FROM api_keys WHERE internal_service = 'agent') END,
-                    (monday.block_end - 7 + make_time(s.hour, 0, 0)) AT TIME ZONE 'Europe/Berlin',
-                    s.result_status::result_status_enum,
-                    CASE WHEN team_id IS NULL THEN 'model-provider-benchmark' END
-                FROM samples s CROSS JOIN monday CROSS JOIN LATERAL generate_series(1, s.requests)
+                INSERT INTO log_entry (request_id, team_id, provider_id, api_key_id, timestamp_request,
+                                       timestamp_response, result_status, benchmark_job_id)
+                SELECT 'public-hourly-test-' || nextval('log_entry_id_seq'), s.team_id, s.provider_id,
+                    CASE WHEN s.agent THEN (SELECT id FROM api_keys WHERE internal_service = 'agent') END,
+                    date_trunc('hour', now(), 'UTC') + interval '59 minutes' - s.hours_ago * interval '1 hour',
+                    CASE WHEN s.status IS NOT NULL THEN
+                        date_trunc('hour', now(), 'UTC') + interval '62 minutes' - s.hours_ago * interval '1 hour' END,
+                    s.status::result_status_enum, CASE WHEN s.benchmark THEN 123 END
+                FROM samples s
                 """);
             for (String window : java.util.List.of("7", "all")) {
                 mvc.perform(get("/public/stats").param("days", window))
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.successful_requests").value("all".equals(window) ? 1645 : 0))
-                    .andExpect(jsonPath("$.hourly_request_load.time_zone").value("Europe/Berlin"))
-                    .andExpect(jsonPath("$.hourly_request_load.band_size").value(5))
-                    .andExpect(jsonPath("$.hourly_request_load.hours.length()").value(24))
-                    .andExpect(jsonPath("$.hourly_request_load.hours[7].band_start").value(20))
-                    .andExpect(jsonPath("$.hourly_request_load.hours[8].band_start").value(0))
-                    .andExpect(jsonPath("$.hourly_request_load.hours[8].zero").value(false))
-                    .andExpect(jsonPath("$.hourly_request_load.hours[9].band_start").isEmpty())
-                    .andExpect(jsonPath("$.hourly_request_load.hours[9].zero").value(false))
-                    .andExpect(jsonPath("$.hourly_request_load.hours[10].zero").value(true))
-                    .andExpect(jsonPath("$.hourly_request_load.hours[7].requests").doesNotExist())
-                    .andExpect(jsonPath("$.hourly_request_load.hours[7].teams").doesNotExist());
+                    .andExpect(jsonPath("$.successful_requests").value("all".equals(window) ? 4 : 3))
+                    .andExpect(jsonPath("$.local_request_arrivals.hours.length()").value(168))
+                    .andExpect(jsonPath("$.local_request_arrivals.hours[164].regular").value(0))
+                    .andExpect(jsonPath("$.local_request_arrivals.hours[165].regular").value(1))
+                    .andExpect(jsonPath("$.local_request_arrivals.hours[166].regular").value(3))
+                    .andExpect(jsonPath("$.local_request_arrivals.hours[166].agent").value(1))
+                    .andExpect(jsonPath("$.local_request_arrivals.hours[166].benchmark").value(1))
+                    .andExpect(jsonPath("$.local_request_arrivals.hours[166].team").doesNotExist())
+                    .andExpect(jsonPath("$.local_request_arrivals.hours[166].provider").doesNotExist())
+                    .andExpect(jsonPath("$.local_request_arrivals.hours[167].regular").value(0));
             }
         } finally {
             jdbc.update("DELETE FROM log_entry WHERE request_id LIKE 'public-hourly-test-%'");
-            jdbc.update("DELETE FROM teams WHERE id BETWEEN 2201 AND 2204");
+            jdbc.update("DELETE FROM providers WHERE id = 6201");
+            jdbc.update("DELETE FROM teams WHERE id BETWEEN 2201 AND 2202");
         }
     }
 

@@ -275,13 +275,18 @@ in the same section; **Save Settings** below only saves the budget and rate limi
 A confirmation appears after saving. The public page refreshes periodically, so
 changes may take up to 30 minutes to appear with the default cache setting.
 
-The public page also shows **Typical hourly request load**. It includes
-successful requests from published teams, but not internal requests. The
-chart uses the same four-week period for all time-window selections. Data
-appears at least one week after the period ends. The chart shows ranges and
-does not show hours with too little combined traffic. It does not show GPU use.
+The **Local requests per hour** chart counts arrivals routed to local Logos
+workers, regardless of the response status. It excludes cloud requests and
+requests with no known route. The chart is an exception to the Public Stats
+setting: it counts all teams but does not identify individual teams or workers.
+Other public usage figures still use only published teams.
 
-![Public stats page with ranges for hourly request load](/img/roles/public-stats-hourly-load.png)
+The chart shows the last 7 days with at least a 24-hour delay, in 1-hour
+intervals. Use **Earlier 24h** or **Later 24h** to change the displayed period.
+Select **Include Logos Agent** or **Include benchmarks** to add that traffic.
+Both options are off by default. This chart does not show GPU utilization.
+
+![Public stats page with hourly local request arrivals](/img/roles/public-stats-hourly-load.png)
 
 Provider batches do not reserve budget. At batch creation, Logos checks only costs that it already settled.
 A provider batch counts against the budget only after it finishes and Logos settles its costs.

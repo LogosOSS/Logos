@@ -1,26 +1,31 @@
-@if (load(); as release) {
-  <p class="hourly-public-period">
-    {{ release.from }} to before {{ release.until }} · {{ release.time_zone }}
-  </p>
-  <div class="hourly-public-plot" role="group" aria-label="Hourly averages for this publication period">
-    <span class="hourly-public-axis" aria-hidden="true">{{ maximum() }}</span>
+@if (load()) {
+  <div class="hourly-public-options">
+    <label><input type="checkbox" [checked]="includeAgent()" (change)="includeAgent.set($event.target.checked)" /> Include Logos Agent</label>
+    <label><input type="checkbox" [checked]="includeBenchmarks()" (change)="includeBenchmarks.set($event.target.checked)" /> Include benchmarks</label>
+  </div>
+  <div class="hourly-public-navigation">
+    <button type="button" [disabled]="!hasOlder()" (click)="page(1)">Earlier 24h</button>
+    <button type="button" [disabled]="daysBack() === 0" (click)="page(-1)">Later 24h</button>
+  </div>
+  <p class="hourly-public-period" aria-live="polite">{{ period() }}</p>
+  <div class="hourly-public-plot" role="group" aria-label="Hourly local request counts">
+    <span class="hourly-public-axis" aria-hidden="true">{{ count(maximum()) }}</span>
     <div class="hourly-public-slots">
-      @for (slot of slots(); track slot.hour) {
+      @for (slot of slots(); track slot.start; let i = $index) {
         <div class="hourly-public-column">
           <button type="button" class="hourly-public-hour"
-            [class.suppressed]="slot.band_start === null && !slot.zero"
-            [class.quiet]="slot.zero"
-            [attr.aria-pressed]="selected() === slot.hour"
-            [attr.aria-label]="hourLabel(slot.hour) + ' to ' + hourLabel(slot.hour + 1) + ': ' + slotLabel(slot)"
-            [title]="slotLabel(slot)"
-            (click)="selected.set(slot.hour)"
-            (focus)="preview.set(slot.hour)"
+            [class.quiet]="total(slot) === 0"
+            [attr.aria-pressed]="selected() === slot.start"
+            [attr.aria-label]="detail(slot.start) + ': ' + count(total(slot)) + ' requests'"
+            [title]="count(total(slot)) + ' requests'"
+            (click)="selected.set(slot.start)"
+            (focus)="preview.set(slot.start)"
             (blur)="preview.set(null)"
-            (pointerenter)="preview.set(slot.hour)"
+            (pointerenter)="preview.set(slot.start)"
             (pointerleave)="preview.set(null)">
-            <span [style.height.%]="heightPercent(slot)"></span>
+            <span [style.height.%]="total(slot) / maximum() * 100"></span>
           </button>
-          @if (slot.hour % 4 === 0) { <span class="hourly-public-tick" aria-hidden="true">{{ hourLabel(slot.hour) }}</span> }
+          @if (i % 6 === 0) { <span class="hourly-public-tick" aria-hidden="true">{{ tick(slot.start) }}</span> }
         </div>
       }
     </div>
@@ -28,13 +33,12 @@
   <div class="hourly-public-detail">
     <output aria-live="polite">
       @if (activeSlot(); as slot) {
-        <strong>{{ hourLabel(slot.hour) }}–{{ hourLabel(slot.hour + 1) }}:</strong> {{ slotLabel(slot) }}
+        <strong>{{ detail(slot.start) }}:</strong> {{ count(total(slot)) }} requests
       } @else {
-        Hover, focus, or tap a bar for its hour and range.
+        Hover, focus, or tap a bar for its hour and request count.
       }
     </output>
   </div>
-  <p class="hourly-public-note">Bars show ranges, not exact counts. Dashed marks mean there is not enough combined traffic to publish. A solid line marks zero logged requests.</p>
 } @else {
-  <p class="hourly-public-note">No hourly figures are available for the latest publication period.</p>
+  <p class="hourly-public-note">Hourly request counts are currently unavailable.</p>
 }

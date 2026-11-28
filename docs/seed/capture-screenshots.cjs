@@ -381,7 +381,7 @@ const SHOTS = [
     readySelector: ".public-stats-page",
     go: async (p) => {
       await p.goto(BASE + "/usage");
-      await p.getByRole("heading", { name: "Typical hourly request load" }).waitFor();
+      await p.getByRole("heading", { name: "Local requests per hour" }).waitFor();
       await p.locator(".hourly-public-hour").first().waitFor();
     },
   },

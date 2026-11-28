@@ -1,33 +1,60 @@
 import { TestBed } from '@angular/core/testing';
 import { PublicStatsHourly } from './public-stats.hourly';
 
-describe('Public hourly load', () => {
-  it('distinguishes low volume, withheld and actual zero without exposing exact counts', () => {
+describe('Public local request arrivals', () => {
+  it('shows exact hourly totals and includes Agent and benchmarks independently', () => {
     const fixture = TestBed.createComponent(PublicStatsHourly);
     fixture.componentRef.setInput('load', {
-      time_zone: 'Europe/Berlin', from: '2026-10-26', until: '2026-11-23', band_size: 5,
       hours: [
-        { hour: 0, band_start: 0, zero: false }, { hour: 1, band_start: null, zero: false },
-        { hour: 2, band_start: null, zero: true }, { hour: 3, band_start: 20, zero: false },
+        { start: '2026-10-25T00:00:00Z', regular: 1, agent: 2, benchmark: 4 },
+        { start: '2026-10-25T01:00:00Z', regular: 0, agent: 0, benchmark: 0 },
       ],
     });
     fixture.detectChanges();
     const root: HTMLElement = fixture.nativeElement;
-    expect(root.querySelector('select')).toBeNull();
     const slots = [...root.querySelectorAll<HTMLButtonElement>('.hourly-public-hour')];
-    expect(slots[0].getAttribute('aria-label')).toContain('Under 5 requests per hour');
-    expect(slots[1].classList.contains('suppressed')).toBe(true);
-    expect(slots[2].classList.contains('quiet')).toBe(true);
-    slots[3].click();
-    fixture.detectChanges();
-    expect(root.querySelector('output')?.textContent).toContain('20 to <25 requests per hour');
+    const [agent, benchmark] = [...root.querySelectorAll<HTMLInputElement>('input[type=checkbox]')];
+    expect(slots[0].getAttribute('aria-label')).toContain('02:00 GMT+2: 1 requests');
+    expect(slots[1].getAttribute('aria-label')).toContain('02:00 GMT+1: 0 requests');
+    expect(slots[1].classList.contains('quiet')).toBe(true);
+    slots[0].click();
+    const output = () => {
+      fixture.detectChanges();
+      return root.querySelector('output')?.textContent;
+    };
+    expect(output()).toContain('1 requests');
+    agent.click();
+    expect(output()).toContain('3 requests');
+    benchmark.click();
+    expect(output()).toContain('7 requests');
+    agent.click();
+    expect(output()).toContain('5 requests');
   });
 
-  it('does not invent a chart without a publishable cohort', () => {
+  it('paginates actual hours without grouping and starts with the newest hours', () => {
+    const fixture = TestBed.createComponent(PublicStatsHourly);
+    const start = Date.parse('2026-11-22T00:00:00Z');
+    fixture.componentRef.setInput('load', {
+      hours: Array.from({ length: 48 }, (_, i) => ({
+        start: new Date(start + 3_600_000 * i).toISOString(), regular: i, agent: 0, benchmark: 0,
+      })),
+    });
+    fixture.detectChanges();
+    const root: HTMLElement = fixture.nativeElement;
+    expect(root.querySelectorAll('.hourly-public-hour')).toHaveLength(24);
+    const first = () => root.querySelector('.hourly-public-hour')?.getAttribute('aria-label');
+    expect(first()).toContain('24 requests');
+    root.querySelector<HTMLButtonElement>('.hourly-public-navigation button')!.click();
+    fixture.detectChanges();
+    expect(root.querySelectorAll('.hourly-public-hour')).toHaveLength(24);
+    expect(first()).toContain('0 requests');
+  });
+
+  it('reports missing data without drawing zeros', () => {
     const fixture = TestBed.createComponent(PublicStatsHourly);
     fixture.detectChanges();
     const root: HTMLElement = fixture.nativeElement;
-    expect(root.textContent).toContain('No hourly figures');
+    expect(root.textContent).toContain('currently unavailable');
     expect(root.querySelectorAll('.hourly-public-hour')).toHaveLength(0);
   });
 });

@@ -10,6 +10,36 @@
   margin: 0.35rem 0;
 }
 
+.hourly-public-options,
+.hourly-public-navigation {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.85rem;
+  align-items: center;
+  font-size: var(--font-size-sm);
+  margin: 0.45rem 0;
+}
+
+.hourly-public-options label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.hourly-public-navigation button {
+  border: 1px solid rgb(var(--color-outline-100));
+  border-radius: 0.35rem;
+  padding: 0.15rem 0.4rem;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.hourly-public-navigation button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
 .hourly-public-plot {
   --plot-height: clamp(5rem, 8vw, 7rem);
   display: flex;
@@ -51,9 +81,6 @@
 
   &.quiet {
     border-bottom: 2px solid rgb(var(--color-typography-700));
-  }
-  &.suppressed {
-    border-bottom: 2px dashed rgb(var(--color-typography-700));
   }
 
   &:hover,
